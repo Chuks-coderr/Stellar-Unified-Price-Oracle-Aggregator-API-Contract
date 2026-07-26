@@ -1,5 +1,15 @@
 use soroban_sdk::{contractevent, symbol_short, Address, Bytes, String, Symbol};
 
+/// Publishes a generic admin-action audit event.
+///
+/// Used by every admin-mutating function to emit a consistent on-chain audit trail.
+/// Callers pass a short `action` symbol (≤8 chars), the acting `admin` address, and
+/// optional arbitrary `data` bytes (may be empty).
+#[allow(deprecated)]
+pub fn emit_admin_action(env: &soroban_sdk::Env, action: Symbol, admin: Address, data: Bytes) {
+    env.events().publish((action, admin), (data,));
+}
+
 // ContractInitializedEvent uses manual publishing due to String field
 // limitations with the macro in soroban-sdk 26.
 
@@ -640,4 +650,214 @@ pub struct SourceRemovalCancelledEvent {
 #[derive(Clone)]
 pub struct RemovalCooldownChangedEvent {
     pub value: u32,
+}
+
+// =============================================================================
+// #186 — Adaptive Heartbeat / Liveness Detection
+// =============================================================================
+
+/// Emitted when a source is automatically removed due to extended inactivity
+/// (exceeding `max_inactive_ledgers` without a reactivating heartbeat+price).
+///
+/// Topics: `source`
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAutoRemovedEvent {
+    /// Address of the source that was automatically removed.
+    #[topic]
+    pub source: Address,
+    /// Ledger at which the source first became inactive.
+    pub inactive_since_ledger: u32,
+    /// Current ledger when auto-removal was executed.
+    pub removed_at_ledger: u32,
+    /// Number of consecutive missed heartbeats at time of removal.
+    pub missed_heartbeats: u32,
+}
+
+/// Emitted when a source's health status changes (e.g., Healthy → Degraded → Inactive).
+///
+/// Topics: `source`
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceHealthChangedEvent {
+    /// Address of the source whose health changed.
+    #[topic]
+    pub source: Address,
+    /// Old health status as a `u32` discriminant (0=Healthy,1=Degraded,2=Inactive,3=AutoRemoved).
+    pub old_status: u32,
+    /// New health status as a `u32` discriminant.
+    pub new_status: u32,
+    /// Consecutive missed-heartbeat count at time of change.
+    pub missed_heartbeats: u32,
+}
+
+/// Emitted when the max_inactive_ledgers configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct MaxInactiveLedgersChangedEvent {
+    /// The new maximum inactive ledgers threshold.
+    pub value: u32,
+}
+
+/// Emitted when the heartbeat window size configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct HeartbeatWindowChangedEvent {
+    /// The new heartbeat window size (number of periods).
+    pub value: u32,
+}
+
+// =============================================================================
+// #187 — Commit-Reveal MEV Resistance
+// =============================================================================
+
+/// Emitted when a source commits a price hash for a given round.
+///
+/// Topics: `asset`, `source`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceCommittedEvent {
+    /// Address of the asset being committed.
+    #[topic]
+    pub asset: Address,
+    /// Address of the committing source.
+    #[topic]
+    pub source: Address,
+    /// Ledger round this commit belongs to.
+    pub round_ledger: u32,
+    /// Ledger at which the commit was made.
+    pub committed_at_ledger: u32,
+}
+
+/// Emitted when a source successfully reveals a committed price.
+///
+/// Topics: `asset`, `source`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceRevealedEvent {
+    /// Address of the asset whose price was revealed.
+    #[topic]
+    pub asset: Address,
+    /// Address of the source revealing the price.
+    #[topic]
+    pub source: Address,
+    /// The revealed price value.
+    pub price: i128,
+    /// Round ledger this reveal belongs to.
+    pub round_ledger: u32,
+    /// Ledger at which the reveal was processed.
+    pub revealed_at_ledger: u32,
+}
+
+/// Emitted when a commit expires without being revealed (reveal window closed).
+///
+/// Topics: `asset`, `source`
+#[contractevent]
+#[derive(Clone)]
+pub struct CommitExpiredEvent {
+    /// Address of the asset.
+    #[topic]
+    pub asset: Address,
+    /// Address of the source that committed but did not reveal.
+    #[topic]
+    pub source: Address,
+    /// The round ledger that has now expired.
+    pub round_ledger: u32,
+}
+
+/// Emitted when the commit window configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct CommitWindowChangedEvent {
+    /// New commit window in ledgers.
+    pub value: u32,
+}
+
+/// Emitted when the reveal window configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct RevealWindowChangedEvent {
+    /// New reveal window in ledgers.
+    pub value: u32,
+}
+
+// =============================================================================
+// #188 — Economic Finality Gadget
+// =============================================================================
+
+/// Emitted when a pending price entry transitions to finalized status.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceFinalizedEvent {
+    /// Address of the asset whose price was finalized.
+    #[topic]
+    pub asset: Address,
+    /// The finalized price value.
+    pub price: i128,
+    /// Ledger at which the price was originally aggregated.
+    pub committed_ledger: u32,
+    /// Ledger at which finality was confirmed.
+    pub finalized_ledger: u32,
+    /// Number of contributing sources.
+    pub num_sources: u32,
+}
+
+/// Emitted when an admin retracts a pending price before finalization (reorg protection).
+///
+/// Topics: `asset`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceRetractedEvent {
+    /// Address of the asset whose pending price was retracted.
+    #[topic]
+    pub asset: Address,
+    /// Address of the admin who executed the retraction.
+    #[topic]
+    pub admin: Address,
+    /// Ledger of the pending price that was retracted.
+    pub committed_ledger: u32,
+    /// Ledger at which the retraction occurred.
+    pub retracted_at_ledger: u32,
+}
+
+/// Emitted when a reorg is detected via ledger hash chain inconsistency.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct ReorgDetectedEvent {
+    /// Address of the affected asset.
+    #[topic]
+    pub asset: Address,
+    /// Ledger at which the hash chain inconsistency was detected.
+    pub detected_at_ledger: u32,
+    /// The committed ledger whose price is now suspect.
+    pub suspect_ledger: u32,
+}
+
+/// Emitted when the finality_ledgers configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct FinalityLedgersChangedEvent {
+    /// New finality ledgers count.
+    pub value: u32,
+}
+
+/// Emitted when a new price is placed in the pending-finality queue.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct PricePendingFinalityEvent {
+    /// Address of the asset.
+    #[topic]
+    pub asset: Address,
+    /// The price value pending finalization.
+    pub price: i128,
+    /// Ledger at which aggregation occurred.
+    pub committed_ledger: u32,
+    /// Ledger after which the price will be considered final.
+    pub finality_ledger: u32,
 }

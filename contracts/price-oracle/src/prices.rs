@@ -8,7 +8,7 @@ use crate::admin::{
 use crate::events::{
     AggregationTriggeredEvent, HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent,
     PriceOverrideRemovedEvent, PriceOverrideSetEvent, PriceStaleEvent, PriceSubmittedEvent,
-    SourceNonCompliantEvent, SourcesInsufficientEvent,
+    RateLimitExceededEvent, SourceNonCompliantEvent, SourcesInsufficientEvent,
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
@@ -83,6 +83,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
             source: source.clone(),
             decimals,
             last_updated: current_ledger,
+            ledger_timestamp: ledger_time,
         };
 
         env.storage()
@@ -401,6 +402,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         source: source.clone(),
         decimals,
         last_updated: current_ledger,
+        ledger_timestamp: env.ledger().timestamp(),
     };
 
     env.storage()
@@ -913,4 +915,348 @@ pub fn get_compliant_sources(env: &Env, asset: Address) -> Vec<Address> {
         }
     }
     result
+}
+
+// =============================================================================
+// #187 — Commit-Reveal MEV Resistance
+// =============================================================================
+
+/// Default commit window: sources have 20 ledgers to submit their commit hash.
+const DEFAULT_COMMIT_WINDOW: u32 = 20;
+/// Default reveal window: sources have 20 ledgers after the commit deadline to reveal.
+const DEFAULT_REVEAL_WINDOW: u32 = 20;
+/// Maximum number of prices a source can reveal in a single batch transaction.
+const MAX_BATCH_REVEALS: u32 = 100;
+
+// --- Config accessors ---
+
+pub fn set_commit_window(env: &Env, ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgCommitWindow, &ledgers);
+    crate::events::CommitWindowChangedEvent { value: ledgers }.publish(env);
+}
+
+pub fn get_commit_window(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgCommitWindow)
+        .unwrap_or(DEFAULT_COMMIT_WINDOW)
+}
+
+pub fn set_reveal_window(env: &Env, ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgRevealWindow, &ledgers);
+    crate::events::RevealWindowChangedEvent { value: ledgers }.publish(env);
+}
+
+pub fn get_reveal_window(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgRevealWindow)
+        .unwrap_or(DEFAULT_REVEAL_WINDOW)
+}
+
+// --- Round ledger helper ---
+
+/// Derives the canonical round ledger for the current ledger.
+///
+/// A "round" starts every `commit_window` ledgers, beginning from ledger 0.
+/// This makes the round boundary predictable to all sources.
+///
+/// ```
+/// round_ledger = (current_ledger / commit_window) * commit_window
+/// ```
+pub fn current_round_ledger(env: &Env) -> u32 {
+    let current = env.ledger().sequence();
+    let window = get_commit_window(env);
+    if window == 0 {
+        return current;
+    }
+    (current / window) * window
+}
+
+// --- Commit phase ---
+
+/// Commits a price hash for a specific asset in the current round.
+///
+/// The source must call this during the commit window for the round.
+/// A commit is a 32-byte hash computed as:
+///   `sha256(price_le_bytes || salt_bytes || round_ledger_le_bytes)`
+/// where `price` is i128 (16 bytes LE), `salt` is arbitrary caller-chosen bytes,
+/// and `round_ledger` is u32 (4 bytes LE).
+///
+/// The hash is stored in **temporary storage** with a TTL of
+/// `commit_window + reveal_window + 1` ledgers, automatically expiring without
+/// revealing (bounding storage costs against griefing).
+///
+/// # Errors
+/// - `SourceNotFound` — source is not registered.
+/// - `AssetNotRegistered` — asset is not registered.
+/// - `AlreadyCommitted` — source already committed this round for this asset.
+/// - `RevealWindowClosed` — called outside the commit window for this round.
+pub fn commit_price(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    hash: soroban_sdk::BytesN<32>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+
+    let current_ledger = env.ledger().sequence();
+    let round_ledger = current_round_ledger(env);
+    let commit_window = get_commit_window(env);
+
+    // The commit phase is [round_ledger, round_ledger + commit_window).
+    // After the commit window closes, commits for this round are rejected.
+    if current_ledger >= round_ledger + commit_window {
+        panic_with_error!(env, ErrorCode::RevealWindowClosed);
+    }
+
+    let commit_key = DataKey::PriceCommit(asset.clone(), source.clone(), round_ledger);
+
+    // Reject double-commit.
+    if env.storage().temporary().has(&commit_key) {
+        panic_with_error!(env, ErrorCode::AlreadyCommitted);
+    }
+
+    let commit = crate::types::PriceCommit {
+        hash,
+        committed_ledger: round_ledger,
+        source: source.clone(),
+        asset: asset.clone(),
+        revealed: false,
+    };
+
+    // Use temporary storage so the commitment expires automatically after the reveal window,
+    // preventing griefing through permanent storage bloat.
+    let ttl = commit_window + get_reveal_window(env) + 1;
+    env.storage().temporary().set(&commit_key, &commit);
+    env.storage()
+        .temporary()
+        .extend_ttl(&commit_key, ttl, ttl);
+
+    crate::events::PriceCommittedEvent {
+        asset,
+        source,
+        round_ledger,
+        committed_at_ledger: current_ledger,
+    }
+    .publish(env);
+}
+
+// --- Reveal phase ---
+
+/// Reveals a committed price for a specific round.
+///
+/// The source provides `(asset, price, salt, round_ledger)`. The contract recomputes
+/// `sha256(price_le_bytes || salt_bytes || round_ledger_le_bytes)` and verifies it
+/// matches the stored commit hash. If it matches, the price is stored as a normal
+/// `PriceEntry` and aggregation is triggered.
+///
+/// The reveal must happen in the window:
+/// `[round_ledger + commit_window, round_ledger + commit_window + reveal_window)`
+///
+/// # Errors
+/// - `CommitNotFound` — no commit for this (source, asset, round).
+/// - `CommitExpired` — the reveal window has closed.
+/// - `RevealWindowClosed` — called before the reveal window opens.
+/// - `CommitHashMismatch` — the recomputed hash does not match the commit.
+pub fn reveal_price(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    price: i128,
+    salt: soroban_sdk::Bytes,
+    round_ledger: u32,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+
+    _do_reveal(env, &source, &asset, price, salt, round_ledger);
+}
+
+/// Reveals up to `MAX_BATCH_REVEALS` committed prices in a single transaction.
+///
+/// Each tuple is `(asset, price, salt, round_ledger)`. Atomic: if any entry fails,
+/// the whole transaction reverts.
+pub fn reveal_prices_batch(
+    env: &Env,
+    source: Address,
+    reveals: Vec<(Address, i128, soroban_sdk::Bytes, u32)>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+
+    if reveals.len() > MAX_BATCH_REVEALS {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+
+    for i in 0..reveals.len() {
+        let (asset, price, salt, round_ledger) = reveals.get_unchecked(i);
+        check_registered_asset(env, &asset);
+        _do_reveal(env, &source, &asset, price, salt, round_ledger);
+    }
+}
+
+/// Internal reveal logic shared by single and batch reveal.
+fn _do_reveal(
+    env: &Env,
+    source: &Address,
+    asset: &Address,
+    price: i128,
+    salt: soroban_sdk::Bytes,
+    round_ledger: u32,
+) {
+    let current_ledger = env.ledger().sequence();
+    let commit_window = get_commit_window(env);
+    let reveal_window = get_reveal_window(env);
+
+    let reveal_start = round_ledger + commit_window;
+    let reveal_end = reveal_start + reveal_window;
+
+    // Enforce reveal window boundaries.
+    if current_ledger < reveal_start {
+        // Commit phase hasn't closed yet.
+        panic_with_error!(env, ErrorCode::RevealWindowClosed);
+    }
+    if current_ledger >= reveal_end {
+        // Reveal window has expired.
+        panic_with_error!(env, ErrorCode::CommitExpired);
+    }
+
+    let commit_key = DataKey::PriceCommit(asset.clone(), source.clone(), round_ledger);
+
+    let mut commit: crate::types::PriceCommit = env
+        .storage()
+        .temporary()
+        .get(&commit_key)
+        .unwrap_or_else(|| panic_with_error!(env, ErrorCode::CommitNotFound));
+
+    if commit.revealed {
+        // Already revealed — prevent double-reveal.
+        panic_with_error!(env, ErrorCode::AlreadyCommitted);
+    }
+
+    // Recompute the expected hash: sha256(price_le || salt || round_ledger_le)
+    let expected_hash = _compute_commit_hash(env, price, &salt, round_ledger);
+
+    if expected_hash != commit.hash {
+        panic_with_error!(env, ErrorCode::CommitHashMismatch);
+    }
+
+    // Mark revealed to prevent double-reveal.
+    commit.revealed = true;
+    env.storage().temporary().set(&commit_key, &commit);
+
+    // Price is valid — store as a regular PriceEntry and trigger aggregation.
+    let decimals = get_decimals(env);
+    let ledger_time = env.ledger().timestamp();
+    let threshold = get_timestamp_threshold(env);
+    // The timestamp for commit-reveal submissions is the current ledger time.
+    // We use current time because the commit was blinded; no user-provided timestamp needed.
+    if ledger_time > ledger_time.saturating_add(threshold) {
+        // Shouldn't trigger, but defensive guard.
+        panic_with_error!(env, ErrorCode::InvalidTimestamp);
+    }
+
+    if price <= 0 {
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+
+    let min_price = crate::assets::get_min_price(env, asset.clone());
+    if price < min_price {
+        panic_with_error!(env, ErrorCode::PriceBelowMinimum);
+    }
+
+    let entry = PriceEntry {
+        price,
+        timestamp: ledger_time,
+        source: source.clone(),
+        decimals,
+        last_updated: current_ledger,
+        ledger_timestamp: ledger_time,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    // Track last submission for compliance and #186 reactivation.
+    env.storage().persistent().set(
+        &DataKey::LastSubmissionLedger(source.clone(), asset.clone()),
+        &current_ledger,
+    );
+    crate::sources::record_price_submitted(env, source, current_ledger);
+
+    // Clear non-compliance flag.
+    let nc_key = DataKey::SourceNonCompliant(source.clone(), asset.clone());
+    if env.storage().persistent().has(&nc_key) {
+        env.storage().persistent().remove(&nc_key);
+    }
+
+    PriceSubmittedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        timestamp: ledger_time,
+    }
+    .publish(env);
+
+    crate::events::PriceRevealedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        round_ledger,
+        revealed_at_ledger: current_ledger,
+    }
+    .publish(env);
+
+    aggregate_asset(env, asset, current_ledger, decimals);
+}
+
+/// Computes `sha256(price_le_bytes || salt_bytes || round_le_bytes)`.
+///
+/// - `price` is encoded as 16 bytes little-endian (i128).
+/// - `salt` is arbitrary bytes provided by the caller.
+/// - `round_ledger` is encoded as 4 bytes little-endian (u32).
+fn _compute_commit_hash(
+    env: &Env,
+    price: i128,
+    salt: &soroban_sdk::Bytes,
+    round_ledger: u32,
+) -> soroban_sdk::BytesN<32> {
+    let price_bytes = price.to_le_bytes();
+    let round_bytes = round_ledger.to_le_bytes();
+
+    let mut preimage = soroban_sdk::Bytes::new(env);
+    // Append price bytes (16 bytes).
+    for b in price_bytes.iter() {
+        preimage.push_back(*b);
+    }
+    // Append salt.
+    preimage.append(salt);
+    // Append round_ledger bytes (4 bytes).
+    for b in round_bytes.iter() {
+        preimage.push_back(*b);
+    }
+
+    env.crypto().sha256(&preimage)
 }

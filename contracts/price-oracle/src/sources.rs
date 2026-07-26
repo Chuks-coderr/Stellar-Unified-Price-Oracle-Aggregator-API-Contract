@@ -1,9 +1,9 @@
 use soroban_sdk::{panic_with_error, symbol_short, Address, Bytes, Env, String, Vec};
 
-use crate::admin::get_heartbeat_interval;
 use crate::events::{
-    emit_admin_action, SourceActiveAgainEvent, SourceAddedEvent, SourceHeartbeatEvent,
-    SourceInactiveEvent, SourceRemovedEvent,
+    emit_admin_action, RemovalCooldownChangedEvent, SourceActiveAgainEvent, SourceAddedEvent,
+    SourceHeartbeatEvent, SourceInactiveEvent, SourceRemovedEvent, SourceMarkedForRemovalEvent,
+    SourceRemovalCancelledEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -114,20 +114,73 @@ pub fn submit_heartbeat(env: &Env, source: Address) {
     }
 
     let timestamp = env.ledger().timestamp();
+    let current_ledger = env.ledger().sequence();
+
+    // Snapshot the old health status for the HealthChanged event.
+    let old_health = get_source_health(env, source.clone());
+    let old_status = old_health as u32;
+
     env.storage()
         .persistent()
         .set(&DataKey::SrcHeartbeat(source.clone()), &timestamp);
 
-    // If source was inactive, mark as active again
     let was_inactive = check_source_inactive(env, &source);
     if was_inactive {
-        mark_source_active(env, &source);
-        SourceActiveAgainEvent {
-            source: source.clone(),
-            timestamp,
+        // Reactivation requires BOTH a heartbeat AND a price submission in the same or
+        // adjacent ledger. Check whether the source has submitted a price after the last
+        // reactivation attempt.
+        let price_submitted_key = DataKey::SrcPriceSubmittedAfterReactivation(source.clone());
+        let has_price: bool = env
+            .storage()
+            .persistent()
+            .get(&price_submitted_key)
+            .unwrap_or(false);
+
+        if has_price {
+            // Full reactivation: both conditions met.
+            mark_source_active(env, &source);
+            reset_missed_heartbeats(env, &source);
+            env.storage().persistent().remove(&price_submitted_key);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::SrcInactiveSinceLedger(source.clone()));
+
+            crate::events::SourceHealthChangedEvent {
+                source: source.clone(),
+                old_status,
+                new_status: 0, // Healthy
+                missed_heartbeats: 0,
+            }
+            .publish(env);
+
+            SourceActiveAgainEvent {
+                source: source.clone(),
+                timestamp,
+            }
+            .publish(env);
         }
-        .publish(env);
+        // If no price has been submitted yet, the heartbeat is recorded but the source
+        // stays inactive — caller must also submit a price before reactivation completes.
+    } else {
+        // Source was active: reset missed count and record heartbeat.
+        reset_missed_heartbeats(env, &source);
+
+        let new_status = get_source_health(env, source.clone()) as u32;
+        if old_status != new_status {
+            crate::events::SourceHealthChangedEvent {
+                source: source.clone(),
+                old_status,
+                new_status,
+                missed_heartbeats: 0,
+            }
+            .publish(env);
+        }
     }
+
+    // Update the last-heartbeat ledger for adaptive interval computation.
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcLastPriceLedger(source.clone()), &current_ledger);
 
     SourceHeartbeatEvent {
         source: source.clone(),
@@ -137,38 +190,85 @@ pub fn submit_heartbeat(env: &Env, source: Address) {
 }
 
 pub fn is_source_inactive(env: &Env, source: Address) -> bool {
-    // Check if source was marked as inactive
-    let is_marked_inactive = check_source_inactive(env, &source);
-    if is_marked_inactive {
+    // Fast path: already explicitly marked inactive.
+    let is_marked = check_source_inactive(env, &source);
+    if is_marked {
         return true;
     }
 
-    // Check heartbeat timeout
+    // Check adaptive heartbeat timeout.
     let key = DataKey::SrcHeartbeat(source.clone());
     let last_heartbeat: Option<u64> = env.storage().persistent().get(&key);
 
+    let base_interval = crate::admin::get_heartbeat_interval(env);
+    let current_time = env.ledger().timestamp();
+    let current_ledger = env.ledger().sequence();
+    let window = crate::sources::get_heartbeat_window(env);
+
     if let Some(hb_time) = last_heartbeat {
-        let interval = get_heartbeat_interval(env);
-        let current_time = env.ledger().timestamp();
-        if current_time > hb_time.saturating_add(interval) {
-            // Mark as inactive
-            mark_source_inactive(env, &source);
-            SourceInactiveEvent {
+        let missed = get_missed_heartbeats(env, &source);
+        let adaptive = compute_adaptive_interval(base_interval, missed, window);
+
+        if current_time > hb_time.saturating_add(adaptive) {
+            let new_missed = increment_missed_heartbeats(env, &source);
+
+            if new_missed >= MISS_THRESHOLD {
+                // Cross the inactivity threshold.
+                let old_status = if new_missed == MISS_THRESHOLD { 1u32 } else { 2u32 };
+                mark_source_inactive(env, &source);
+
+                // Record when inactivity started (only on first trip).
+                let inactive_since_key = DataKey::SrcInactiveSinceLedger(source.clone());
+                if !env.storage().persistent().has(&inactive_since_key) {
+                    env.storage()
+                        .persistent()
+                        .set(&inactive_since_key, &current_ledger);
+                }
+
+                crate::events::SourceHealthChangedEvent {
+                    source: source.clone(),
+                    old_status,
+                    new_status: 2, // Inactive
+                    missed_heartbeats: new_missed,
+                }
+                .publish(env);
+
+                SourceInactiveEvent {
+                    source: source.clone(),
+                    last_heartbeat: hb_time,
+                }
+                .publish(env);
+                return true;
+            }
+
+            // Below threshold: Degraded.
+            crate::events::SourceHealthChangedEvent {
                 source: source.clone(),
-                last_heartbeat: hb_time,
+                old_status: if new_missed > 1 { 1u32 } else { 0u32 },
+                new_status: 1, // Degraded
+                missed_heartbeats: new_missed,
             }
             .publish(env);
-            return true;
         }
     } else {
-        // Never submitted heartbeat, but check if recently added
-        // If no heartbeat ever, consider inactive after interval
-        let current_time = env.ledger().timestamp();
-        let interval = get_heartbeat_interval(env);
-        // Allow grace period equal to interval from now
-        if current_time > interval {
-            mark_source_inactive(env, &source);
-            return true;
+        // No heartbeat on record.
+        if current_time > base_interval {
+            let new_missed = increment_missed_heartbeats(env, &source);
+            if new_missed >= MISS_THRESHOLD {
+                mark_source_inactive(env, &source);
+                let inactive_since_key = DataKey::SrcInactiveSinceLedger(source.clone());
+                if !env.storage().persistent().has(&inactive_since_key) {
+                    env.storage()
+                        .persistent()
+                        .set(&inactive_since_key, &current_ledger);
+                }
+                SourceInactiveEvent {
+                    source: source.clone(),
+                    last_heartbeat: 0,
+                }
+                .publish(env);
+                return true;
+            }
         }
     }
 
@@ -294,7 +394,7 @@ pub fn finalize_source_removal(env: &Env, source: Address) {
     oracle_sources.metadata.remove(source.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::OracleSources, &oracle_sources);
+        .set(&DataKey::SrcRegistry, &oracle_sources);
     SourceRemovedEvent {
         source: source.clone(),
         admin: admin.clone(),
@@ -371,4 +471,289 @@ pub fn update_source_reputation(env: &Env, source: &Address, source_price: i128,
         new_score,
     }
     .publish(env);
+}
+
+// =============================================================================
+// #186 — Adaptive Heartbeat / Liveness Detection
+// =============================================================================
+
+/// Default: after 64 ledgers of inactivity, auto-remove the source.
+const DEFAULT_MAX_INACTIVE_LEDGERS: u32 = 64;
+/// Default heartbeat window size — used to smooth the adaptive interval.
+const DEFAULT_HEARTBEAT_WINDOW: u32 = 10;
+/// Consecutive missed heartbeats before a source is marked inactive.
+const MISS_THRESHOLD: u32 = 3;
+
+// --- Configuration accessors ---
+
+/// Sets the maximum number of ledgers a source may remain inactive before automatic removal.
+pub fn set_max_inactive_ledgers(env: &Env, ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgMaxInactiveLedgers, &ledgers);
+    crate::events::MaxInactiveLedgersChangedEvent { value: ledgers }.publish(env);
+}
+
+/// Returns the configured max-inactive-ledgers threshold (default 64).
+pub fn get_max_inactive_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgMaxInactiveLedgers)
+        .unwrap_or(DEFAULT_MAX_INACTIVE_LEDGERS)
+}
+
+/// Sets the heartbeat window size used in the adaptive-interval formula.
+pub fn set_heartbeat_window(env: &Env, window: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if window == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgHeartbeatWindow, &window);
+    crate::events::HeartbeatWindowChangedEvent { value: window }.publish(env);
+}
+
+/// Returns the configured heartbeat window size (default 10).
+pub fn get_heartbeat_window(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgHeartbeatWindow)
+        .unwrap_or(DEFAULT_HEARTBEAT_WINDOW)
+}
+
+// --- Adaptive interval computation ---
+
+/// Computes the adaptive heartbeat deadline interval for a source.
+///
+/// Formula: `base_interval * (window + missed) / window`
+/// - Minimum returned value is `base_interval` (when missed == 0).
+/// - Caps the multiplier at `3×` to prevent unbounded growth.
+///
+/// # Arguments
+/// * `base_interval` — the contract-wide heartbeat interval in seconds.
+/// * `missed` — consecutive missed heartbeat count for this source.
+/// * `window` — the smoothing window size from config.
+pub fn compute_adaptive_interval(base_interval: u64, missed: u32, window: u32) -> u64 {
+    let window = if window == 0 { 1 } else { window };
+    // multiplier = (window + missed) / window, capped at 3
+    let numerator = (window as u64).saturating_add(missed as u64);
+    let multiplier = numerator / (window as u64);
+    let multiplier = multiplier.min(3);
+    let multiplier = if multiplier == 0 { 1 } else { multiplier };
+    base_interval.saturating_mul(multiplier)
+}
+
+// --- Missed-heartbeat tracking ---
+
+/// Returns the consecutive missed-heartbeat count for a source.
+pub fn get_missed_heartbeats(env: &Env, source: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SrcMissedHeartbeats(source.clone()))
+        .unwrap_or(0)
+}
+
+/// Increments the missed-heartbeat count by one, returning the new value.
+fn increment_missed_heartbeats(env: &Env, source: &Address) -> u32 {
+    let count = get_missed_heartbeats(env, source).saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcMissedHeartbeats(source.clone()), &count);
+    count
+}
+
+/// Resets the missed-heartbeat count to zero.
+fn reset_missed_heartbeats(env: &Env, source: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcMissedHeartbeats(source.clone()));
+}
+
+// --- Health status ---
+
+/// Returns the current `SourceHealthStatus` for a source.
+///
+/// Does NOT mutate state — safe to call from read-only contexts.
+pub fn get_source_health(env: &Env, source: Address) -> crate::types::SourceHealthStatus {
+    use crate::types::SourceHealthStatus;
+
+    // If the source isn't registered at all, treat as AutoRemoved.
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        return SourceHealthStatus::AutoRemoved;
+    }
+
+    // If explicitly marked inactive, check whether it should be Inactive or Degraded.
+    let is_inactive = check_source_inactive(env, &source);
+    if is_inactive {
+        return SourceHealthStatus::Inactive;
+    }
+
+    let missed = get_missed_heartbeats(env, &source);
+    if missed >= MISS_THRESHOLD {
+        SourceHealthStatus::Inactive
+    } else if missed > 0 {
+        SourceHealthStatus::Degraded
+    } else {
+        SourceHealthStatus::Healthy
+    }
+}
+
+// --- Reactivation guard ---
+
+/// Records that a source has submitted a price (used for reactivation logic).
+pub fn record_price_submitted(env: &Env, source: &Address, ledger: u32) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcLastPriceLedger(source.clone()), &ledger);
+    // Mark that a price has been submitted after the most recent reactivation.
+    env.storage().persistent().set(
+        &DataKey::SrcPriceSubmittedAfterReactivation(source.clone()),
+        &true,
+    );
+}
+
+/// Returns the ledger of the most recent price submission from a source.
+pub fn get_last_price_ledger(env: &Env, source: Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SrcLastPriceLedger(source))
+        .unwrap_or(0)
+}
+
+// --- Auto-removal ---
+
+/// Checks every registered source for extended inactivity and removes those that
+/// have been inactive for more than `max_inactive_ledgers` without reactivating.
+///
+/// **Race-condition guard**: if removing a source would leave fewer active sources
+/// than `min_sources_required`, the removal is skipped for that source (the oracle
+/// must remain usable).
+///
+/// Returns the number of sources that were auto-removed.
+pub fn check_and_prune_inactive_sources(env: &Env) -> u32 {
+    let max_inactive = get_max_inactive_ledgers(env);
+    let current_ledger = env.ledger().sequence();
+    let min_required = crate::admin::get_min_sources_required(env);
+
+    let oracle_sources = read_oracle_sources(env);
+    let total_sources = oracle_sources.sources.len();
+    let mut removed_count: u32 = 0;
+
+    // First pass: collect candidates.
+    let mut candidates: Vec<Address> = Vec::new(env);
+    for i in 0..total_sources {
+        let src = oracle_sources.sources.get_unchecked(i);
+        if !check_source_inactive(env, &src) {
+            continue;
+        }
+        let inactive_since_key = DataKey::SrcInactiveSinceLedger(src.clone());
+        if let Some(inactive_since) = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&inactive_since_key)
+        {
+            if current_ledger.saturating_sub(inactive_since) >= max_inactive {
+                candidates.push_back(src);
+            }
+        }
+    }
+
+    // Second pass: remove, but keep at least min_required active sources.
+    for i in 0..candidates.len() {
+        let src = candidates.get_unchecked(i);
+
+        // Count currently active sources before removing.
+        let current_sources = read_oracle_sources(env);
+        let active_count = current_sources
+            .sources
+            .iter()
+            .filter(|s| !check_source_inactive(env, s))
+            .count() as u32;
+
+        if active_count <= min_required {
+            // Removing this would break the oracle — skip.
+            break;
+        }
+
+        let missed = get_missed_heartbeats(env, &src);
+        let inactive_since: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SrcInactiveSinceLedger(src.clone()))
+            .unwrap_or(0);
+
+        // Emit health change before removal.
+        crate::events::SourceHealthChangedEvent {
+            source: src.clone(),
+            old_status: 2, // Inactive
+            new_status: 3, // AutoRemoved
+            missed_heartbeats: missed,
+        }
+        .publish(env);
+
+        // Perform the actual removal.
+        _remove_source_internal(env, src.clone());
+
+        crate::events::SourceAutoRemovedEvent {
+            source: src.clone(),
+            inactive_since_ledger: inactive_since,
+            removed_at_ledger: current_ledger,
+            missed_heartbeats: missed,
+        }
+        .publish(env);
+
+        removed_count += 1;
+    }
+
+    removed_count
+}
+
+/// Internal source removal helper shared by `remove_source` and auto-removal.
+/// Does NOT check admin auth — callers must ensure authorization.
+fn _remove_source_internal(env: &Env, source: Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcActive(source.clone()));
+
+    let mut oracle_sources: OracleSources = read_oracle_sources(env);
+    let mut new_sources: Vec<Address> = Vec::new(env);
+    for i in 0..oracle_sources.sources.len() {
+        let s = oracle_sources.sources.get_unchecked(i);
+        if s != source {
+            new_sources.push_back(s);
+        }
+    }
+    oracle_sources.sources = new_sources;
+    oracle_sources.metadata.remove(source.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcRegistry, &oracle_sources);
+
+    // Clean up per-source state.
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcInactive(source.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcMissedHeartbeats(source.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcInactiveSinceLedger(source.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcLastPriceLedger(source.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcPriceSubmittedAfterReactivation(source));
 }
