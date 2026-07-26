@@ -7,13 +7,14 @@ mod correlation;
 mod cross_reference;
 mod errors;
 mod events;
+mod finality;
 mod health;
 mod history;
 mod migration;
 mod pause;
 mod prices;
 mod reentrancy;
-mod reputation;
+mod relayer;
 mod sources;
 mod storage;
 mod subscription;
@@ -34,9 +35,10 @@ mod prop_tests;
 mod string_boundary_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, AlertSubscription, Asset, BatchOperation, ConsumerInfo,
-    ConsumerTier, CorrelationBand, CorrelationPair, DataKey, ErrorCode, OracleSources, PriceData,
-    PriceEntry, PriceHistoryEntry, PriceOverrideEntry, SourceStakeRecord, SubscriptionPlans,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, DataKey, ErrorCode,
+    FinalityStatus, FinalizedPrice, OracleSources, PendingBatch, PendingFinalityEntry,
+    PriceCommit, PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    SourceHealthStatus, SubscriptionPlans,
 };
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec};
@@ -1750,240 +1752,301 @@ impl PriceOracleContract {
         cross_reference::get_cross_ref_deviation_threshold(&env)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // #171: Source Reputation & Slashing
-    // ─────────────────────────────────────────────────────────────────────────
+    // =========================================================================
+    // #186 — Adaptive Heartbeat / Source Liveness Detection
+    // =========================================================================
 
-    /// Sets the address of the staking/oracle token contract. Admin-only.
-    pub fn set_stake_token_contract(env: Env, token: Address) {
-        reputation::set_stake_token_contract(&env, token);
-    }
-
-    /// Returns the configured stake token contract address.
-    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
-        reputation::get_stake_token_contract(&env)
-    }
-
-    /// Stakes `amount` of oracle tokens from `source` into contract custody.
+    /// Returns the health status of a source as a [`SourceHealthStatus`] enum variant.
     ///
-    /// `source` must authorize. Requires the stake token contract to be configured.
-    pub fn stake_source(env: Env, source: Address, amount: i128, token_contract: Address) {
-        reentrancy::enter(&env);
-        reputation::stake_source(&env, source, amount, token_contract);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the current locked stake for a source in stroops.
-    pub fn get_stake(env: Env, source: Address) -> i128 {
-        reputation::get_stake(&env, source)
-    }
-
-    /// Returns the reputation score (0–100) for a source. Defaults to 50.
-    pub fn get_reputation(env: Env, source: Address) -> u32 {
-        reputation::get_reputation(&env, source)
-    }
-
-    /// Sets the reputation decay factor (0–100). Admin-only.
-    /// Higher values = faster decay toward 50 for idle sources.
-    pub fn set_reputation_decay_factor_v2(env: Env, factor: u32) {
-        reputation::set_decay_factor(&env, factor);
-    }
-
-    /// Returns the current reputation decay factor.
-    pub fn get_reputation_decay_factor_v2(env: Env) -> u32 {
-        reputation::get_decay_factor(&env)
-    }
-
-    /// Sets the percentage of stake to slash per slash event (0–100). Admin-only.
-    pub fn set_slash_percent(env: Env, percent: u32) {
-        reputation::set_slash_percent(&env, percent);
-    }
-
-    /// Returns the current slash percentage.
-    pub fn get_slash_percent(env: Env) -> u32 {
-        reputation::get_slash_percent(&env)
-    }
-
-    /// Sets the reputation threshold below which a source becomes slash-eligible. Admin-only.
-    pub fn set_slash_threshold(env: Env, threshold: u32) {
-        reputation::set_slash_threshold(&env, threshold);
-    }
-
-    /// Returns the slash reputation threshold.
-    pub fn get_slash_threshold(env: Env) -> u32 {
-        reputation::get_slash_threshold(&env)
-    }
-
-    /// Slashes a configurable percentage of `source`'s locked stake. Admin-only.
+    /// - `Healthy` — source is submitting heartbeats and prices within the adaptive interval.
+    /// - `Degraded` — source has missed ≥1 heartbeat but is still below the miss threshold.
+    /// - `Inactive` — source has exceeded the consecutive-miss threshold.
+    /// - `AutoRemoved` — source was automatically removed after extended inactivity.
     ///
-    /// Set `force = true` to bypass the reputation threshold check.
-    pub fn slash_source(env: Env, source: Address, force: bool) {
-        reentrancy::enter(&env);
-        reputation::slash_source(&env, source, force);
-        reentrancy::exit(&env);
+    /// This is a read-only query; it does not mutate state.
+    pub fn get_source_health(env: Env, source: Address) -> SourceHealthStatus {
+        sources::get_source_health(&env, source)
     }
 
-    /// Sweeps all slashed treasury funds to `recipient`. Admin-only.
-    pub fn sweep_reputation_treasury(env: Env, recipient: Address) {
-        reentrancy::enter(&env);
-        reputation::sweep_treasury(&env, recipient);
-        reentrancy::exit(&env);
+    /// Returns the number of consecutive missed heartbeats for a source.
+    pub fn get_missed_heartbeats(env: Env, source: Address) -> u32 {
+        sources::get_missed_heartbeats(&env, source)
     }
 
-    /// Returns the current contract treasury balance (slashed funds).
-    pub fn get_reputation_treasury_balance(env: Env) -> i128 {
-        reputation::get_treasury_balance(&env)
+    /// Returns the ledger sequence number of the most recent price submission from a source.
+    pub fn get_last_price_ledger(env: Env, source: Address) -> u32 {
+        sources::get_last_price_ledger(&env, source)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // #172: Cross-Asset Correlation
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Configures a correlation ratio band for an asset pair. Admin-only.
+    /// Sets the maximum number of ledgers a source may remain inactive before automatic removal.
     ///
-    /// `min_ratio` and `max_ratio` are scaled by 10^7. Pass `enabled = false` to
-    /// suspend the check without removing configuration.
-    pub fn set_correlation_pair(
+    /// Admin-only. Minimum value is 1. Default is 64.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_max_inactive_ledgers(env: Env, ledgers: u32) {
+        sources::set_max_inactive_ledgers(&env, ledgers);
+    }
+
+    /// Returns the configured max-inactive-ledgers threshold.
+    pub fn get_max_inactive_ledgers(env: Env) -> u32 {
+        sources::get_max_inactive_ledgers(&env)
+    }
+
+    /// Sets the heartbeat window size used in the adaptive-interval formula.
+    ///
+    /// Admin-only. The window is the denominator in:
+    /// `adaptive_interval = base_interval × (window + missed) / window`
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_heartbeat_window(env: Env, window: u32) {
+        sources::set_heartbeat_window(&env, window);
+    }
+
+    /// Returns the configured heartbeat window size (default 10).
+    pub fn get_heartbeat_window(env: Env) -> u32 {
+        sources::get_heartbeat_window(&env)
+    }
+
+    /// Scans all registered sources and automatically removes any that have been inactive
+    /// for more than `max_inactive_ledgers` ledgers.
+    ///
+    /// **Race-condition guard**: never removes the last sources needed to maintain
+    /// `min_sources_required` active sources.  Returns the count of sources removed.
+    ///
+    /// Callable by anyone — no authorization required.
+    pub fn check_and_prune_inactive_sources(env: Env) -> u32 {
+        sources::check_and_prune_inactive_sources(&env)
+    }
+
+    /// Computes the adaptive heartbeat deadline interval for a given miss count.
+    ///
+    /// Useful for off-chain clients that want to predict when their next heartbeat is due.
+    ///
+    /// Returns `base_interval × (window + missed) / window`, capped at `3 × base_interval`.
+    pub fn compute_adaptive_interval(env: Env, missed: u32) -> u64 {
+        let base = admin::get_heartbeat_interval(&env);
+        let window = sources::get_heartbeat_window(&env);
+        sources::compute_adaptive_interval(base, missed, window)
+    }
+
+    // =========================================================================
+    // #187 — Commit-Reveal MEV Resistance
+    // =========================================================================
+
+    /// Commits a price hash for an asset in the current round.
+    ///
+    /// The `source` must call this during the open commit window for the round.
+    /// The hash must be computed as:
+    ///   `sha256(price_le_16bytes || salt_bytes || round_ledger_le_4bytes)`
+    ///
+    /// The commit is stored in temporary storage for at most
+    /// `commit_window + reveal_window + 1` ledgers before automatic expiry.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::SourceNotFound`] — source is not registered.
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::AlreadyCommitted`] — source already committed this round.
+    /// * [`ErrorCode::RevealWindowClosed`] — called after commit window closed.
+    pub fn commit_price(
         env: Env,
-        base_asset: Address,
-        quote_asset: Address,
-        min_ratio: u128,
-        max_ratio: u128,
-        enabled: bool,
-    ) {
-        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
-    }
-
-    /// Removes a correlation pair configuration. Admin-only.
-    pub fn remove_correlation_pair(env: Env, base_asset: Address, quote_asset: Address) {
-        correlation::remove_correlation_pair(&env, base_asset, quote_asset);
-    }
-
-    /// Returns all registered correlation pairs.
-    pub fn get_correlation_pairs(env: Env) -> Vec<CorrelationPair> {
-        correlation::get_correlation_pairs(&env)
-    }
-
-    /// Returns the correlation band for a given pair, or `None` if not configured.
-    pub fn get_correlation_band(
-        env: Env,
-        base_asset: Address,
-        quote_asset: Address,
-    ) -> Option<CorrelationBand> {
-        correlation::get_correlation_band(&env, base_asset, quote_asset)
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // #173: Tiered Consumer Access
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Registers a consumer to the given tier, collecting subscription fees for paid tiers.
-    ///
-    /// `consumer` must authorize. For `Basic` and `Premium` tiers the XLM token contract
-    /// must be configured and the consumer must have sufficient balance.
-    pub fn register_consumer(env: Env, consumer: Address, tier: ConsumerTier) {
-        reentrancy::enter(&env);
-        whitelisting::register_consumer(&env, consumer, tier);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the current `ConsumerInfo` for a registered consumer.
-    pub fn query_consumer(env: Env, consumer: Address) -> Option<ConsumerInfo> {
-        whitelisting::query_consumer(&env, consumer)
-    }
-
-    /// Sets the subscription fee for a tier. Admin-only.
-    pub fn set_tier_pricing(env: Env, tier: ConsumerTier, price: i128) {
-        whitelisting::set_tier_pricing(&env, tier, price);
-    }
-
-    /// Returns the subscription fee in stroops for a tier.
-    pub fn get_tier_price(env: Env, tier: ConsumerTier) -> i128 {
-        whitelisting::get_tier_price(&env, tier)
-    }
-
-    /// Sets the XLM token contract used for subscription fee collection. Admin-only.
-    pub fn set_xlm_token_contract(env: Env, token: Address) {
-        whitelisting::set_xlm_token_contract(&env, token);
-    }
-
-    /// Returns the configured XLM token contract address.
-    pub fn get_xlm_token_contract(env: Env) -> Option<Address> {
-        whitelisting::get_xlm_token_contract(&env)
-    }
-
-    /// Sets the treasury address for XLM fee sweeps. Admin-only.
-    pub fn set_whitelist_treasury(env: Env, treasury: Address) {
-        whitelisting::set_whitelist_treasury(&env, treasury);
-    }
-
-    /// Sweeps collected subscription fees to the configured treasury. Admin-only.
-    ///
-    /// Pass `amount = 0` to sweep the entire contract balance.
-    pub fn sweep_fees(env: Env, amount: i128) {
-        reentrancy::enter(&env);
-        whitelisting::sweep_fees(&env, amount);
-        reentrancy::exit(&env);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // #174: On-Chain Price Deviation Alerts
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Subscribes to price deviation alerts for an asset.
-    ///
-    /// `consumer` must authorize. When the aggregate price moves more than
-    /// `threshold_bps` basis points, `callback_contract.callback_fn` is invoked
-    /// with `(asset, old_price, new_price, movement_bps)`.
-    pub fn subscribe_to_alerts(
-        env: Env,
-        consumer: Address,
+        source: Address,
         asset: Address,
-        threshold_bps: u32,
-        callback_contract: Address,
-        callback_fn: Symbol,
+        hash: soroban_sdk::BytesN<32>,
     ) {
-        alerts::subscribe_to_alerts(&env, consumer, asset, threshold_bps, callback_contract, callback_fn);
+        reentrancy::enter(&env);
+        prices::commit_price(&env, source, asset, hash);
+        reentrancy::exit(&env);
     }
 
-    /// Cancels an existing alert subscription. `consumer` must authorize.
-    pub fn unsubscribe_from_alerts(env: Env, consumer: Address, asset: Address) {
-        alerts::unsubscribe_from_alerts(&env, consumer, asset);
-    }
-
-    /// Returns the alert subscription record for a (consumer, asset) pair.
-    pub fn get_alert_subscription(
+    /// Reveals a committed price for a given round.
+    ///
+    /// Verifies `sha256(price_le || salt || round_ledger_le)` matches the stored hash.
+    /// If the hash matches, the price is stored as a regular `PriceEntry` and aggregation
+    /// is triggered.
+    ///
+    /// Must be called in the window `[round + commit_window, round + commit_window + reveal_window)`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::CommitNotFound`] — no commit exists for this (source, asset, round).
+    /// * [`ErrorCode::CommitExpired`] — reveal window has closed.
+    /// * [`ErrorCode::RevealWindowClosed`] — called before reveal window opened.
+    /// * [`ErrorCode::CommitHashMismatch`] — hash does not match.
+    pub fn reveal_price(
         env: Env,
-        consumer: Address,
+        source: Address,
         asset: Address,
-    ) -> Option<AlertSubscription> {
-        alerts::get_subscription(&env, consumer, asset)
+        price: i128,
+        salt: soroban_sdk::Bytes,
+        round_ledger: u32,
+    ) {
+        reentrancy::enter(&env);
+        prices::reveal_price(&env, source, asset, price, salt, round_ledger);
+        reentrancy::exit(&env);
     }
 
-    /// Sets the maximum number of concurrent alert subscriptions. Admin-only.
-    pub fn set_max_alert_subscriptions(env: Env, max: u32) {
-        alerts::set_max_subscriptions(&env, max);
+    /// Reveals up to 100 committed prices in a single atomic transaction.
+    ///
+    /// Each element is `(asset, price, salt, round_ledger)`. The entire call reverts
+    /// if any single reveal fails.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::InvalidConfiguration`] — more than 100 entries provided.
+    /// * Same per-entry errors as `reveal_price`.
+    pub fn reveal_prices_batch(
+        env: Env,
+        source: Address,
+        reveals: Vec<(Address, i128, soroban_sdk::Bytes, u32)>,
+    ) {
+        reentrancy::enter(&env);
+        prices::reveal_prices_batch(&env, source, reveals);
+        reentrancy::exit(&env);
     }
 
-    /// Returns the maximum number of concurrent alert subscriptions.
-    pub fn get_max_alert_subscriptions(env: Env) -> u32 {
-        alerts::get_max_subscriptions(&env)
+    /// Returns the canonical round-start ledger for the current ledger.
+    ///
+    /// Computed as `(current_ledger / commit_window) * commit_window`.
+    pub fn current_round_ledger(env: Env) -> u32 {
+        prices::current_round_ledger(&env)
     }
 
-    /// Sets the default TTL in ledgers for new alert subscriptions. Admin-only.
-    pub fn set_alert_subscription_ttl(env: Env, ttl_ledgers: u32) {
-        alerts::set_subscription_ttl(&env, ttl_ledgers);
+    /// Sets the commit window length (in ledgers).  Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_commit_window(env: Env, ledgers: u32) {
+        prices::set_commit_window(&env, ledgers);
     }
 
-    /// Returns the current alert subscription TTL in ledgers.
-    pub fn get_alert_subscription_ttl(env: Env) -> u32 {
-        alerts::get_subscription_ttl(&env)
+    /// Returns the current commit window in ledgers (default 20).
+    pub fn get_commit_window(env: Env) -> u32 {
+        prices::get_commit_window(&env)
+    }
+
+    /// Sets the reveal window length (in ledgers).  Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_reveal_window(env: Env, ledgers: u32) {
+        prices::set_reveal_window(&env, ledgers);
+    }
+
+    /// Returns the current reveal window in ledgers (default 20).
+    pub fn get_reveal_window(env: Env) -> u32 {
+        prices::get_reveal_window(&env)
+    }
+
+    // =========================================================================
+    // #188 — Economic Finality Gadget
+    // =========================================================================
+
+    /// Places the most-recently aggregated price for an asset into the pending-finality queue.
+    ///
+    /// Records the current ledger hash for reorg detection and emits
+    /// `PricePendingFinalityEvent`.  Normally called by an off-chain keeper after each
+    /// aggregation, or can be integrated into an on-chain keeper pattern.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::NoData`] — no aggregate price exists for the asset.
+    pub fn mark_price_pending(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        use crate::storage::check_registered_asset;
+        check_registered_asset(&env, &asset);
+        let agg_key = crate::types::DataKey::Aggregate(asset.clone());
+        let agg: AggregatePrice = env
+            .storage()
+            .persistent()
+            .get(&agg_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ErrorCode::NoData));
+        finality::mark_price_pending(&env, &asset, &agg);
+        reentrancy::exit(&env);
+    }
+
+    /// Attempts to finalize a pending price entry for an asset at `committed_ledger`.
+    ///
+    /// Returns `true` if finalization occurred; `false` if the finality window has not
+    /// yet elapsed.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no pending entry exists for this (asset, committed_ledger).
+    /// * [`ErrorCode::AlreadyFinalized`] — entry is already finalized.
+    /// * [`ErrorCode::PriceRetracted`] — entry was retracted.
+    pub fn try_finalize_price(env: Env, asset: Address, committed_ledger: u32) -> bool {
+        reentrancy::enter(&env);
+        let result = finality::try_finalize_price(&env, &asset, committed_ledger);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the most-recently finalized price for an asset.
+    ///
+    /// `min_finality` is the minimum number of ledgers that must have elapsed since
+    /// `committed_ledger` for the caller to accept it.  Use `0` for no minimum.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no finalized price exists.
+    /// * [`ErrorCode::InsufficientFinality`] — price is too new for `min_finality`.
+    pub fn get_finalized_price(env: Env, asset: Address, min_finality: u32) -> FinalizedPrice {
+        finality::get_finalized_price(&env, asset, min_finality)
+    }
+
+    /// Returns the current finality status of a pending price entry.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no pending entry exists for (asset, committed_ledger).
+    pub fn get_finality_status(env: Env, asset: Address, committed_ledger: u32) -> FinalityStatus {
+        finality::get_finality_status(&env, asset, committed_ledger)
+    }
+
+    /// Admin: retracts a pending price before finalization (reorg protection).
+    ///
+    /// Must be called before `finality_ledger` is reached.  Emits `PriceRetractedEvent`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::NoData`] — no pending entry exists.
+    /// * [`ErrorCode::AlreadyFinalized`] — price already finalized.
+    /// * [`ErrorCode::PriceRetracted`] — price already retracted.
+    pub fn retract_price(env: Env, asset: Address, committed_ledger: u32) {
+        reentrancy::enter(&env);
+        finality::retract_price(&env, asset, committed_ledger);
+        reentrancy::exit(&env);
+    }
+
+    /// Sets the finality window in ledgers.  Admin-only.  Default is 64.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_finality_ledgers(env: Env, ledgers: u32) {
+        finality::set_finality_ledgers(&env, ledgers);
+    }
+
+    /// Returns the configured finality window in ledgers (default 64).
+    pub fn get_finality_ledgers(env: Env) -> u32 {
+        finality::get_finality_ledgers(&env)
+    }
+
+    /// Checks whether the stored ledger hash for `suspect_ledger` indicates a reorg.
+    ///
+    /// Returns `true` if a reorg is detected, `false` otherwise.
+    /// Note: in Soroban v26, only the current ledger can be checked automatically;
+    /// for past ledgers, use `retract_price` after external reorg detection.
+    pub fn check_reorg(env: Env, asset: Address, suspect_ledger: u32) -> bool {
+        finality::check_reorg(&env, asset, suspect_ledger)
     }
 }
 
 #[cfg(test)]
 mod test_helpers;
 
+#[cfg(test)]
 mod test;
 
 #[cfg(test)]
@@ -1991,3 +2054,12 @@ mod relayer_tests;
 
 #[cfg(test)]
 mod asset_registry_gas_tests;
+
+#[cfg(test)]
+mod heartbeat_tests;
+
+#[cfg(test)]
+mod commit_reveal_tests;
+
+#[cfg(test)]
+mod finality_tests;
