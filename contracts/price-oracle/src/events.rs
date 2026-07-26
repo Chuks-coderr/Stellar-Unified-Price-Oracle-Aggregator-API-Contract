@@ -523,6 +523,8 @@ pub struct SubscriptionExpiredEvent {
     /// Address of the consumer whose subscription expired.
     #[topic]
     pub consumer: Address,
+}
+
 // --- #67: Per-asset resolution ---
 
 /// Emitted when the per-asset resolution is set or cleared.

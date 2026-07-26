@@ -391,7 +391,6 @@ pub fn get_heartbeat_interval(env: &Env) -> u64 {
 }
 
 pub fn set_query_rate_limit(env: &Env, max_per_ledger: u32) {
-pub fn set_max_assets(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
     env.storage()
@@ -402,6 +401,22 @@ pub fn set_max_assets(env: &Env, new_max: u32) {
 
 pub fn get_query_rate_limit(env: &Env) -> u32 {
     let key = DataKey::QueryRateLimit;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_QUERY_RATE_LIMIT)
+}
+
+pub fn set_max_assets(env: &Env, new_max: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
         .set(&DataKey::MaxAssets, &new_max);
 }
 
@@ -415,7 +430,7 @@ pub fn get_max_assets(env: &Env) -> u32 {
     env.storage()
         .persistent()
         .get(&key)
-        .unwrap_or(DEFAULT_QUERY_RATE_LIMIT)
+        .unwrap_or(DEFAULT_MAX_ASSETS)
 }
 
 pub fn set_subscription_price(env: &Env, duration: u32, amount: i128) {
@@ -424,5 +439,4 @@ pub fn set_subscription_price(env: &Env, duration: u32, amount: i128) {
     let mut plans = read_subscription_plans(env);
     plans.set(duration, amount);
     write_subscription_plans(env, &plans);
-        .unwrap_or(DEFAULT_MAX_ASSETS)
 }

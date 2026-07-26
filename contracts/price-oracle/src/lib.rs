@@ -1,7 +1,9 @@
 #![no_std]
 
 mod admin;
+mod alerts;
 mod assets;
+mod correlation;
 mod cross_reference;
 mod errors;
 mod events;
@@ -18,6 +20,7 @@ mod storage;
 mod subscription;
 mod timelock;
 mod types;
+mod whitelisting;
 
 #[cfg(test)]
 mod cross_ref_tests;
@@ -513,6 +516,8 @@ impl PriceOracleContract {
     /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
     pub fn set_subscription_price(env: Env, duration: u32, amount: i128) {
         admin::set_subscription_price(&env, duration, amount);
+    }
+
     // --- #67: Per-asset resolution ---
 
     /// Sets a per-asset resolution override in seconds.
