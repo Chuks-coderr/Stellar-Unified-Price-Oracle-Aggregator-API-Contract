@@ -138,6 +138,61 @@ pub enum DataKey {
     StorageVersion,
     /// Active migration state, if a migration is in progress.
     MigrationState,
+
+    // --- #65: Source Reputation ---
+    /// Reputation score (i128, range 0–100) for a registered oracle source.
+    SourceReputation(Address),
+    /// Decay factor (u32, 0–100) applied per-ledger to idle source reputation.
+    ReputationDecayFactor,
+
+    // --- #66: Phased Source Removal ---
+    /// Ledger at which a source becomes eligible for finalized removal.
+    SourcePendingRemoval(Address),
+    /// Number of ledgers that must elapse between marking and finalizing removal.
+    RemovalCooldown,
+
+    // --- #171: Staking / Slashing ---
+    /// Amount of tokens (i128 in stroops) staked by an oracle source.
+    SourceStake(Address),
+    /// Address of the XLM/oracle token contract used for staking and fees.
+    StakeTokenContract,
+    /// Percentage of stake to slash (u32, 0–100) per slash event.
+    SlashPercent,
+    /// Threshold below which a source's reputation triggers slash eligibility (u32, 0–100).
+    SlashReputationThreshold,
+    /// Total slashed funds held in contract treasury (i128 stroops).
+    TreasuryBalance,
+
+    // --- #172: Cross-Asset Correlation ---
+    /// Min/max ratio band for a (base_asset, quote_asset) pair.
+    /// Key: (base_asset_address, quote_asset_address) → CorrelationBand
+    CorrelationBand(Address, Address),
+    /// Ordered list of (base, quote) correlation pairs registered.
+    CorrelationPairList,
+
+    // --- #173: Tiered Consumer Whitelisting ---
+    /// Consumer tier and quota info for an address.
+    ConsumerInfo(Address),
+    /// Pricing for each tier (ConsumerTier discriminant → price in stroops per ledger cycle).
+    TierPricing(u32),
+    /// Per-ledger query counter for a tiered consumer.
+    TierQueryCount(Address, u32),
+    /// Treasury address for XLM fee sweeps.
+    WhitelistTreasury,
+    /// Address of the XLM token contract used for subscription fee collection.
+    XlmTokenContract,
+
+    // --- #174: Price Deviation Alerts ---
+    /// Alert subscription record for a (consumer, asset) pair.
+    AlertSubscription(Address, Address),
+    /// Ordered list of (consumer, asset) pairs that have active alert subscriptions.
+    AlertSubscriptionList,
+    /// Maximum number of alert subscriptions allowed globally.
+    MaxAlertSubscriptions,
+    /// TTL in ledgers for alert subscriptions before auto-expiry.
+    AlertSubscriptionTtl,
+    /// Last aggregate price recorded per asset for deviation comparison.
+    AlertLastPrice(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -410,4 +465,110 @@ pub struct MigrationState {
     pub started_ledger: u32,
     /// Current migration status.
     pub status: MigrationStatus,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #171: Source Reputation & Slashing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Staking record for an oracle source.
+///
+/// Stored under [`DataKey::SourceStake`] keyed by source address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceStakeRecord {
+    /// Locked stake amount in stroops.
+    pub amount: i128,
+    /// Ledger at which the stake was last updated.
+    pub last_updated_ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #172: Cross-Asset Correlation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Acceptable ratio band between two correlated assets.
+///
+/// The ratio is computed as `price_base * RATIO_PRECISION / price_quote` and must
+/// fall within `[min_ratio, max_ratio]`. All values are scaled by `RATIO_PRECISION`
+/// (10^7) to avoid floating-point arithmetic.
+///
+/// Stored under [`DataKey::CorrelationBand`] keyed by `(base_asset, quote_asset)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CorrelationBand {
+    /// Minimum acceptable ratio (scaled by 10^7).
+    pub min_ratio: u128,
+    /// Maximum acceptable ratio (scaled by 10^7).
+    pub max_ratio: u128,
+    /// Whether this correlation check is currently active.
+    pub enabled: bool,
+}
+
+/// A registered correlation pair for enumeration purposes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CorrelationPair {
+    pub base_asset: Address,
+    pub quote_asset: Address,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #173: Tiered Consumer Access
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Consumer access tier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum ConsumerTier {
+    /// Free tier: 10 queries/ledger, data up to 1-hour stale.
+    Free = 0,
+    /// Basic tier: 100 queries/ledger, max 30-second fresh data.
+    Basic = 1,
+    /// Premium tier: unlimited queries/ledger, real-time data.
+    Premium = 2,
+}
+
+/// Per-consumer tier, quota, and subscription state.
+///
+/// Stored under [`DataKey::ConsumerInfo`] keyed by consumer address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ConsumerInfo {
+    /// Current access tier.
+    pub tier: ConsumerTier,
+    /// Ledger-based subscription expiration. 0 = no active subscription.
+    pub subscription_expiry_ledger: u32,
+    /// Unix timestamp-based subscription expiration. 0 = no active subscription.
+    pub subscription_expiry_ts: u64,
+    /// Number of queries consumed in the current ledger.
+    pub queries_this_ledger: u32,
+    /// Ledger sequence for which `queries_this_ledger` was last reset.
+    pub quota_reset_ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #174: On-Chain Alert Subscriptions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// An alert subscription record.
+///
+/// Stored under [`DataKey::AlertSubscription`] keyed by `(consumer, asset)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AlertSubscription {
+    /// Address of the subscriber (consumer contract or account).
+    pub consumer: Address,
+    /// Asset being monitored.
+    pub asset: Address,
+    /// Price movement threshold in basis points (100 bps = 1%) that triggers an alert.
+    pub threshold_bps: u32,
+    /// Contract address to invoke when the threshold is breached.
+    pub callback_contract: Address,
+    /// Function selector (Symbol) on the callback contract to call.
+    pub callback_fn: Symbol,
+    /// Ledger at which this subscription was created or last renewed.
+    pub created_ledger: u32,
+    /// TTL in ledgers; subscription expires at `created_ledger + ttl`.
+    pub ttl_ledgers: u32,
 }

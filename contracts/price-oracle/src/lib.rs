@@ -1,7 +1,9 @@
 #![no_std]
 
 mod admin;
+mod alerts;
 mod assets;
+mod correlation;
 mod cross_reference;
 mod errors;
 mod events;
@@ -11,11 +13,13 @@ mod migration;
 mod pause;
 mod prices;
 mod reentrancy;
+mod reputation;
 mod sources;
 mod storage;
 mod subscription;
 mod timelock;
 mod types;
+mod whitelisting;
 
 #[cfg(test)]
 mod cross_ref_tests;
@@ -30,13 +34,12 @@ mod prop_tests;
 mod string_boundary_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, DataKey, ErrorCode, OracleSources, PriceData,
-    PriceEntry, PriceHistoryEntry, PriceOverrideEntry, SubscriptionPlans,
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, DataKey, ErrorCode, OracleSources,
-    PendingBatch, PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    AggregatePrice, AggregationMethod, AlertSubscription, Asset, BatchOperation, ConsumerInfo,
+    ConsumerTier, CorrelationBand, CorrelationPair, DataKey, ErrorCode, OracleSources, PriceData,
+    PriceEntry, PriceHistoryEntry, PriceOverrideEntry, SourceStakeRecord, SubscriptionPlans,
 };
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec};
 
 use crate::storage::read_registered_assets;
 
@@ -511,6 +514,8 @@ impl PriceOracleContract {
     /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
     pub fn set_subscription_price(env: Env, duration: u32, amount: i128) {
         admin::set_subscription_price(&env, duration, amount);
+    }
+
     // --- #67: Per-asset resolution ---
 
     /// Sets a per-asset resolution override in seconds.
@@ -1743,6 +1748,236 @@ impl PriceOracleContract {
     /// Defaults to `500` (5 %) when no value has been configured.
     pub fn get_cross_ref_deviation_threshold(env: Env) -> u32 {
         cross_reference::get_cross_ref_deviation_threshold(&env)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #171: Source Reputation & Slashing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Sets the address of the staking/oracle token contract. Admin-only.
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reputation::set_stake_token_contract(&env, token);
+    }
+
+    /// Returns the configured stake token contract address.
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        reputation::get_stake_token_contract(&env)
+    }
+
+    /// Stakes `amount` of oracle tokens from `source` into contract custody.
+    ///
+    /// `source` must authorize. Requires the stake token contract to be configured.
+    pub fn stake_source(env: Env, source: Address, amount: i128, token_contract: Address) {
+        reentrancy::enter(&env);
+        reputation::stake_source(&env, source, amount, token_contract);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current locked stake for a source in stroops.
+    pub fn get_stake(env: Env, source: Address) -> i128 {
+        reputation::get_stake(&env, source)
+    }
+
+    /// Returns the reputation score (0–100) for a source. Defaults to 50.
+    pub fn get_reputation(env: Env, source: Address) -> u32 {
+        reputation::get_reputation(&env, source)
+    }
+
+    /// Sets the reputation decay factor (0–100). Admin-only.
+    /// Higher values = faster decay toward 50 for idle sources.
+    pub fn set_reputation_decay_factor_v2(env: Env, factor: u32) {
+        reputation::set_decay_factor(&env, factor);
+    }
+
+    /// Returns the current reputation decay factor.
+    pub fn get_reputation_decay_factor_v2(env: Env) -> u32 {
+        reputation::get_decay_factor(&env)
+    }
+
+    /// Sets the percentage of stake to slash per slash event (0–100). Admin-only.
+    pub fn set_slash_percent(env: Env, percent: u32) {
+        reputation::set_slash_percent(&env, percent);
+    }
+
+    /// Returns the current slash percentage.
+    pub fn get_slash_percent(env: Env) -> u32 {
+        reputation::get_slash_percent(&env)
+    }
+
+    /// Sets the reputation threshold below which a source becomes slash-eligible. Admin-only.
+    pub fn set_slash_threshold(env: Env, threshold: u32) {
+        reputation::set_slash_threshold(&env, threshold);
+    }
+
+    /// Returns the slash reputation threshold.
+    pub fn get_slash_threshold(env: Env) -> u32 {
+        reputation::get_slash_threshold(&env)
+    }
+
+    /// Slashes a configurable percentage of `source`'s locked stake. Admin-only.
+    ///
+    /// Set `force = true` to bypass the reputation threshold check.
+    pub fn slash_source(env: Env, source: Address, force: bool) {
+        reentrancy::enter(&env);
+        reputation::slash_source(&env, source, force);
+        reentrancy::exit(&env);
+    }
+
+    /// Sweeps all slashed treasury funds to `recipient`. Admin-only.
+    pub fn sweep_reputation_treasury(env: Env, recipient: Address) {
+        reentrancy::enter(&env);
+        reputation::sweep_treasury(&env, recipient);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current contract treasury balance (slashed funds).
+    pub fn get_reputation_treasury_balance(env: Env) -> i128 {
+        reputation::get_treasury_balance(&env)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #172: Cross-Asset Correlation
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Configures a correlation ratio band for an asset pair. Admin-only.
+    ///
+    /// `min_ratio` and `max_ratio` are scaled by 10^7. Pass `enabled = false` to
+    /// suspend the check without removing configuration.
+    pub fn set_correlation_pair(
+        env: Env,
+        base_asset: Address,
+        quote_asset: Address,
+        min_ratio: u128,
+        max_ratio: u128,
+        enabled: bool,
+    ) {
+        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+    }
+
+    /// Removes a correlation pair configuration. Admin-only.
+    pub fn remove_correlation_pair(env: Env, base_asset: Address, quote_asset: Address) {
+        correlation::remove_correlation_pair(&env, base_asset, quote_asset);
+    }
+
+    /// Returns all registered correlation pairs.
+    pub fn get_correlation_pairs(env: Env) -> Vec<CorrelationPair> {
+        correlation::get_correlation_pairs(&env)
+    }
+
+    /// Returns the correlation band for a given pair, or `None` if not configured.
+    pub fn get_correlation_band(
+        env: Env,
+        base_asset: Address,
+        quote_asset: Address,
+    ) -> Option<CorrelationBand> {
+        correlation::get_correlation_band(&env, base_asset, quote_asset)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #173: Tiered Consumer Access
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Registers a consumer to the given tier, collecting subscription fees for paid tiers.
+    ///
+    /// `consumer` must authorize. For `Basic` and `Premium` tiers the XLM token contract
+    /// must be configured and the consumer must have sufficient balance.
+    pub fn register_consumer(env: Env, consumer: Address, tier: ConsumerTier) {
+        reentrancy::enter(&env);
+        whitelisting::register_consumer(&env, consumer, tier);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current `ConsumerInfo` for a registered consumer.
+    pub fn query_consumer(env: Env, consumer: Address) -> Option<ConsumerInfo> {
+        whitelisting::query_consumer(&env, consumer)
+    }
+
+    /// Sets the subscription fee for a tier. Admin-only.
+    pub fn set_tier_pricing(env: Env, tier: ConsumerTier, price: i128) {
+        whitelisting::set_tier_pricing(&env, tier, price);
+    }
+
+    /// Returns the subscription fee in stroops for a tier.
+    pub fn get_tier_price(env: Env, tier: ConsumerTier) -> i128 {
+        whitelisting::get_tier_price(&env, tier)
+    }
+
+    /// Sets the XLM token contract used for subscription fee collection. Admin-only.
+    pub fn set_xlm_token_contract(env: Env, token: Address) {
+        whitelisting::set_xlm_token_contract(&env, token);
+    }
+
+    /// Returns the configured XLM token contract address.
+    pub fn get_xlm_token_contract(env: Env) -> Option<Address> {
+        whitelisting::get_xlm_token_contract(&env)
+    }
+
+    /// Sets the treasury address for XLM fee sweeps. Admin-only.
+    pub fn set_whitelist_treasury(env: Env, treasury: Address) {
+        whitelisting::set_whitelist_treasury(&env, treasury);
+    }
+
+    /// Sweeps collected subscription fees to the configured treasury. Admin-only.
+    ///
+    /// Pass `amount = 0` to sweep the entire contract balance.
+    pub fn sweep_fees(env: Env, amount: i128) {
+        reentrancy::enter(&env);
+        whitelisting::sweep_fees(&env, amount);
+        reentrancy::exit(&env);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // #174: On-Chain Price Deviation Alerts
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Subscribes to price deviation alerts for an asset.
+    ///
+    /// `consumer` must authorize. When the aggregate price moves more than
+    /// `threshold_bps` basis points, `callback_contract.callback_fn` is invoked
+    /// with `(asset, old_price, new_price, movement_bps)`.
+    pub fn subscribe_to_alerts(
+        env: Env,
+        consumer: Address,
+        asset: Address,
+        threshold_bps: u32,
+        callback_contract: Address,
+        callback_fn: Symbol,
+    ) {
+        alerts::subscribe_to_alerts(&env, consumer, asset, threshold_bps, callback_contract, callback_fn);
+    }
+
+    /// Cancels an existing alert subscription. `consumer` must authorize.
+    pub fn unsubscribe_from_alerts(env: Env, consumer: Address, asset: Address) {
+        alerts::unsubscribe_from_alerts(&env, consumer, asset);
+    }
+
+    /// Returns the alert subscription record for a (consumer, asset) pair.
+    pub fn get_alert_subscription(
+        env: Env,
+        consumer: Address,
+        asset: Address,
+    ) -> Option<AlertSubscription> {
+        alerts::get_subscription(&env, consumer, asset)
+    }
+
+    /// Sets the maximum number of concurrent alert subscriptions. Admin-only.
+    pub fn set_max_alert_subscriptions(env: Env, max: u32) {
+        alerts::set_max_subscriptions(&env, max);
+    }
+
+    /// Returns the maximum number of concurrent alert subscriptions.
+    pub fn get_max_alert_subscriptions(env: Env) -> u32 {
+        alerts::get_max_subscriptions(&env)
+    }
+
+    /// Sets the default TTL in ledgers for new alert subscriptions. Admin-only.
+    pub fn set_alert_subscription_ttl(env: Env, ttl_ledgers: u32) {
+        alerts::set_subscription_ttl(&env, ttl_ledgers);
+    }
+
+    /// Returns the current alert subscription TTL in ledgers.
+    pub fn get_alert_subscription_ttl(env: Env) -> u32 {
+        alerts::get_subscription_ttl(&env)
     }
 }
 

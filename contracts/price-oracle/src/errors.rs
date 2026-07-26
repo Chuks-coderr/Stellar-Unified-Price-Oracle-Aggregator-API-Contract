@@ -9,7 +9,6 @@ use soroban_sdk::contracterror;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     /// The caller is not authorized to perform the requested operation.
-    /// Returned when `require_auth()` fails or a non-admin attempts an admin action.
     NotAuthorized = 0,
     /// `initialize` was called on a contract that has already been set up.
     AlreadyInitialized = 1,
@@ -29,8 +28,7 @@ pub enum ErrorCode {
     NoData = 8,
     /// The submitted timestamp lies too far in the future relative to the current ledger time.
     InvalidTimestamp = 9,
-    /// A configuration parameter is out of its valid range (e.g. `min_sources = 0`,
-    /// `deviation_basis_points > 100_000`, or `heartbeat_interval = 0`).
+    /// A configuration parameter is out of its valid range.
     InvalidConfiguration = 10,
     /// The description string exceeds the maximum allowed length of 256 characters.
     DescriptionTooLong = 11,
@@ -42,17 +40,36 @@ pub enum ErrorCode {
     OperationNotFound = 14,
     /// The submitted price is below the asset's configured minimum price floor.
     PriceBelowMinimum = 15,
-    /// Rate limit exceeded for an operation (e.g., too many price submissions).
+    /// Rate limit exceeded for an operation (e.g., too many price queries).
     RateLimitExceeded = 16,
     /// The requested subscription plan duration does not exist.
     InvalidDuration = 17,
     /// The consumer's subscription has expired.
     SubscriptionExpired = 18,
-    Reentrant = 16,
+    /// Re-entrant call detected.
+    Reentrant = 19,
     /// The `op_type` discriminant passed to `propose_operation` is not in `[0, 7]`.
-    InvalidOperationType = 17,
+    InvalidOperationType = 20,
     /// A migration is already in progress; complete or resume it before starting another.
-    MigrationInProgress = 18,
+    MigrationInProgress = 21,
     /// No migration is currently in progress.
-    NoMigrationInProgress = 19,
+    NoMigrationInProgress = 22,
+    /// Source name is empty.
+    SourceNameEmpty = 23,
+    /// Source name exceeds the maximum allowed length.
+    SourceNameTooLong = 24,
+    /// Maximum number of oracle sources has been reached.
+    MaxSourcesReached = 25,
+    /// Source is not pending removal.
+    SourceNotPendingRemoval = 26,
+    /// Removal cooldown has not elapsed.
+    CooldownNotElapsed = 27,
+    /// Operation would exceed the maximum allowed records.
+    RecordsLimitExceeded = 28,
+    /// Reason string exceeds maximum allowed length.
+    ReasonTooLong = 29,
+    /// Source reputation is too high to be eligible for slashing.
+    ReputationTooHighToSlash = 30,
+    /// Maximum number of alert subscriptions has been reached.
+    MaxSubscriptionsReached = 31,
 }

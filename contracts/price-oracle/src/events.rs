@@ -513,6 +513,8 @@ pub struct SubscriptionExpiredEvent {
     /// Address of the consumer whose subscription expired.
     #[topic]
     pub consumer: Address,
+}
+
 // --- #67: Per-asset resolution ---
 
 /// Emitted when the per-asset resolution is set or cleared.
@@ -640,4 +642,203 @@ pub struct SourceRemovalCancelledEvent {
 #[derive(Clone)]
 pub struct RemovalCooldownChangedEvent {
     pub value: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #171: Source Reputation & Slashing Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when an oracle source stakes tokens into contract custody.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceStakedEvent {
+    /// Address of the source that staked.
+    #[topic]
+    pub source: Address,
+    /// Amount staked in this transaction (stroops).
+    pub amount: i128,
+    /// New total stake after this transaction (stroops).
+    pub total_stake: i128,
+}
+
+/// Emitted when a source's staked tokens are returned upon deregistration.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceUnstakedEvent {
+    /// Address of the source whose stake was returned.
+    #[topic]
+    pub source: Address,
+    /// Amount returned (may be less than original stake if slashed).
+    pub amount_returned: i128,
+}
+
+/// Emitted when an admin slashes a portion of a source's locked stake.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceSlashedEvent {
+    /// Address of the slashed source.
+    #[topic]
+    pub source: Address,
+    /// Amount slashed (moved to treasury) in stroops.
+    pub slash_amount: i128,
+    /// Remaining stake after slashing.
+    pub remaining_stake: i128,
+    /// Configured slash percentage applied.
+    pub slash_percent: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #172: Cross-Asset Correlation Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a correlation ratio band is configured or updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationBandSetEvent {
+    /// Base asset of the pair.
+    #[topic]
+    pub base_asset: Address,
+    /// Quote asset of the pair.
+    #[topic]
+    pub quote_asset: Address,
+    /// Minimum acceptable ratio (scaled by RATIO_PRECISION = 10^7).
+    pub min_ratio: u128,
+    /// Maximum acceptable ratio (scaled by RATIO_PRECISION = 10^7).
+    pub max_ratio: u128,
+    /// Whether the check is currently enabled.
+    pub enabled: bool,
+}
+
+/// Emitted when a submitted price causes a correlation ratio violation.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationViolationEvent {
+    /// Base asset of the violated pair.
+    #[topic]
+    pub base_asset: Address,
+    /// Quote asset of the violated pair.
+    #[topic]
+    pub quote_asset: Address,
+    /// Source that submitted the out-of-band price.
+    #[topic]
+    pub source: Address,
+    /// The price just submitted.
+    pub submitted_price: i128,
+    /// The current aggregate price of the counterpart asset.
+    pub counterpart_price: i128,
+    /// Computed ratio (scaled by RATIO_PRECISION).
+    pub ratio: u128,
+    /// Configured minimum ratio.
+    pub min_ratio: u128,
+    /// Configured maximum ratio.
+    pub max_ratio: u128,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #173: Tiered Consumer Access Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a new consumer registers with a tier.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerRegisteredEvent {
+    /// Address of the newly registered consumer.
+    #[topic]
+    pub consumer: Address,
+    /// Tier discriminant (0=Free, 1=Basic, 2=Premium).
+    pub tier: u32,
+    /// Unix timestamp when the subscription expires (0 = no expiry for Free tier).
+    pub subscription_expiry_ts: u64,
+}
+
+/// Emitted when a consumer changes to a different tier.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerTierChangedEvent {
+    /// Address of the consumer changing tiers.
+    #[topic]
+    pub consumer: Address,
+    /// Old tier discriminant.
+    pub old_tier: u32,
+    /// New tier discriminant.
+    pub new_tier: u32,
+}
+
+/// Emitted when a subscription fee is paid.
+#[contractevent]
+#[derive(Clone)]
+pub struct TierFeePaidEvent {
+    /// Consumer that paid the fee.
+    #[topic]
+    pub consumer: Address,
+    /// Tier discriminant the fee was paid for.
+    pub tier: u32,
+    /// Amount paid in stroops.
+    pub amount: i128,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #174: Price Deviation Alert Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a consumer successfully subscribes to price deviation alerts.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertSubscribedEvent {
+    /// Address of the subscribing consumer.
+    #[topic]
+    pub consumer: Address,
+    /// Asset being monitored.
+    #[topic]
+    pub asset: Address,
+    /// Movement threshold in basis points.
+    pub threshold_bps: u32,
+    /// TTL in ledgers for this subscription.
+    pub ttl_ledgers: u32,
+}
+
+/// Emitted when an alert threshold is breached and a callback is dispatched.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertTriggeredEvent {
+    /// Subscriber that was notified.
+    #[topic]
+    pub consumer: Address,
+    /// Asset whose price moved.
+    #[topic]
+    pub asset: Address,
+    /// Previous aggregate price.
+    pub old_price: i128,
+    /// New aggregate price.
+    pub new_price: i128,
+    /// Actual price movement in basis points.
+    pub movement_bps: u32,
+    /// The configured threshold that was exceeded.
+    pub threshold_bps: u32,
+}
+
+/// Emitted when a consumer's callback invocation fails.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertCallbackFailedEvent {
+    /// Subscriber whose callback failed.
+    #[topic]
+    pub consumer: Address,
+    /// Asset being monitored.
+    #[topic]
+    pub asset: Address,
+}
+
+/// Emitted when a subscription expires and is pruned.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertSubscriptionExpiredEvent {
+    /// Consumer whose subscription expired.
+    #[topic]
+    pub consumer: Address,
+    /// Asset the subscription was for.
+    #[topic]
+    pub asset: Address,
+    /// Ledger at which expiry was detected.
+    pub expired_ledger: u32,
 }
