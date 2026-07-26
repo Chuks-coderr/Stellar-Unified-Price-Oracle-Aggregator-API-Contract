@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Map, String, Symbol, Vec};
 
 pub use crate::errors::ErrorCode;
 
@@ -138,6 +138,63 @@ pub enum DataKey {
     StorageVersion,
     /// Active migration state, if a migration is in progress.
     MigrationState,
+
+    // --- #66: Phased removal (used in sources.rs but missing from original enum) ---
+    /// Alias key used by phased-removal logic in sources.rs (mirrors SrcActive).
+    Source(Address),
+    /// Ledger at which a source becomes eligible for finalization after mark_source_for_removal.
+    SourcePendingRemoval(Address),
+    /// Decay factor for source reputation scores (u32, out of 100).
+    ReputationDecayFactor,
+    /// Reputation score for a source (i128, 0–100).
+    SourceReputation(Address),
+    /// Cooldown in ledgers between mark_source_for_removal and finalize_source_removal.
+    RemovalCooldown,
+    /// Maximum price deviation key used in admin.rs (mirrors CfgMaxDeviation for set path).
+    MaxPriceDeviation,
+    /// Timestamp threshold key used in admin.rs set path (mirrors CfgTimestampThreshold).
+    TimestampThreshold,
+
+    // -------------------------------------------------------------------------
+    // #186: Adaptive heartbeat / liveness detection
+    // -------------------------------------------------------------------------
+
+    /// Number of consecutive missed heartbeats for a source (u32).
+    SrcMissedHeartbeats(Address),
+    /// Ledger sequence of the last price submission from a source (u32).
+    SrcLastPriceLedger(Address),
+    /// Flag: source has submitted a price since its last heartbeat reactivation (bool).
+    SrcPriceSubmittedAfterReactivation(Address),
+    /// Ledger sequence at which a source first became inactive — for auto-removal timer (u32).
+    SrcInactiveSinceLedger(Address),
+    /// Maximum ledgers a source may remain inactive before automatic removal (u32).
+    CfgMaxInactiveLedgers,
+    /// Window size (number of heartbeat periods) used when computing the adaptive interval (u32).
+    CfgHeartbeatWindow,
+
+    // -------------------------------------------------------------------------
+    // #187: Commit-reveal MEV resistance
+    // -------------------------------------------------------------------------
+
+    /// A pending price commit: stores PriceCommit under (asset, source, round_ledger).
+    PriceCommit(Address, Address, u32),
+    /// Number of ledgers that the commit phase lasts (sources must commit within this window).
+    CfgCommitWindow,
+    /// Number of ledgers after the commit deadline during which sources may reveal.
+    CfgRevealWindow,
+
+    // -------------------------------------------------------------------------
+    // #188: Economic finality gadget
+    // -------------------------------------------------------------------------
+
+    /// A pending finality entry for an asset at a given ledger (PendingFinalityEntry).
+    PendingFinality(Address, u32),
+    /// Number of ledgers to wait before an aggregated price is considered finalized (u32).
+    CfgFinalityLedgers,
+    /// Recorded ledger hash for reorg detection, keyed by ledger sequence number (BytesN<32>).
+    LedgerHashChain(u32),
+    /// The finalized aggregate price for an asset (FinalizedPrice).
+    FinalizedPrice(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -410,4 +467,112 @@ pub struct MigrationState {
     pub started_ledger: u32,
     /// Current migration status.
     pub status: MigrationStatus,
+}
+
+// =============================================================================
+// #186 — Adaptive Heartbeat / Liveness Detection
+// =============================================================================
+
+/// Liveness health status of an oracle source.
+///
+/// Returned by `get_source_health(source)`. Each variant encodes progressively
+/// worse liveness signals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum SourceHealthStatus {
+    /// Source is submitting heartbeats and prices within the adaptive interval.
+    Healthy = 0,
+    /// Source has missed one or more heartbeats but is still within the allowed window.
+    /// The inner `u32` is the consecutive-miss count.
+    Degraded = 1,
+    /// Source has exceeded the consecutive-miss threshold and is marked inactive.
+    Inactive = 2,
+    /// Source was automatically removed after exceeding `max_inactive_ledgers`.
+    AutoRemoved = 3,
+}
+
+// =============================================================================
+// #187 — Commit-Reveal MEV Resistance
+// =============================================================================
+
+/// A committed (but not yet revealed) price submission.
+///
+/// Stored in temporary storage under [`DataKey::PriceCommit`] keyed by
+/// `(asset, source, round_ledger)`. Expires after `commit_window + reveal_window`
+/// ledgers to bound storage growth.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriceCommit {
+    /// sha256(price_bytes || salt || round_ledger_bytes) as a 32-byte hash.
+    pub hash: BytesN<32>,
+    /// Ledger sequence number when this commit was submitted (= the round's start ledger).
+    pub committed_ledger: u32,
+    /// Address of the source that made this commit.
+    pub source: Address,
+    /// Address of the asset this commit is for.
+    pub asset: Address,
+    /// Whether this commit has been revealed (prevents double-reveal).
+    pub revealed: bool,
+}
+
+// =============================================================================
+// #188 — Economic Finality Gadget
+// =============================================================================
+
+/// Finality status of an aggregated price.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum FinalityStatus {
+    /// Price is awaiting the finality window. Inner `u32` = ledger it becomes final.
+    Pending = 0,
+    /// Price has passed the finality window without retraction — immutable.
+    Finalized = 1,
+    /// Price was retracted by admin before finalization (reorg protection).
+    Retracted = 2,
+}
+
+/// A price aggregation result that is in the pending-finality window.
+///
+/// Stored under [`DataKey::PendingFinality`] keyed by `(asset, committed_ledger)`.
+/// After `finality_ledgers` pass, it transitions to [`DataKey::FinalizedPrice`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingFinalityEntry {
+    /// The aggregated price value (scaled by `10^decimals`).
+    pub price: i128,
+    /// Unix timestamp of the aggregation.
+    pub timestamp: u64,
+    /// Number of sources that contributed.
+    pub num_sources: u32,
+    /// Decimal precision applied to `price`.
+    pub decimals: u32,
+    /// Ledger at which this price was first aggregated.
+    pub committed_ledger: u32,
+    /// Ledger after which this price is considered finalized (= committed_ledger + finality_ledgers).
+    pub finality_ledger: u32,
+    /// Current status.
+    pub status: FinalityStatus,
+    /// Ledger hash recorded at `committed_ledger` — used for reorg detection.
+    pub ledger_hash: BytesN<32>,
+}
+
+/// An immutable, finalized price record.
+///
+/// Written to [`DataKey::FinalizedPrice`] when a [`PendingFinalityEntry`] passes
+/// `finality_ledger` without retraction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FinalizedPrice {
+    /// The finalized aggregated price.
+    pub price: i128,
+    /// Unix timestamp of the finalized aggregation.
+    pub timestamp: u64,
+    /// Number of contributing sources.
+    pub num_sources: u32,
+    /// Decimal precision.
+    pub decimals: u32,
+    /// Ledger at which this price was originally aggregated.
+    pub committed_ledger: u32,
+    /// Ledger at which finality was confirmed.
+    pub finalized_ledger: u32,
 }

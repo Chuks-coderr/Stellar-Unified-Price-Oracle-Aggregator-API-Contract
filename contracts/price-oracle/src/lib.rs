@@ -5,12 +5,14 @@ mod assets;
 mod cross_reference;
 mod errors;
 mod events;
+mod finality;
 mod health;
 mod history;
 mod migration;
 mod pause;
 mod prices;
 mod reentrancy;
+mod relayer;
 mod sources;
 mod storage;
 mod subscription;
@@ -30,13 +32,13 @@ mod prop_tests;
 mod string_boundary_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, DataKey, ErrorCode, OracleSources, PriceData,
-    PriceEntry, PriceHistoryEntry, PriceOverrideEntry, SubscriptionPlans,
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, DataKey, ErrorCode, OracleSources,
-    PendingBatch, PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, DataKey, ErrorCode,
+    FinalityStatus, FinalizedPrice, OracleSources, PendingBatch, PendingFinalityEntry,
+    PriceCommit, PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    SourceHealthStatus, SubscriptionPlans,
 };
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec};
 
 use crate::storage::read_registered_assets;
 
@@ -1744,11 +1746,302 @@ impl PriceOracleContract {
     pub fn get_cross_ref_deviation_threshold(env: Env) -> u32 {
         cross_reference::get_cross_ref_deviation_threshold(&env)
     }
+
+    // =========================================================================
+    // #186 — Adaptive Heartbeat / Source Liveness Detection
+    // =========================================================================
+
+    /// Returns the health status of a source as a [`SourceHealthStatus`] enum variant.
+    ///
+    /// - `Healthy` — source is submitting heartbeats and prices within the adaptive interval.
+    /// - `Degraded` — source has missed ≥1 heartbeat but is still below the miss threshold.
+    /// - `Inactive` — source has exceeded the consecutive-miss threshold.
+    /// - `AutoRemoved` — source was automatically removed after extended inactivity.
+    ///
+    /// This is a read-only query; it does not mutate state.
+    pub fn get_source_health(env: Env, source: Address) -> SourceHealthStatus {
+        sources::get_source_health(&env, source)
+    }
+
+    /// Returns the number of consecutive missed heartbeats for a source.
+    pub fn get_missed_heartbeats(env: Env, source: Address) -> u32 {
+        sources::get_missed_heartbeats(&env, source)
+    }
+
+    /// Returns the ledger sequence number of the most recent price submission from a source.
+    pub fn get_last_price_ledger(env: Env, source: Address) -> u32 {
+        sources::get_last_price_ledger(&env, source)
+    }
+
+    /// Sets the maximum number of ledgers a source may remain inactive before automatic removal.
+    ///
+    /// Admin-only. Minimum value is 1. Default is 64.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_max_inactive_ledgers(env: Env, ledgers: u32) {
+        sources::set_max_inactive_ledgers(&env, ledgers);
+    }
+
+    /// Returns the configured max-inactive-ledgers threshold.
+    pub fn get_max_inactive_ledgers(env: Env) -> u32 {
+        sources::get_max_inactive_ledgers(&env)
+    }
+
+    /// Sets the heartbeat window size used in the adaptive-interval formula.
+    ///
+    /// Admin-only. The window is the denominator in:
+    /// `adaptive_interval = base_interval × (window + missed) / window`
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_heartbeat_window(env: Env, window: u32) {
+        sources::set_heartbeat_window(&env, window);
+    }
+
+    /// Returns the configured heartbeat window size (default 10).
+    pub fn get_heartbeat_window(env: Env) -> u32 {
+        sources::get_heartbeat_window(&env)
+    }
+
+    /// Scans all registered sources and automatically removes any that have been inactive
+    /// for more than `max_inactive_ledgers` ledgers.
+    ///
+    /// **Race-condition guard**: never removes the last sources needed to maintain
+    /// `min_sources_required` active sources.  Returns the count of sources removed.
+    ///
+    /// Callable by anyone — no authorization required.
+    pub fn check_and_prune_inactive_sources(env: Env) -> u32 {
+        sources::check_and_prune_inactive_sources(&env)
+    }
+
+    /// Computes the adaptive heartbeat deadline interval for a given miss count.
+    ///
+    /// Useful for off-chain clients that want to predict when their next heartbeat is due.
+    ///
+    /// Returns `base_interval × (window + missed) / window`, capped at `3 × base_interval`.
+    pub fn compute_adaptive_interval(env: Env, missed: u32) -> u64 {
+        let base = admin::get_heartbeat_interval(&env);
+        let window = sources::get_heartbeat_window(&env);
+        sources::compute_adaptive_interval(base, missed, window)
+    }
+
+    // =========================================================================
+    // #187 — Commit-Reveal MEV Resistance
+    // =========================================================================
+
+    /// Commits a price hash for an asset in the current round.
+    ///
+    /// The `source` must call this during the open commit window for the round.
+    /// The hash must be computed as:
+    ///   `sha256(price_le_16bytes || salt_bytes || round_ledger_le_4bytes)`
+    ///
+    /// The commit is stored in temporary storage for at most
+    /// `commit_window + reveal_window + 1` ledgers before automatic expiry.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::SourceNotFound`] — source is not registered.
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::AlreadyCommitted`] — source already committed this round.
+    /// * [`ErrorCode::RevealWindowClosed`] — called after commit window closed.
+    pub fn commit_price(
+        env: Env,
+        source: Address,
+        asset: Address,
+        hash: soroban_sdk::BytesN<32>,
+    ) {
+        reentrancy::enter(&env);
+        prices::commit_price(&env, source, asset, hash);
+        reentrancy::exit(&env);
+    }
+
+    /// Reveals a committed price for a given round.
+    ///
+    /// Verifies `sha256(price_le || salt || round_ledger_le)` matches the stored hash.
+    /// If the hash matches, the price is stored as a regular `PriceEntry` and aggregation
+    /// is triggered.
+    ///
+    /// Must be called in the window `[round + commit_window, round + commit_window + reveal_window)`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::CommitNotFound`] — no commit exists for this (source, asset, round).
+    /// * [`ErrorCode::CommitExpired`] — reveal window has closed.
+    /// * [`ErrorCode::RevealWindowClosed`] — called before reveal window opened.
+    /// * [`ErrorCode::CommitHashMismatch`] — hash does not match.
+    pub fn reveal_price(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        salt: soroban_sdk::Bytes,
+        round_ledger: u32,
+    ) {
+        reentrancy::enter(&env);
+        prices::reveal_price(&env, source, asset, price, salt, round_ledger);
+        reentrancy::exit(&env);
+    }
+
+    /// Reveals up to 100 committed prices in a single atomic transaction.
+    ///
+    /// Each element is `(asset, price, salt, round_ledger)`. The entire call reverts
+    /// if any single reveal fails.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::InvalidConfiguration`] — more than 100 entries provided.
+    /// * Same per-entry errors as `reveal_price`.
+    pub fn reveal_prices_batch(
+        env: Env,
+        source: Address,
+        reveals: Vec<(Address, i128, soroban_sdk::Bytes, u32)>,
+    ) {
+        reentrancy::enter(&env);
+        prices::reveal_prices_batch(&env, source, reveals);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the canonical round-start ledger for the current ledger.
+    ///
+    /// Computed as `(current_ledger / commit_window) * commit_window`.
+    pub fn current_round_ledger(env: Env) -> u32 {
+        prices::current_round_ledger(&env)
+    }
+
+    /// Sets the commit window length (in ledgers).  Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_commit_window(env: Env, ledgers: u32) {
+        prices::set_commit_window(&env, ledgers);
+    }
+
+    /// Returns the current commit window in ledgers (default 20).
+    pub fn get_commit_window(env: Env) -> u32 {
+        prices::get_commit_window(&env)
+    }
+
+    /// Sets the reveal window length (in ledgers).  Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_reveal_window(env: Env, ledgers: u32) {
+        prices::set_reveal_window(&env, ledgers);
+    }
+
+    /// Returns the current reveal window in ledgers (default 20).
+    pub fn get_reveal_window(env: Env) -> u32 {
+        prices::get_reveal_window(&env)
+    }
+
+    // =========================================================================
+    // #188 — Economic Finality Gadget
+    // =========================================================================
+
+    /// Places the most-recently aggregated price for an asset into the pending-finality queue.
+    ///
+    /// Records the current ledger hash for reorg detection and emits
+    /// `PricePendingFinalityEvent`.  Normally called by an off-chain keeper after each
+    /// aggregation, or can be integrated into an on-chain keeper pattern.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::NoData`] — no aggregate price exists for the asset.
+    pub fn mark_price_pending(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        use crate::storage::check_registered_asset;
+        check_registered_asset(&env, &asset);
+        let agg_key = crate::types::DataKey::Aggregate(asset.clone());
+        let agg: AggregatePrice = env
+            .storage()
+            .persistent()
+            .get(&agg_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ErrorCode::NoData));
+        finality::mark_price_pending(&env, &asset, &agg);
+        reentrancy::exit(&env);
+    }
+
+    /// Attempts to finalize a pending price entry for an asset at `committed_ledger`.
+    ///
+    /// Returns `true` if finalization occurred; `false` if the finality window has not
+    /// yet elapsed.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no pending entry exists for this (asset, committed_ledger).
+    /// * [`ErrorCode::AlreadyFinalized`] — entry is already finalized.
+    /// * [`ErrorCode::PriceRetracted`] — entry was retracted.
+    pub fn try_finalize_price(env: Env, asset: Address, committed_ledger: u32) -> bool {
+        reentrancy::enter(&env);
+        let result = finality::try_finalize_price(&env, &asset, committed_ledger);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the most-recently finalized price for an asset.
+    ///
+    /// `min_finality` is the minimum number of ledgers that must have elapsed since
+    /// `committed_ledger` for the caller to accept it.  Use `0` for no minimum.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no finalized price exists.
+    /// * [`ErrorCode::InsufficientFinality`] — price is too new for `min_finality`.
+    pub fn get_finalized_price(env: Env, asset: Address, min_finality: u32) -> FinalizedPrice {
+        finality::get_finalized_price(&env, asset, min_finality)
+    }
+
+    /// Returns the current finality status of a pending price entry.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NoData`] — no pending entry exists for (asset, committed_ledger).
+    pub fn get_finality_status(env: Env, asset: Address, committed_ledger: u32) -> FinalityStatus {
+        finality::get_finality_status(&env, asset, committed_ledger)
+    }
+
+    /// Admin: retracts a pending price before finalization (reorg protection).
+    ///
+    /// Must be called before `finality_ledger` is reached.  Emits `PriceRetractedEvent`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::NoData`] — no pending entry exists.
+    /// * [`ErrorCode::AlreadyFinalized`] — price already finalized.
+    /// * [`ErrorCode::PriceRetracted`] — price already retracted.
+    pub fn retract_price(env: Env, asset: Address, committed_ledger: u32) {
+        reentrancy::enter(&env);
+        finality::retract_price(&env, asset, committed_ledger);
+        reentrancy::exit(&env);
+    }
+
+    /// Sets the finality window in ledgers.  Admin-only.  Default is 64.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — value is 0.
+    pub fn set_finality_ledgers(env: Env, ledgers: u32) {
+        finality::set_finality_ledgers(&env, ledgers);
+    }
+
+    /// Returns the configured finality window in ledgers (default 64).
+    pub fn get_finality_ledgers(env: Env) -> u32 {
+        finality::get_finality_ledgers(&env)
+    }
+
+    /// Checks whether the stored ledger hash for `suspect_ledger` indicates a reorg.
+    ///
+    /// Returns `true` if a reorg is detected, `false` otherwise.
+    /// Note: in Soroban v26, only the current ledger can be checked automatically;
+    /// for past ledgers, use `retract_price` after external reorg detection.
+    pub fn check_reorg(env: Env, asset: Address, suspect_ledger: u32) -> bool {
+        finality::check_reorg(&env, asset, suspect_ledger)
+    }
 }
 
 #[cfg(test)]
 mod test_helpers;
 
+#[cfg(test)]
 mod test;
 
 #[cfg(test)]
@@ -1756,3 +2049,12 @@ mod relayer_tests;
 
 #[cfg(test)]
 mod asset_registry_gas_tests;
+
+#[cfg(test)]
+mod heartbeat_tests;
+
+#[cfg(test)]
+mod commit_reveal_tests;
+
+#[cfg(test)]
+mod finality_tests;
