@@ -15,9 +15,8 @@ use crate::events::{
 use crate::pause::check_not_paused;
 use crate::storage::{
     check_registered_asset, check_source, compute_confidence_bps, compute_mean, compute_median,
-    compute_trimmed_mean, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
-    check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
-    get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
+    compute_trimmed_mean, get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP,
+    LEDGER_THRESHOLD,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,

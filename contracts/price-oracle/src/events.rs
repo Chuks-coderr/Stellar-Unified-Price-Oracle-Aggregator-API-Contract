@@ -1267,3 +1267,156 @@ pub struct InterpolationChangedEvent {
 pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
+
+// =============================================================================
+// #177 — Exotic Asset Pricing Engine
+// =============================================================================
+
+/// Emitted when an exotic asset's pricing configuration is set or updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct ExoticAssetConfigSetEvent {
+    #[topic]
+    pub asset: Address,
+}
+
+// =============================================================================
+// #176 — Priority Submission Fee Market
+// =============================================================================
+
+/// Emitted when the minimum priority fee is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct FmMinFeeChangedEvent {
+    pub value: u128,
+}
+
+/// Emitted when the fee distribution ratio is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct FmFeeRatioChangedEvent {
+    pub value: u32,
+}
+
+/// Emitted when a submission is enqueued in the fee market.
+#[contractevent]
+#[derive(Clone)]
+pub struct FmSubmissionEnqueuedEvent {
+    #[topic]
+    pub source: Address,
+    pub priority_fee: u128,
+    pub queue_depth: u32,
+}
+
+/// Emitted when a submission is processed from the fee market queue.
+#[contractevent]
+#[derive(Clone)]
+pub struct FmSubmissionProcessedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub price: i128,
+    pub priority_fee: u128,
+    pub source_share: u128,
+    pub treasury_share: u128,
+}
+
+// =============================================================================
+// #178 — N-of-M Multi-Sig Governance
+// =============================================================================
+
+/// Emitted when the governor set or required-approvals threshold is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsGovernorsUpdatedEvent {
+    pub governor_count: u32,
+    pub required_approvals: u32,
+}
+
+/// Emitted when a governor proposes a new multi-sig operation.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationProposedEvent {
+    pub operation_id: u32,
+    pub op_type: u32,
+    #[topic]
+    pub proposed_by: Address,
+    pub required_approvals: u32,
+    pub proposed_ledger: u32,
+}
+
+/// Emitted when the N-th approval is received and the timelock clock starts.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsQuorumReachedEvent {
+    pub operation_id: u32,
+    pub approvals: u32,
+    pub required: u32,
+    pub timelock_start_ledger: u32,
+}
+
+/// Emitted each time a governor approves an operation.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationApprovedEvent {
+    pub operation_id: u32,
+    #[topic]
+    pub governor: Address,
+    pub total_approvals: u32,
+    pub required_approvals: u32,
+}
+
+/// Emitted when a governor retracts their approval.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationRetractedEvent {
+    pub operation_id: u32,
+    #[topic]
+    pub governor: Address,
+    pub total_approvals: u32,
+}
+
+/// Emitted when a multi-sig operation is executed after quorum + timelock.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationExecutedEvent {
+    pub operation_id: u32,
+    pub op_type: u32,
+    #[topic]
+    pub executed_by: Address,
+}
+
+/// Emitted when a pending multi-sig operation is cancelled.
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationCancelledEvent {
+    pub operation_id: u32,
+    pub op_type: u32,
+    #[topic]
+    pub cancelled_by: Address,
+}
+
+// =============================================================================
+// #175 — ZK Proof Verification
+// =============================================================================
+
+/// Emitted when the Groth16 verifying key is set or updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct ZkVerifyingKeySetEvent {
+    pub set_at_ledger: u32,
+}
+
+/// Emitted when a ZK-verified price is successfully submitted.
+#[contractevent]
+#[derive(Clone)]
+pub struct ZkPriceSubmittedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub verified_at_ledger: u32,
+}

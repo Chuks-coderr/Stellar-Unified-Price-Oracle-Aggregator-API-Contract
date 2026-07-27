@@ -122,4 +122,52 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
+
+    // ── 60–69: Exotic pricing ────────────────────────────────────────────────
+    /// The exotic asset does not have a pricing configuration.
+    ExoticAssetNotConfigured = 60,
+    /// A circular component dependency was detected in exotic asset pricing.
+    ExoticCycleDetected = 61,
+    /// Maximum recursion depth exceeded during exotic asset pricing.
+    ExoticCycleLimitExceeded = 62,
+
+    // ── 70–79: ZK proof verification ─────────────────────────────────────────
+    /// No ZK verifying key has been configured.
+    ZkVkNotSet = 70,
+    /// The ZK proof is invalid.
+    ZkProofInvalid = 71,
+    /// The public signals array has wrong length or format.
+    ZkInvalidPublicSignals = 72,
+
+    // ── 80–89: Fee market ────────────────────────────────────────────────────
+    /// The priority fee is below the configured minimum.
+    FeeMarketBelowMinimum = 80,
+
+    // ── 90–99: Multi-sig governance ──────────────────────────────────────────
+    /// The operation is not at the head of the multi-sig queue.
+    MsNotQueueHead = 90,
+    /// The multi-sig quorum has not been reached.
+    MsQuorumNotReached = 91,
+    /// The governor already approved this operation.
+    AlreadyApproved = 92,
+    /// The governor's approval was not found for retraction.
+    ApprovalNotFound = 93,
+
+    // ── 100–109: State channels (#179) ───────────────────────────────────────
+    /// A state channel already exists for this source and is still open.
+    ChannelAlreadyOpen = 100,
+    /// No open state channel was found for this source.
+    ChannelNotFound = 101,
+
+    // ── 110–119: AMM data feeds (#180) ───────────────────────────────────────
+    /// An AMM pool already exists for this asset symbol.
+    PoolAlreadyExists = 110,
+    /// No AMM pool was found for this asset symbol.
+    PoolNotFound = 111,
+    /// Integer arithmetic overflow during AMM calculation.
+    ArithmeticOverflow = 112,
+    /// The swap output is below the caller's minimum return (slippage exceeded).
+    SlippageExceeded = 113,
+    /// The post-swap AMM price deviates too far from the oracle median (manipulation guard).
+    AmmPriceManipulation = 114,
 }
