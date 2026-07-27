@@ -2185,3 +2185,102 @@ fn test_get_migration_state_none_before_migration() {
     let (client, _) = setup_contract(&e);
     assert!(client.get_migration_state().is_none());
 }
+
+#[test]
+fn test_demerits_lifecycle() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Source1");
+    let asset = register_test_asset(&e, &client);
+
+    // Initial state check
+    let initial_state = client.get_source_demerits(&source);
+    assert_eq!(initial_state.demerits, 0);
+    assert_eq!(initial_state.status, crate::DisqualificationStatus::Active);
+
+    // Verify default config
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 2);
+    assert_eq!(config.probation_threshold, 5);
+    assert_eq!(config.disqualified_threshold, 10);
+    assert_eq!(config.cooldown_ledgers, 100);
+
+    // Set custom config
+    let custom_config = crate::DemeritConfig {
+        warning_threshold: 1,
+        probation_threshold: 2,
+        disqualified_threshold: 3,
+        cooldown_ledgers: 10,
+    };
+    client.set_demerit_config(&custom_config);
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 1);
+    assert_eq!(config.disqualified_threshold, 3);
+
+    // Test invalid config (warning_threshold > probation_threshold)
+    let invalid_config = crate::DemeritConfig {
+        warning_threshold: 3,
+        probation_threshold: 2,
+        disqualified_threshold: 4,
+        cooldown_ledgers: 10,
+    };
+    let res = client.try_set_demerit_config(&invalid_config);
+    assert!(res.is_err());
+
+    // Submit invalid price (<= 0) to trigger demerit
+    ledger_default(&e, 1, 100);
+    let res = client.try_submit_price(&source, &asset, &-1i128, &100u64);
+    assert!(res.is_err());
+
+    // State should now be Warning (demerits = 1 >= warning_threshold=1)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+    assert_eq!(state.status, crate::DisqualificationStatus::Warning);
+
+    // Trigger another invalid price (timestamp too far in the future)
+    let res = client.try_submit_price(&source, &asset, &100i128, &20000u64);
+    assert!(res.is_err());
+
+    // State should now be Probation (demerits = 2 >= probation_threshold=2)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 2);
+    assert_eq!(state.status, crate::DisqualificationStatus::Probation);
+
+    // Trigger disqualification
+    let res = client.try_submit_price(&source, &asset, &0i128, &100u64);
+    assert!(res.is_err());
+
+    // State should now be Disqualified
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 3);
+    assert_eq!(state.status, crate::DisqualificationStatus::Disqualified);
+    assert_eq!(state.status_updated_ledger, 1);
+
+    // Submit valid price now should fail because source is suspended/disqualified
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Let 10 ledgers pass (cooldown period of 10)
+    ledger_default(&e, 11, 200);
+
+    // Query demerits again, it should have auto-reset because cooldown elapsed
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
+
+    // Now valid submission should succeed
+    client.submit_price(&source, &asset, &100i128, &200u64);
+
+    // Induce demerit again and test admin reset
+    let res = client.try_submit_price(&source, &asset, &0i128, &200u64);
+    assert!(res.is_err());
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+
+    client.reset_source_demerits(&source);
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
+}
+

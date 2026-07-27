@@ -284,6 +284,10 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -819,3 +823,37 @@ pub struct CrossReferenceResult {
     /// Contract address of the reference oracle that provided `ref_price`.
     pub ref_contract: Address,
 }
+
+// =============================================================================
+// #210 — Progressive Disqualification / Demerits System
+// =============================================================================
+
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+

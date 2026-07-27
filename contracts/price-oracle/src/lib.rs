@@ -49,6 +49,7 @@ pub use types::{
     ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    DisqualificationStatus, SourceDemeritState, DemeritConfig,
 };
 
 use soroban_sdk::{
@@ -824,6 +825,29 @@ impl PriceOracleContract {
     pub fn is_source_pending_removal(env: Env, source: Address) -> bool {
         sources::is_source_pending_removal(&env, source)
     }
+
+    // --- #210: Progressive Disqualification ---
+
+    pub fn set_demerit_config(env: Env, config: DemeritConfig) {
+        reentrancy::enter(&env);
+        sources::set_demerit_config(&env, config);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_demerit_config(env: Env) -> DemeritConfig {
+        sources::get_demerit_config(&env)
+    }
+
+    pub fn get_source_demerits(env: Env, source: Address) -> SourceDemeritState {
+        sources::get_source_demerits(&env, source)
+    }
+
+    pub fn reset_source_demerits(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::reset_source_demerits(&env, source);
+        reentrancy::exit(&env);
+    }
+
 
     // --- Assets ---
 

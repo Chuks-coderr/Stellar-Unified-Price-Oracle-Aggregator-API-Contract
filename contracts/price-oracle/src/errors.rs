@@ -122,4 +122,9 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
+    /// The oracle source has been suspended due to progressive disqualification.
+    SourceSuspended = 54,
+    /// Demerit configuration thresholds are invalid.
+    InvalidDemeritThreshold = 55,
 }
+

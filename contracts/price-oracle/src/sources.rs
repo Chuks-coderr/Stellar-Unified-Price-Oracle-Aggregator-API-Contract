@@ -4,12 +4,16 @@ use crate::events::{
     emit_admin_action, RemovalCooldownChangedEvent, SourceActiveAgainEvent, SourceAddedEvent,
     SourceHeartbeatEvent, SourceInactiveEvent, SourceMarkedForRemovalEvent,
     SourceRemovalCancelledEvent, SourceRemovedEvent,
+    SourceWarningEvent, SourceProbationEvent, SourceDisqualifiedEvent, SourceDemeritsResetEvent,
+    DemeritConfigChangedEvent, InvalidSubmissionRecordedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
     mark_source_inactive, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
-use crate::types::{DataKey, ErrorCode, OracleSources};
+use crate::types::{
+    DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
+};
 
 const MAX_SOURCE_NAME_LENGTH: u32 = 64;
 
@@ -294,11 +298,169 @@ pub fn get_inactive_sources(env: &Env) -> u32 {
     count
 }
 
-pub fn is_source_suspended(_env: &Env, _source: Address) -> bool {
-    false
+pub fn get_demerit_config(env: &Env) -> DemeritConfig {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DemeritConfig)
+        .unwrap_or(DemeritConfig {
+            warning_threshold: 2,
+            probation_threshold: 5,
+            disqualified_threshold: 10,
+            cooldown_ledgers: 100,
+        })
 }
 
-pub fn record_invalid_submission(_env: &Env, _source: Address) {}
+pub fn set_demerit_config(env: &Env, config: DemeritConfig) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if config.warning_threshold > config.probation_threshold
+        || config.probation_threshold > config.disqualified_threshold
+    {
+        panic_with_error!(env, ErrorCode::InvalidDemeritThreshold);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::DemeritConfig, &config);
+
+    DemeritConfigChangedEvent {
+        admin,
+        warning_threshold: config.warning_threshold,
+        probation_threshold: config.probation_threshold,
+        disqualified_threshold: config.disqualified_threshold,
+        cooldown_ledgers: config.cooldown_ledgers,
+    }
+    .publish(env);
+}
+
+pub fn get_source_demerits(env: &Env, source: Address) -> SourceDemeritState {
+    let key = DataKey::SourceDemerits(source.clone());
+    let mut state: SourceDemeritState = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SourceDemeritState {
+            demerits: 0,
+            status: DisqualificationStatus::Active,
+            status_updated_ledger: 0,
+        });
+
+    if state.status == DisqualificationStatus::Disqualified {
+        let config = get_demerit_config(env);
+        let current_ledger = env.ledger().sequence();
+        if current_ledger >= state.status_updated_ledger.saturating_add(config.cooldown_ledgers) {
+            state.demerits = 0;
+            state.status = DisqualificationStatus::Active;
+            state.status_updated_ledger = current_ledger;
+            env.storage().persistent().set(&key, &state);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+    }
+
+    state
+}
+
+pub fn is_source_suspended(env: &Env, source: Address) -> bool {
+    let state = get_source_demerits(env, source);
+    state.status == DisqualificationStatus::Disqualified
+}
+
+pub fn record_invalid_submission(env: &Env, source: Address) {
+    let key = DataKey::SourceDemerits(source.clone());
+    let mut state = get_source_demerits(env, source.clone());
+
+    state.demerits = state.demerits.saturating_add(1);
+    let config = get_demerit_config(env);
+    let current_ledger = env.ledger().sequence();
+
+    let old_status = state.status;
+
+    if state.demerits >= config.disqualified_threshold {
+        state.status = DisqualificationStatus::Disqualified;
+        state.status_updated_ledger = current_ledger;
+    } else if state.demerits >= config.probation_threshold {
+        state.status = DisqualificationStatus::Probation;
+        state.status_updated_ledger = current_ledger;
+    } else if state.demerits >= config.warning_threshold {
+        state.status = DisqualificationStatus::Warning;
+        state.status_updated_ledger = current_ledger;
+    }
+
+    env.storage().persistent().set(&key, &state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    InvalidSubmissionRecordedEvent {
+        source: source.clone(),
+        demerits: state.demerits,
+    }
+    .publish(env);
+
+    if state.status != old_status {
+        match state.status {
+            DisqualificationStatus::Warning => {
+                SourceWarningEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                }
+                .publish(env);
+            }
+            DisqualificationStatus::Probation => {
+                SourceProbationEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                }
+                .publish(env);
+            }
+            DisqualificationStatus::Disqualified => {
+                SourceDisqualifiedEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                    status_updated_ledger: current_ledger,
+                }
+                .publish(env);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn reset_source_demerits(env: &Env, source: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let key = DataKey::SourceDemerits(source.clone());
+    let current_ledger = env.ledger().sequence();
+    let state = SourceDemeritState {
+        demerits: 0,
+        status: DisqualificationStatus::Active,
+        status_updated_ledger: current_ledger,
+    };
+
+    env.storage().persistent().set(&key, &state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceDemeritsResetEvent {
+        source,
+        admin,
+    }
+    .publish(env);
+}
+
 
 pub fn get_source_last_heartbeat(env: &Env, source: Address) -> u64 {
     let key = DataKey::SrcHeartbeat(source);
