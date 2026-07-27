@@ -954,6 +954,21 @@ pub struct CorrelationViolationEvent {
     pub max_ratio: u128,
 }
 
+/// Emitted when a (source, asset) price is flagged and excluded from aggregation
+/// due to a correlation violation.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationPriceFlaggedEvent {
+    /// The asset whose submitted price was flagged.
+    #[topic]
+    pub asset: Address,
+    /// The source whose submission was flagged.
+    #[topic]
+    pub source: Address,
+    /// The price value that triggered the flag.
+    pub flagged_price: i128,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #173: Tiered Consumer Access Events
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2301,6 +2301,86 @@ impl PriceOracleContract {
         zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
         reentrancy::exit(&env);
     }
+
+    // -------------------------------------------------------------------------
+    // Correlation management (#172 wiring)
+    // -------------------------------------------------------------------------
+
+    /// Registers or updates a correlation ratio band between two assets (admin-only).
+    ///
+    /// `min_ratio` and `max_ratio` are scaled by `RATIO_PRECISION = 10^7`.
+    /// Set `enabled = false` to suspend enforcement without deleting configuration.
+    pub fn set_correlation_pair(
+        env: Env,
+        base_asset: Address,
+        quote_asset: Address,
+        min_ratio: u128,
+        max_ratio: u128,
+        enabled: bool,
+    ) {
+        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+    }
+
+    /// Removes a correlation pair. Admin-only.
+    pub fn remove_correlation_pair(env: Env, base_asset: Address, quote_asset: Address) {
+        correlation::remove_correlation_pair(&env, base_asset, quote_asset);
+    }
+
+    /// Returns all registered correlation pairs.
+    pub fn get_correlation_pairs(env: Env) -> soroban_sdk::Vec<crate::types::CorrelationPair> {
+        correlation::get_correlation_pairs(&env)
+    }
+
+    /// Returns `true` if a (source, asset) pair is currently flagged for correlation violation.
+    pub fn is_correlation_flagged(env: Env, source: Address, asset: Address) -> bool {
+        correlation::is_correlation_flagged(&env, &source, &asset)
+    }
+
+    /// Clears a correlation flag for a (source, asset) pair. Admin-only.
+    pub fn clear_correlation_flag(env: Env, source: Address, asset: Address) {
+        correlation::clear_correlation_flag(&env, source, asset);
+    }
+
+    // -------------------------------------------------------------------------
+    // simulate_aggregation — pure computation, no side effects
+    // -------------------------------------------------------------------------
+
+    /// Computes what the aggregate price WOULD be for `asset` given hypothetical
+    /// `(source, price)` pairs, without writing anything to storage.
+    ///
+    /// Uses the currently configured aggregation method (median / mean / trimmed-mean).
+    /// Returns `None` if fewer than `min_sources_required` valid prices are supplied.
+    pub fn simulate_aggregation(
+        env: Env,
+        asset: Address,
+        hypothetical_prices: Vec<(Address, i128)>,
+    ) -> Option<i128> {
+        prices::simulate_aggregation(&env, asset, hypothetical_prices)
+    }
+
+    // -------------------------------------------------------------------------
+    // submit_price_merkle — merkle-verified batch submission
+    // -------------------------------------------------------------------------
+
+    /// Submits a batch of prices verified against a SHA-256 merkle root.
+    ///
+    /// All proofs are verified before any price is stored (atomic all-or-nothing).
+    /// This dramatically reduces per-source calldata cost for large batches.
+    ///
+    /// # Arguments
+    /// * `source` — The transaction signer (must be a registered, unsuspended source).
+    /// * `root`   — 32-byte merkle root computed off-chain over all leaf data.
+    /// * `proofs` — One `MerkleProof` per price entry; each carries its own leaf data.
+    pub fn submit_price_merkle(
+        env: Env,
+        source: Address,
+        root: soroban_sdk::BytesN<32>,
+        proofs: Vec<prices::MerkleProof>,
+    ) {
+        reentrancy::enter(&env);
+        prices::submit_price_merkle(&env, source, root, proofs);
+        reentrancy::exit(&env);
+    }
 }
 
 #[cfg(test)]
@@ -2323,3 +2403,6 @@ mod commit_reveal_tests;
 
 #[cfg(test)]
 mod finality_tests;
+
+#[cfg(test)]
+mod correlation_feature_tests;
