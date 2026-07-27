@@ -25,12 +25,9 @@
 //! - `AlertSubscriptionTtl` → default TTL in ledgers (u32).
 //! - `AlertLastPrice(asset)` → last recorded price (i128) for deviation comparison.
 
-use soroban_sdk::{panic_with_error, vec, Address, Env, Symbol, Vec};
+use soroban_sdk::{panic_with_error, Address, Env, IntoVal, Symbol, Vec};
 
-use crate::events::{
-    AlertCallbackFailedEvent, AlertSubscribedEvent, AlertSubscriptionExpiredEvent,
-    AlertTriggeredEvent,
-};
+use crate::events::{AlertSubscribedEvent, AlertSubscriptionExpiredEvent, AlertTriggeredEvent};
 use crate::storage::{get_admin, LEDGER_BUMP, LEDGER_THRESHOLD};
 use crate::types::{AlertSubscription, DataKey, ErrorCode};
 
@@ -145,11 +142,7 @@ pub fn unsubscribe_from_alerts(env: &Env, consumer: Address, asset: Address) {
 }
 
 /// Returns the subscription record for a (consumer, asset) pair, or `None`.
-pub fn get_subscription(
-    env: &Env,
-    consumer: Address,
-    asset: Address,
-) -> Option<AlertSubscription> {
+pub fn get_subscription(env: &Env, consumer: Address, asset: Address) -> Option<AlertSubscription> {
     let key = DataKey::AlertSubscription(consumer, asset);
     env.storage().persistent().get(&key)
 }
@@ -180,9 +173,8 @@ pub fn dispatch_alerts(env: &Env, asset: &Address, old_price: i128, new_price: i
 
     // Compute movement in basis points: |new - old| * 10_000 / old.
     let diff = (new_price - old_price).abs();
-    let movement_bps: u32 = ((diff as u128)
-        .saturating_mul(BPS_PRECISION as u128)
-        / (old_price as u128)) as u32;
+    let movement_bps: u32 =
+        ((diff as u128).saturating_mul(BPS_PRECISION as u128) / (old_price as u128)) as u32;
 
     // Nothing to dispatch if zero movement.
     if movement_bps == 0 {
@@ -241,10 +233,10 @@ pub fn dispatch_alerts(env: &Env, asset: &Address, old_price: i128, new_price: i
             let args: soroban_sdk::Vec<soroban_sdk::Val> = {
                 let mut v = soroban_sdk::Vec::new(env);
                 // Pass: asset, old_price, new_price, movement_bps
-                v.push_back(asset.clone().into());
-                v.push_back(old_price.into());
-                v.push_back(new_price.into());
-                v.push_back((movement_bps as i128).into());
+                v.push_back(asset.clone().into_val(env));
+                v.push_back(old_price.into_val(env));
+                v.push_back(new_price.into_val(env));
+                v.push_back((movement_bps as i128).into_val(env));
                 v
             };
 

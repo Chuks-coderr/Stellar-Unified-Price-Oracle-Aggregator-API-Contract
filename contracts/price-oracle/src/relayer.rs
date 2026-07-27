@@ -2,11 +2,15 @@ use soroban_sdk::{panic_with_error, Address, Env, String};
 
 use crate::admin::{get_decimals, get_timestamp_threshold};
 use crate::assets::get_min_price;
-use crate::events::{emit_relayer_fee_set, PriceRelayedEvent, RelayerAddedEvent, RelayerRemovedEvent};
+use crate::events::{
+    emit_relayer_fee_set, PriceRelayedEvent, RelayerAddedEvent, RelayerRemovedEvent,
+};
 use crate::pause::check_not_paused;
 use crate::prices::do_aggregate;
 use crate::sources::{is_source_suspended, record_invalid_submission};
-use crate::storage::{check_registered_asset, check_source, get_admin, LEDGER_BUMP, LEDGER_THRESHOLD};
+use crate::storage::{
+    check_registered_asset, check_source, get_admin, LEDGER_BUMP, LEDGER_THRESHOLD,
+};
 use crate::types::{DataKey, ErrorCode, PriceEntry, RelayerInfo};
 
 // ---------------------------------------------------------------------------
@@ -202,6 +206,7 @@ pub fn submit_price_relayed(
         source: source.clone(),
         decimals,
         last_updated: current_ledger,
+        ledger_timestamp: env.ledger().timestamp(),
     };
     env.storage()
         .persistent()
@@ -222,11 +227,7 @@ pub fn submit_price_relayed(
 
     // Track relayer metrics: submission count and accrued fee balance.
     let count_key = DataKey::RelayerSubmissionCount(relayer.clone());
-    let count: u64 = env
-        .storage()
-        .persistent()
-        .get(&count_key)
-        .unwrap_or(0u64);
+    let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0u64);
     env.storage()
         .persistent()
         .set(&count_key, &count.saturating_add(1));
@@ -286,17 +287,11 @@ pub fn get_relayer_fee_per_submission(env: &Env) -> i128 {
 /// Returns the total accumulated fee balance (in stroops) owed to `relayer`.
 pub fn get_relayer_fee_balance(env: &Env, relayer: Address) -> i128 {
     let key = DataKey::RelayerFeeBalance(relayer);
-    env.storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(0i128)
+    env.storage().persistent().get(&key).unwrap_or(0i128)
 }
 
 /// Returns the total number of successful relayed submissions made by `relayer`.
 pub fn get_relayer_submission_count(env: &Env, relayer: Address) -> u64 {
     let key = DataKey::RelayerSubmissionCount(relayer);
-    env.storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(0u64)
+    env.storage().persistent().get(&key).unwrap_or(0u64)
 }

@@ -2,13 +2,15 @@ use soroban_sdk::{panic_with_error, Address, Env, String, Vec};
 
 use crate::admin::{
     get_aggregation_cooldown, get_aggregation_method, get_asset_resolution, get_decimals,
-    get_max_history_length, get_min_sources_required, get_min_submission_interval,
+    get_max_aggregation_sources, get_max_events_per_call, get_max_history_length,
+    get_max_history_per_asset, get_min_sources_required, get_min_submission_interval,
     get_timestamp_threshold,
 };
 use crate::events::{
-    AggregationTriggeredEvent, HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent,
-    PriceOverrideRemovedEvent, PriceOverrideSetEvent, PriceStaleEvent, PriceSubmittedEvent,
-    RateLimitExceededEvent, SourceNonCompliantEvent, SourcesInsufficientEvent,
+    AggregationTriggeredEvent, EventLimitWarningEvent, HistoryPerAssetPrunedEvent,
+    HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent, PriceOverrideRemovedEvent,
+    PriceOverrideSetEvent, PriceStaleEvent, PriceSubmittedEvent, RateLimitExceededEvent,
+    SourceNonCompliantEvent, SourcesInsufficientEvent,
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
@@ -16,7 +18,6 @@ use crate::storage::{
     compute_trimmed_mean, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
     check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
     get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
-    check_rate_limit, increment_query_count,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
@@ -51,8 +52,6 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     let ledger_time = env.ledger().timestamp();
     let threshold = get_timestamp_threshold(env);
     let current_ledger = env.ledger().sequence();
-
-    let mut event_count: u32 = 0;
 
     // Validate all entries first for atomicity — any invalid entry aborts the whole call.
     for i in 0..asset_prices.len() {
@@ -110,23 +109,23 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
             timestamp,
         }
         .publish(env);
-        event_count += 1;
     }
 
     // Trigger aggregation for each submitted asset.
     for i in 0..asset_prices.len() {
         let (asset, _, _) = asset_prices.get_unchecked(i);
-        aggregate_asset(env, asset, current_ledger, decimals);
+        aggregate_asset(env, &asset, current_ledger, decimals);
     }
 }
 
 /// Internal helper: re-aggregate all sources for a single asset and write history.
 fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u32) {
+    let max_events = get_max_events_per_call(env);
+    let mut event_count: u32 = 0;
+
     let min_required = get_min_sources_required(env);
     let oracle_sources: OracleSources = read_oracle_sources(env);
     let total_sources = oracle_sources.sources.len();
-    let decimals = get_decimals(env);
-    let current_ledger = env.ledger().sequence();
 
     // Issue #93: if MaxAggregationSources > 0 and we have more sources than the cap,
     // randomly select a subset using the current ledger hash for determinism.
@@ -168,9 +167,10 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
 
     let min_interval = get_min_submission_interval(env);
     let current_ledger_for_agg = env.ledger().sequence();
+    let selected_count = selected_sources.len();
 
-    for i in 0..total_sources {
-        let src = oracle_sources.sources.get_unchecked(i);
+    for i in 0..selected_count {
+        let src = selected_sources.get_unchecked(i);
 
         // #70: enforce min submission interval compliance
         if min_interval > 0 {
@@ -349,23 +349,28 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
             }
             .publish(env);
         }
-    } else {
-        if event_count < max_events {
-            SourcesInsufficientEvent {
-                asset: asset.clone(),
-                current_source_count: contributing_sources,
-                min_sources_required: min_required,
-            }
-            .publish(env);
-        } else {
-            EventLimitWarningEvent {
-                asset: asset.clone(),
-                event_count,
-                max_events,
-            }
-            .publish(env);
+    } else if event_count < max_events {
+        SourcesInsufficientEvent {
+            asset: asset.clone(),
+            current_source_count: contributing_sources,
+            min_sources_required: min_required,
         }
+        .publish(env);
+    } else {
+        EventLimitWarningEvent {
+            asset: asset.clone(),
+            event_count,
+            max_events,
+        }
+        .publish(env);
     }
+}
+
+/// Re-runs aggregation for `asset`, shared by the direct and relayed submission paths.
+pub(crate) fn do_aggregate(env: &Env, asset: &Address) {
+    let decimals = get_decimals(env);
+    let current_ledger = env.ledger().sequence();
+    aggregate_asset(env, asset, current_ledger, decimals);
 }
 
 pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
@@ -475,11 +480,7 @@ pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePri
     let result: AggregatePrice = env.storage().persistent().get(&key)?;
 
     // max_age gating (if enabled)
-    if max_age > 0 && result
-        .timestamp
-        .saturating_add(max_age)
-        < ledger_time
-    {
+    if max_age > 0 && result.timestamp.saturating_add(max_age) < ledger_time {
         PriceStaleEvent {
             asset: asset.clone(),
             last_update_ledger: 0,
@@ -491,11 +492,7 @@ pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePri
 
     // resolution gating (if enabled)
     let resolution = get_asset_resolution(env, asset.clone());
-    if resolution > 0 && result
-        .timestamp
-        .saturating_add(resolution as u64)
-        < ledger_time
-    {
+    if resolution > 0 && result.timestamp.saturating_add(resolution as u64) < ledger_time {
         PriceStaleEvent {
             asset: asset.clone(),
             last_update_ledger: 0,
@@ -550,6 +547,8 @@ pub fn get_all_prices(env: &Env, asset: Address) -> Vec<PriceEntry> {
     prices
 }
 
+/// Not currently wired into `get_price` — kept for a future rate-limiting pass.
+#[allow(dead_code)]
 pub fn check_rate_limit_and_increment(env: &Env, consumer: &Address) {
     if is_subscribed(env, consumer) {
         return;
@@ -557,7 +556,11 @@ pub fn check_rate_limit_and_increment(env: &Env, consumer: &Address) {
 
     let ledger = env.ledger().sequence();
     let rate_limit_key = DataKey::QueryRateLimit;
-    let max_queries: u32 = env.storage().persistent().get(&rate_limit_key).unwrap_or(100);
+    let max_queries: u32 = env
+        .storage()
+        .persistent()
+        .get(&rate_limit_key)
+        .unwrap_or(100);
 
     let count_key = DataKey::QueryCount(consumer.clone(), ledger);
     let current_count: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
@@ -574,7 +577,9 @@ pub fn check_rate_limit_and_increment(env: &Env, consumer: &Address) {
 
     let new_count = current_count + 1;
     env.storage().temporary().set(&count_key, &new_count);
-    env.storage().temporary().extend_ttl(&count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage()
+        .temporary()
+        .extend_ttl(&count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
 pub fn lastprice(env: &Env, asset: Asset) -> Option<PriceData> {
@@ -786,6 +791,8 @@ pub fn get_price_override(env: &Env, asset: Address) -> Option<PriceOverrideEntr
     env.storage().persistent().get(&override_key)
 }
 
+/// Not currently wired into any public contract endpoint.
+#[allow(dead_code)]
 pub fn historical_price_change_percent(
     env: &Env,
     asset: Address,
@@ -1021,12 +1028,7 @@ pub fn current_round_ledger(env: &Env) -> u32 {
 /// - `AssetNotRegistered` — asset is not registered.
 /// - `AlreadyCommitted` — source already committed this round for this asset.
 /// - `RevealWindowClosed` — called outside the commit window for this round.
-pub fn commit_price(
-    env: &Env,
-    source: Address,
-    asset: Address,
-    hash: soroban_sdk::BytesN<32>,
-) {
+pub fn commit_price(env: &Env, source: Address, asset: Address, hash: soroban_sdk::BytesN<32>) {
     check_not_paused(env);
     source.require_auth();
     check_source(env, &source);
@@ -1061,9 +1063,7 @@ pub fn commit_price(
     // preventing griefing through permanent storage bloat.
     let ttl = commit_window + get_reveal_window(env) + 1;
     env.storage().temporary().set(&commit_key, &commit);
-    env.storage()
-        .temporary()
-        .extend_ttl(&commit_key, ttl, ttl);
+    env.storage().temporary().extend_ttl(&commit_key, ttl, ttl);
 
     crate::events::PriceCommittedEvent {
         asset,
@@ -1273,5 +1273,5 @@ fn _compute_commit_hash(
         preimage.push_back(*b);
     }
 
-    env.crypto().sha256(&preimage)
+    env.crypto().sha256(&preimage).into()
 }

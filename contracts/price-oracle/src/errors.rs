@@ -15,6 +15,7 @@ use soroban_sdk::contracterror;
 /// | 20–29  | Source management      |
 /// | 30–39  | Commit-reveal (#187)   |
 /// | 40–49  | Finality gadget (#188) |
+/// | 50–59  | Relayer & misc         |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -111,4 +112,14 @@ pub enum ErrorCode {
     InsufficientFinality = 43,
     /// A reorg was detected via ledger hash chain inconsistency.
     ReorgDetected = 44,
+
+    // ── 50–59: Relayer & misc ────────────────────────────────────────────────
+    /// The caller is not a registered and approved relayer.
+    RelayerNotAuthorized = 50,
+    /// `add_relayer` was called for an address that is already an approved relayer.
+    RelayerAlreadyExists = 51,
+    /// Source reputation is too high to be eligible for slashing.
+    ReputationTooHighToSlash = 52,
+    /// Maximum number of alert subscriptions has been reached.
+    MaxSubscriptionsReached = 53,
 }

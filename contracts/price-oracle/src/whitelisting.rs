@@ -73,12 +73,10 @@ pub fn register_consumer(env: &Env, consumer: Address, tier: ConsumerTier) {
 
     let (expiry_ts, expiry_ledger) = match tier {
         ConsumerTier::Free => (0u64, 0u32), // Free = permanent, no expiry tracking
-        ConsumerTier::Basic | ConsumerTier::Premium => {
-            (
-                current_ts.saturating_add(THIRTY_DAYS_SECS),
-                current_ledger.saturating_add(THIRTY_DAYS_LEDGERS),
-            )
-        }
+        ConsumerTier::Basic | ConsumerTier::Premium => (
+            current_ts.saturating_add(THIRTY_DAYS_SECS),
+            current_ledger.saturating_add(THIRTY_DAYS_LEDGERS),
+        ),
     };
 
     // Collect fee for paid tiers.
@@ -168,17 +166,16 @@ pub fn check_and_record_query(env: &Env, consumer: &Address) -> u64 {
     let info_key = DataKey::ConsumerInfo(consumer.clone());
     let info_opt: Option<ConsumerInfo> = env.storage().persistent().get(&info_key);
 
-    let (tier, sub_expiry_ledger, sub_expiry_ts, mut queries, quota_reset_ledger) =
-        match info_opt {
-            Some(ref i) => (
-                i.tier.clone(),
-                i.subscription_expiry_ledger,
-                i.subscription_expiry_ts,
-                i.queries_this_ledger,
-                i.quota_reset_ledger,
-            ),
-            None => (ConsumerTier::Free, 0u32, 0u64, 0u32, current_ledger),
-        };
+    let (tier, sub_expiry_ledger, sub_expiry_ts, mut queries, quota_reset_ledger) = match info_opt {
+        Some(ref i) => (
+            i.tier.clone(),
+            i.subscription_expiry_ledger,
+            i.subscription_expiry_ts,
+            i.queries_this_ledger,
+            i.quota_reset_ledger,
+        ),
+        None => (ConsumerTier::Free, 0u32, 0u64, 0u32, current_ledger),
+    };
 
     // Validate subscription expiry for paid tiers.
     match tier {
@@ -240,9 +237,11 @@ pub fn set_tier_pricing(env: &Env, tier: ConsumerTier, price: i128) {
     env.storage()
         .persistent()
         .set(&DataKey::TierPricing(disc), &price);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::TierPricing(disc), LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage().persistent().extend_ttl(
+        &DataKey::TierPricing(disc),
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
+    );
 }
 
 /// Returns the subscription fee in stroops for a given tier.
@@ -251,10 +250,7 @@ pub fn get_tier_price(env: &Env, tier: ConsumerTier) -> i128 {
 }
 
 fn get_tier_price_internal(env: &Env, disc: u32) -> i128 {
-    let stored: Option<i128> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::TierPricing(disc));
+    let stored: Option<i128> = env.storage().persistent().get(&DataKey::TierPricing(disc));
 
     stored.unwrap_or(match disc {
         0 => 0,
@@ -273,9 +269,11 @@ pub fn set_xlm_token_contract(env: &Env, token: Address) {
     env.storage()
         .persistent()
         .set(&DataKey::XlmTokenContract, &token);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::XlmTokenContract, LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage().persistent().extend_ttl(
+        &DataKey::XlmTokenContract,
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
+    );
 }
 
 /// Returns the configured XLM token contract address.
@@ -292,16 +290,16 @@ pub fn set_whitelist_treasury(env: &Env, treasury: Address) {
     env.storage()
         .persistent()
         .set(&DataKey::WhitelistTreasury, &treasury);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::WhitelistTreasury, LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage().persistent().extend_ttl(
+        &DataKey::WhitelistTreasury,
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
+    );
 }
 
 /// Returns the configured treasury address, or `None` if not set.
 pub fn get_whitelist_treasury(env: &Env) -> Option<Address> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::WhitelistTreasury)
+    env.storage().persistent().get(&DataKey::WhitelistTreasury)
 }
 
 /// Sweeps all collected subscription fees held by the contract to the treasury address.
