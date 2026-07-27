@@ -897,6 +897,39 @@ impl PriceOracleContract {
         sources::get_decentralization_report(&env)
     }
 
+    // --- #209: Source Heartbeat Liveness Bond ---
+
+    pub fn set_source_bond(env: Env, amount: i128) {
+        reentrancy::enter(&env);
+        sources::set_source_bond(&env, amount);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_bond(env: Env) -> i128 {
+        sources::get_source_bond(&env)
+    }
+
+    pub fn deposit_source_bond(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::deposit_source_bond(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_deposited_bond(env: Env, source: Address) -> i128 {
+        sources::get_source_deposited_bond(&env, source)
+    }
+
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reentrancy::enter(&env);
+        crate::reputation::set_stake_token_contract(&env, token);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        crate::reputation::get_stake_token_contract(&env)
+    }
+
+
 
 
 

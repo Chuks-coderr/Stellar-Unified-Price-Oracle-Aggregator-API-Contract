@@ -134,6 +134,11 @@ pub enum ErrorCode {
     AlreadyApproved = 58,
     /// The source proposal was already executed.
     ProposalAlreadyExecuted = 59,
+    /// The source has not deposited the required bond.
+    InsufficientBond = 60,
+    /// The staking/fee token contract has not been configured.
+    StakeTokenNotConfigured = 61,
 }
+
 
 

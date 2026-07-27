@@ -1393,5 +1393,46 @@ pub struct SourceGeoUpdatedEvent {
     pub jurisdiction: String,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #209: Source Heartbeat Liveness Bond Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when the required source bond amount is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source deposits its liveness bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondDepositedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source bond is forfeited.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondForfeitedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source bond is returned.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondReturnedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+
 
 

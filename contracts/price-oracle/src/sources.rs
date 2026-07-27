@@ -8,6 +8,7 @@ use crate::events::{
     DemeritConfigChangedEvent, InvalidSubmissionRecordedEvent,
     SourceGovConfigChangedEvent, SourceProposalCreatedEvent, SourceProposalApprovedEvent, SourceProposalExecutedEvent,
     SourceGeoUpdatedEvent,
+    SourceBondConfigChangedEvent, SourceBondDepositedEvent, SourceBondForfeitedEvent, SourceBondReturnedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -17,6 +18,7 @@ use crate::types::{
     DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal, SourceGeoMetadata, DecentralizationReport,
 };
+
 
 
 
@@ -87,6 +89,26 @@ pub fn remove_source(env: &Env, source: Address) {
     {
         panic_with_error!(env, ErrorCode::SourceNotFound);
     }
+
+    let is_inactive = is_source_inactive(env, source.clone());
+    let deposited = get_source_deposited_bond(env, source.clone());
+    if deposited > 0 {
+        if !is_inactive {
+            if let Some(token_addr) = crate::reputation::get_stake_token_contract(env) {
+                let client = soroban_sdk::token::Client::new(env, &token_addr);
+                let _ = client.try_transfer(&env.current_contract_address(), &source, &deposited);
+                SourceBondReturnedEvent {
+                    source: source.clone(),
+                    amount: deposited,
+                }
+                .publish(env);
+            }
+        } else {
+            forfeit_source_bond_internal(env, source.clone());
+        }
+        env.storage().persistent().remove(&DataKey::SourceBond(source.clone()));
+    }
+
     env.storage()
         .persistent()
         .remove(&DataKey::SrcActive(source.clone()));
@@ -112,6 +134,7 @@ pub fn remove_source(env: &Env, source: Address) {
     .publish(env);
     emit_admin_action(env, symbol_short!("rem_src"), admin, Bytes::new(env));
 }
+
 
 pub fn is_source(env: &Env, source: Address) -> bool {
     let key = DataKey::SrcActive(source.clone());
@@ -242,6 +265,8 @@ pub fn is_source_inactive(env: &Env, source: Address) -> bool {
                     2u32
                 };
                 mark_source_inactive(env, &source);
+                forfeit_source_bond_internal(env, source.clone());
+
 
                 // Record when inactivity started (only on first trip).
                 let inactive_since_key = DataKey::SrcInactiveSinceLedger(source.clone());
@@ -1209,5 +1234,94 @@ pub fn get_decentralization_report(env: &Env) -> DecentralizationReport {
         overall_score,
     }
 }
+
+pub fn set_source_bond(env: &Env, amount: i128) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceBondAmount, &amount);
+
+    SourceBondConfigChangedEvent { admin, amount }.publish(env);
+}
+
+pub fn get_source_bond(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceBondAmount)
+        .unwrap_or(0i128)
+}
+
+pub fn get_source_deposited_bond(env: &Env, source: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceBond(source))
+        .unwrap_or(0i128)
+}
+
+pub fn deposit_source_bond(env: &Env, source: Address) {
+    source.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let required = get_source_bond(env);
+    if required <= 0 {
+        return;
+    }
+
+    let current_deposited = get_source_deposited_bond(env, source.clone());
+    if current_deposited >= required {
+        return;
+    }
+
+    let deposit_amount = required - current_deposited;
+    let token_contract = crate::reputation::get_stake_token_contract(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::StakeTokenNotConfigured);
+    });
+
+    let client = soroban_sdk::token::Client::new(env, &token_contract);
+    client.transfer(&source, &env.current_contract_address(), &deposit_amount);
+
+    let key = DataKey::SourceBond(source.clone());
+    env.storage().persistent().set(&key, &required);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    if check_source_inactive(env, &source) {
+        mark_source_active(env, &source);
+    }
+
+    SourceBondDepositedEvent {
+        source,
+        amount: deposit_amount,
+    }
+    .publish(env);
+}
+
+pub fn forfeit_source_bond_internal(env: &Env, source: Address) {
+    let key = DataKey::SourceBond(source.clone());
+    let deposited = get_source_deposited_bond(env, source.clone());
+    if deposited > 0 {
+        let treasury_key = DataKey::TreasuryBalance;
+        let balance: i128 = env.storage().persistent().get(&treasury_key).unwrap_or(0);
+        env.storage().persistent().set(&treasury_key, &(balance + deposited));
+
+        env.storage().persistent().set(&key, &0i128);
+
+        SourceBondForfeitedEvent {
+            source,
+            amount: deposited,
+        }
+        .publish(env);
+    }
+}
+
 
 

@@ -296,7 +296,12 @@ pub enum DataKey {
     SourceProposal(u32),
     /// Geolocation metadata for a registered oracle source.
     SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///

@@ -2400,5 +2400,42 @@ fn test_source_geolocation_metrics() {
     assert_eq!(report.overall_score, 3334u32);
 }
 
+#[test]
+fn test_source_heartbeat_liveness_bond() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let source = register_test_source(&e, &client, "Source1");
+    let asset = register_test_asset(&e, &client);
+
+    let token = Address::generate(&e);
+    client.set_stake_token_contract(&token);
+    assert_eq!(client.get_stake_token_contract().unwrap(), token);
+
+    // Initial config check
+    assert_eq!(client.get_source_bond(), 0i128);
+
+    // Set bond to 1000
+    client.set_source_bond(&1000i128);
+    assert_eq!(client.get_source_bond(), 1000i128);
+
+    // Submission should fail now because source has not paid the bond
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Deposit bond
+    client.deposit_source_bond(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 1000i128);
+
+    // Submission should now succeed
+    client.submit_price(&source, &asset, &100i128, &100u64);
+
+    // Deregistration should return the bond
+    client.remove_source(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 0i128);
+}
+
+
 
 
