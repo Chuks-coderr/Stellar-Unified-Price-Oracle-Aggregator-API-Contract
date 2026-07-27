@@ -294,11 +294,32 @@ pub fn get_inactive_sources(env: &Env) -> u32 {
     count
 }
 
-pub fn is_source_suspended(_env: &Env, _source: Address) -> bool {
-    false
+pub fn is_source_suspended(env: &Env, source: Address) -> bool {
+    let key = DataKey::SrcSuspended(source);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+pub fn suspend_source_internal(env: &Env, source: Address) {
+    let key = DataKey::SrcSuspended(source);
+    env.storage().persistent().set(&key, &true);
+}
+
+pub fn reactivate_source(env: &Env, source: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    let key = DataKey::SrcSuspended(source);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
 }
 
 pub fn record_invalid_submission(_env: &Env, _source: Address) {}
+
 
 pub fn get_source_last_heartbeat(env: &Env, source: Address) -> u64 {
     let key = DataKey::SrcHeartbeat(source);
