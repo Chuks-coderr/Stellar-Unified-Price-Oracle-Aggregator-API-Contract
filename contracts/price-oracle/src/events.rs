@@ -1267,3 +1267,55 @@ pub struct InterpolationChangedEvent {
 pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #204: Source Performance Analytics
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when source analytics are reported.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAnalyticsReportedEvent {
+    #[topic]
+    pub source: Address,
+    pub accuracy: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #203: Storage Lease Extension Batching
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when asset TTL is batch-extended.
+#[contractevent]
+#[derive(Clone)]
+pub struct AssetTtlExtendedEvent {
+    #[topic]
+    pub asset: Address,
+    pub num_extended: u32,
+    pub current_ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #206: Source Rotation Schedule
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a source rotation schedule is set for an asset.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceRotationScheduleSetEvent {
+    #[topic]
+    pub asset: Address,
+    pub rotation_interval: u32,
+    pub overlap_period: u32,
+    pub num_sources: u32,
+}
+
+/// Emitted when sources are rotated for an asset.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourcesRotatedEvent {
+    #[topic]
+    pub asset: Address,
+    pub new_active_count: u32,
+    pub next_rotation_ledger: u32,
+}

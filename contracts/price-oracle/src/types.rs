@@ -284,6 +284,34 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+
+    // -------------------------------------------------------------------------
+    // #203: Storage Lease Extension Batching
+    // -------------------------------------------------------------------------
+    /// Last ledger on which TTL was extended for an asset.
+    AssetLastTtlExtended(Address),
+
+    // -------------------------------------------------------------------------
+    // #204: Source Performance Analytics
+    // -------------------------------------------------------------------------
+    /// Performance analytics for a source (SourceAnalytics).
+    SourceAnalytics(Address),
+    /// Number of submissions from a source (for accuracy calculation).
+    SourceSubmissionCount(Address),
+    /// Sum of accuracy scores for a source (for average calculation).
+    SourceAccuracySum(Address),
+
+    // -------------------------------------------------------------------------
+    // #206: Source Rotation Schedule
+    // -------------------------------------------------------------------------
+    /// Rotation schedule for an asset (SourceRotationSchedule).
+    AssetRotationSchedule(Address),
+    /// Currently active source set for an asset (Vec<Address>).
+    AssetActiveSourceSet(Address),
+    /// Standby source set for rotation (Vec<Address>).
+    AssetStandbySourceSet(Address),
+    /// Ledger at which the next rotation should occur.
+    AssetNextRotationLedger(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -818,4 +846,46 @@ pub struct CrossReferenceResult {
     pub deviation_bps: u32,
     /// Contract address of the reference oracle that provided `ref_price`.
     pub ref_contract: Address,
+}
+
+// =============================================================================
+// #204 — Source Performance Analytics
+// =============================================================================
+
+/// Performance analytics for an oracle source.
+///
+/// Stored under [`DataKey::SourceAnalytics`] keyed by source address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceAnalytics {
+    /// Accuracy percentage (0–100) based on price deviation.
+    pub accuracy: u32,
+    /// Timeliness percentage (0–100) based on submission interval.
+    pub timeliness: u32,
+    /// Uptime percentage (0–100) based on active vs total submissions.
+    pub uptime: u32,
+    /// Current reputation score (0–100).
+    pub reputation: u32,
+    /// Reputation trajectory: positive = improving, negative = degrading.
+    pub reputation_trajectory: i32,
+}
+
+// =============================================================================
+// #206 — Source Rotation Schedule
+// =============================================================================
+
+/// Rotation schedule for automated source cycling per asset.
+///
+/// Stored under [`DataKey::AssetRotationSchedule`] keyed by asset address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceRotationSchedule {
+    /// Interval (in ledgers) between rotations.
+    pub rotation_interval: u32,
+    /// Ledger at which the next rotation should occur.
+    pub next_rotation_ledger: u32,
+    /// Overlap period (in ledgers) where old and new sets coexist.
+    pub overlap_period: u32,
+    /// Whether this rotation schedule is enabled.
+    pub enabled: bool,
 }

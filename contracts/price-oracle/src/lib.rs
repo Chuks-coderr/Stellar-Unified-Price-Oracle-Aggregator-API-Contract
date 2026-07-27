@@ -8,6 +8,7 @@
 
 mod admin;
 mod alerts;
+mod analytics;
 mod assets;
 mod correlation;
 mod cross_reference;
@@ -24,10 +25,13 @@ mod pause;
 mod prices;
 mod reentrancy;
 mod relayer;
+mod reputation;
+mod rotation;
 mod sources;
 mod storage;
 mod subscription;
 mod timelock;
+mod ttl_batching;
 mod types;
 mod whitelisting;
 mod zk_verify;
@@ -2299,6 +2303,206 @@ impl PriceOracleContract {
     ) {
         reentrancy::enter(&env);
         zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
+        reentrancy::exit(&env);
+    }
+
+    // --- #205: Source Staking & Slashing ---
+
+    /// Stakes `amount` of oracle tokens from `source` into contract custody.
+    ///
+    /// The source must authorize this call.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `source` - Source address staking the tokens (must authorize).
+    /// * `amount` - Amount in stroops to stake (must be > 0).
+    /// * `token_contract` - Address of the XLM/oracle token contract.
+    pub fn stake(env: Env, source: Address, amount: i128, token_contract: Address) {
+        reentrancy::enter(&env);
+        reputation::stake_source(&env, source, amount, token_contract);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current locked stake for a source (in stroops). Returns 0 if no stake.
+    pub fn get_stake(env: Env, source: Address) -> i128 {
+        reputation::get_stake(&env, source)
+    }
+
+    /// Returns the staked tokens to a source when deregistered (admin-only).
+    ///
+    /// Called by remove_source in sources.rs. Transfers any remaining stake back.
+    pub fn unstake(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        let admin = storage::get_admin(&env);
+        admin.require_auth();
+        reputation::unstake_source(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    /// Slashes a configurable percentage of `source`'s locked stake (admin-only).
+    ///
+    /// Slashed funds are added to the contract's internal treasury balance.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `source` - Source to slash.
+    /// * `force` - If `true`, skip the reputation threshold check (admin override).
+    pub fn slash_source(env: Env, source: Address, force: bool) {
+        reentrancy::enter(&env);
+        reputation::slash_source(&env, source, force);
+        reentrancy::exit(&env);
+    }
+
+    /// Sweeps all slashed treasury funds to `recipient` (admin-only).
+    pub fn sweep_treasury(env: Env, recipient: Address) {
+        reentrancy::enter(&env);
+        reputation::sweep_treasury(&env, recipient);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns current treasury balance (sum of all slashed amounts).
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        reputation::get_treasury_balance(&env)
+    }
+
+    /// Sets the address of the stake/fee token contract (admin-only).
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reentrancy::enter(&env);
+        reputation::set_stake_token_contract(&env, token);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the configured stake token contract address, if set.
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        reputation::get_stake_token_contract(&env)
+    }
+
+    /// Sets the reputation decay factor (0–100, admin-only).
+    pub fn set_reputation_decay_factor(env: Env, factor: u32) {
+        reentrancy::enter(&env);
+        reputation::set_decay_factor(&env, factor);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current reputation decay factor.
+    pub fn get_reputation_decay_factor(env: Env) -> u32 {
+        reputation::get_decay_factor(&env)
+    }
+
+    /// Sets the slash percentage (0–100, admin-only).
+    pub fn set_slash_percent(env: Env, percent: u32) {
+        reentrancy::enter(&env);
+        reputation::set_slash_percent(&env, percent);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current slash percentage.
+    pub fn get_slash_percent(env: Env) -> u32 {
+        reputation::get_slash_percent(&env)
+    }
+
+    /// Sets the reputation threshold below which a source becomes slash-eligible (admin-only).
+    pub fn set_slash_reputation_threshold(env: Env, threshold: u32) {
+        reentrancy::enter(&env);
+        reputation::set_slash_threshold(&env, threshold);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current slash reputation threshold.
+    pub fn get_slash_reputation_threshold(env: Env) -> u32 {
+        reputation::get_slash_threshold(&env)
+    }
+
+    // --- #204: Source Performance Analytics ---
+
+    /// Returns analytics for a source over the last `num_rounds` submissions.
+    ///
+    /// Contains accuracy, timeliness, uptime, reputation, and trajectory.
+    pub fn get_source_analytics(env: Env, source: Address, num_rounds: u32) -> types::SourceAnalytics {
+        analytics::get_source_analytics(&env, source, num_rounds)
+    }
+
+    // --- #203: Storage Lease Extension Batching ---
+
+    /// Batch-extends TTL for all storage related to an asset.
+    ///
+    /// Reduces TTL management transaction volume for operators with many assets.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Asset address to extend TTL for.
+    /// * `num_entries` - Maximum number of storage entries to extend per call.
+    ///
+    /// # Returns
+    /// Number of entries actually extended.
+    pub fn extend_asset_ttl(env: Env, asset: Address, num_entries: u32) -> u32 {
+        reentrancy::enter(&env);
+        let result = ttl_batching::extend_asset_ttl(&env, asset, num_entries);
+        reentrancy::exit(&env);
+        result
+    }
+
+    // --- #206: Source Rotation Schedule ---
+
+    /// Sets the rotation schedule for an asset's oracle sources (admin-only).
+    ///
+    /// Designates which sources should be active and when rotation should occur.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Asset address to configure rotation for.
+    /// * `sources` - Initial set of active sources for this asset.
+    /// * `rotation_interval` - Ledgers between rotations (must be > 0).
+    /// * `overlap_period` - Ledgers where old and new sets coexist.
+    pub fn set_source_rotation_schedule(
+        env: Env,
+        asset: Address,
+        sources: Vec<Address>,
+        rotation_interval: u32,
+        overlap_period: u32,
+    ) {
+        reentrancy::enter(&env);
+        rotation::set_source_schedule(&env, asset, sources, rotation_interval, overlap_period);
+        reentrancy::exit(&env);
+    }
+
+    /// Performs immediate rotation for an asset if scheduled.
+    ///
+    /// Checks if rotation should occur based on ledger time. If the
+    /// next_rotation_ledger has been reached, swaps active and standby sets.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Asset to rotate sources for.
+    ///
+    /// # Returns
+    /// `true` if rotation occurred, `false` if no rotation was needed.
+    pub fn attempt_source_rotation(env: Env, asset: Address) -> bool {
+        reentrancy::enter(&env);
+        let result = rotation::attempt_rotation(&env, &asset);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the currently active source set for an asset.
+    pub fn get_active_sources(env: Env, asset: Address) -> Vec<Address> {
+        rotation::get_active_sources(&env, &asset)
+    }
+
+    /// Returns the standby source set for an asset.
+    pub fn get_standby_sources(env: Env, asset: Address) -> Vec<Address> {
+        rotation::get_standby_sources(&env, &asset)
+    }
+
+    /// Returns the rotation schedule for an asset.
+    pub fn get_rotation_schedule(env: Env, asset: Address) -> Option<types::SourceRotationSchedule> {
+        rotation::get_rotation_schedule(&env, &asset)
+    }
+
+    /// Disables rotation for an asset (admin-only).
+    pub fn disable_rotation(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        rotation::disable_rotation(&env, &asset);
         reentrancy::exit(&env);
     }
 }
