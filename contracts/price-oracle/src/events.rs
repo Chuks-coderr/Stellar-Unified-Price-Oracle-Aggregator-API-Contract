@@ -1267,3 +1267,80 @@ pub struct InterpolationChangedEvent {
 pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #199: Off-Chain Price Deviation Alerting System
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when price deviation vs reference exceeds threshold.
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceDeviationAlertEvent {
+    #[topic]
+    pub asset: Address,
+    pub our_price: i128,
+    pub reference_price: i128,
+    pub deviation_bps: u32,
+    pub ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #201: Structured Event Indexing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when an event is indexed for retrieval by address or type.
+#[contractevent]
+#[derive(Clone)]
+pub struct EventIndexedEvent {
+    pub event_type: u32,
+    pub participant_count: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #200: Tiered Rate Limiting
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when consumer tier is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct RateLimitTierChangedEvent {
+    #[topic]
+    pub consumer: Address,
+    pub new_tier: u32,
+}
+
+/// Emitted when a consumer exceeds their rate limit.
+#[contractevent]
+#[derive(Clone)]
+pub struct RateLimitExceededEvent {
+    #[topic]
+    pub consumer: Address,
+    pub limit: u32,
+    pub current_count: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #202: Deadline-Aware Price Submission with Rebate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a price is submitted with a deadline.
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceSubmittedWithDeadlineEvent {
+    #[topic]
+    pub source: Address,
+    pub asset: Address,
+    pub deadline_ledger: u32,
+    pub current_ledger: u32,
+    pub rebate_amount: i128,
+}
+
+/// Emitted when a rebate is distributed to a source.
+#[contractevent]
+#[derive(Clone)]
+pub struct RebateDistributedEvent {
+    #[topic]
+    pub source: Address,
+    pub asset: Address,
+    pub rebate_amount: i128,
+}

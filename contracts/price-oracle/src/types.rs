@@ -284,6 +284,38 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+
+    // -------------------------------------------------------------------------
+    // #199: Off-Chain Price Deviation Alerting
+    // -------------------------------------------------------------------------
+    /// Last recorded price for deviation alert (i128).
+    AlertLastPrice(Address),
+
+    // -------------------------------------------------------------------------
+    // #201: Event Indexing
+    // -------------------------------------------------------------------------
+    /// Registry of event type discriminants.
+    EventTypeRegistry,
+    /// Reverse index: address to event IDs.
+    EventsByParticipant(Address),
+    /// Reverse index: event type to event IDs.
+    EventsByType(u32),
+
+    // -------------------------------------------------------------------------
+    // #200: Tiered Rate Limiting
+    // -------------------------------------------------------------------------
+    /// Rate limit tier assignment (stored in ConsumerInfo).
+    // (Uses existing ConsumerInfo structure)
+
+    // -------------------------------------------------------------------------
+    // #202: Deadline-Aware Submission with Rebate
+    // -------------------------------------------------------------------------
+    /// Deadline ledger for a source's submission (Address, Address) -> u32.
+    SubmissionDeadline(Address, Address),
+    /// Rebate amount for a deadline submission (Address, Address) -> i128.
+    SubmissionRebate(Address, Address),
+    /// Accumulated rebate balance for a source.
+    RebateBalance(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.

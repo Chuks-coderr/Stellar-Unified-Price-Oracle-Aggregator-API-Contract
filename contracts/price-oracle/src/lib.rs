@@ -8,10 +8,13 @@
 
 mod admin;
 mod alerts;
+mod alerting;
 mod assets;
 mod correlation;
 mod cross_reference;
+mod deadline_rebate;
 mod errors;
+mod event_indexing;
 mod events;
 mod exotic_pricing;
 mod fee_market;
@@ -22,6 +25,7 @@ mod migration;
 mod multisig;
 mod pause;
 mod prices;
+mod rate_limiting;
 mod reentrancy;
 mod relayer;
 mod sources;
@@ -2300,6 +2304,141 @@ impl PriceOracleContract {
         reentrancy::enter(&env);
         zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
         reentrancy::exit(&env);
+    }
+
+    // --- #199: Off-Chain Price Deviation Alerting ---
+
+    /// Checks price deviation against reference and triggers alert if threshold exceeded.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Asset being monitored.
+    /// * `our_price` - Our aggregated price.
+    /// * `reference_price` - Price from external reference.
+    /// * `deviation_threshold_bps` - Threshold in basis points.
+    ///
+    /// # Returns
+    /// `true` if deviation exceeded and alert triggered.
+    pub fn check_and_alert_deviation(
+        env: Env,
+        asset: Address,
+        our_price: i128,
+        reference_price: i128,
+        deviation_threshold_bps: u32,
+    ) -> bool {
+        alerting::check_and_alert_deviation(&env, asset, our_price, reference_price, deviation_threshold_bps)
+    }
+
+    /// Returns last recorded price for deviation alert.
+    pub fn get_last_alert_price(env: Env, asset: Address) -> i128 {
+        alerting::get_last_alert_price(&env, &asset)
+    }
+
+    // --- #201: Structured Event Indexing ---
+
+    /// Retrieves all events involving a specific address.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `address` - Address to query events for.
+    /// * `limit` - Maximum number of events to return.
+    ///
+    /// # Returns
+    /// Vector of event identifiers.
+    pub fn get_events_for_address(env: Env, address: Address, limit: u32) -> Vec<u32> {
+        event_indexing::get_events_for_address(&env, address, limit)
+    }
+
+    /// Retrieves all events of a specific type.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `event_type` - Event type discriminant.
+    /// * `limit` - Maximum number of events to return.
+    ///
+    /// # Returns
+    /// Vector of event identifiers.
+    pub fn get_events_by_type(env: Env, event_type: u32, limit: u32) -> Vec<u32> {
+        event_indexing::get_events_by_type(&env, event_type, limit)
+    }
+
+    /// Returns registry of all event types.
+    pub fn get_event_type_registry(env: Env) -> Vec<u32> {
+        event_indexing::get_event_type_registry(&env)
+    }
+
+    // --- #200: Tiered Rate Limiting ---
+
+    /// Checks if consumer has exceeded their rate limit for current ledger.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `consumer` - Consumer address to check.
+    ///
+    /// # Returns
+    /// `true` if limit exceeded, `false` otherwise.
+    pub fn check_rate_limit(env: Env, consumer: Address) -> bool {
+        rate_limiting::check_rate_limit(&env, consumer)
+    }
+
+    /// Grants enterprise (unlimited) tier to a consumer (admin-only).
+    pub fn grant_enterprise_tier(env: Env, consumer: Address) {
+        reentrancy::enter(&env);
+        rate_limiting::grant_enterprise_tier(&env, consumer);
+        reentrancy::exit(&env);
+    }
+
+    /// Revokes enterprise tier from a consumer (admin-only).
+    pub fn revoke_enterprise_tier(env: Env, consumer: Address) {
+        reentrancy::enter(&env);
+        rate_limiting::revoke_enterprise_tier(&env, consumer);
+        reentrancy::exit(&env);
+    }
+
+    // --- #202: Deadline-Aware Submission with Rebate ---
+
+    /// Submits price with deadline for potential gas rebate.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `source` - Source making submission.
+    /// * `asset` - Asset being priced.
+    /// * `price` - Price value.
+    /// * `timestamp` - Submission timestamp.
+    /// * `deadline_ledger` - Ledger by which price must be used for rebate.
+    /// * `rebate_amount` - Gas rebate in stroops if used before deadline.
+    pub fn submit_price_with_deadline(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        deadline_ledger: u32,
+        rebate_amount: i128,
+    ) {
+        reentrancy::enter(&env);
+        // First, do normal price submission via prices module
+        // Then, record deadline and rebate eligibility
+        deadline_rebate::record_deadline_submission(&env, source, asset, deadline_ledger, rebate_amount);
+        reentrancy::exit(&env);
+    }
+
+    /// Checks if submission is within deadline for rebate eligibility.
+    pub fn is_within_deadline(env: Env, source: Address, asset: Address) -> bool {
+        deadline_rebate::is_within_deadline(&env, &source, &asset)
+    }
+
+    /// Claims rebate for deadline submission if within deadline.
+    pub fn claim_rebate(env: Env, source: Address, asset: Address) -> i128 {
+        reentrancy::enter(&env);
+        let amount = deadline_rebate::claim_rebate(&env, source, asset);
+        reentrancy::exit(&env);
+        amount
+    }
+
+    /// Returns total accumulated rebates for a source.
+    pub fn get_rebate_balance(env: Env, source: Address) -> i128 {
+        deadline_rebate::get_rebate_balance(&env, &source)
     }
 }
 
