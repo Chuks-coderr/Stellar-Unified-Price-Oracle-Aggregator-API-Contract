@@ -323,6 +323,41 @@ fn test_submit_price_median_even() {
 }
 
 #[test]
+fn test_get_price_with_confidence_tracks_source_dispersion() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1234567890);
+
+    let (client, _) = setup_contract(&e);
+    let source1 = register_test_source(&e, &client, "A");
+    let source2 = register_test_source(&e, &client, "B");
+    let source3 = register_test_source(&e, &client, "C");
+    client.set_min_sources_required(&3u32);
+
+    let tight_asset = register_test_asset(&e, &client);
+    let wide_asset = register_test_asset(&e, &client);
+
+    submit_test_price(&client, &source1, &tight_asset, 1000i128, 1234567890);
+    submit_test_price(&client, &source2, &tight_asset, 1001i128, 1234567890);
+    submit_test_price(&client, &source3, &tight_asset, 1002i128, 1234567890);
+
+    submit_test_price(&client, &source1, &wide_asset, 1000i128, 1234567890);
+    submit_test_price(&client, &source2, &wide_asset, 1400i128, 1234567890);
+    submit_test_price(&client, &source3, &wide_asset, 1800i128, 1234567890);
+
+    let (tight_aggregate, tight_confidence) =
+        client.get_price_with_confidence(&tight_asset).unwrap();
+    let (wide_aggregate, wide_confidence) = client.get_price_with_confidence(&wide_asset).unwrap();
+
+    assert_eq!(tight_aggregate.price, 1001i128);
+    assert_eq!(tight_aggregate.num_sources, 3u32);
+    assert_eq!(wide_aggregate.price, 1400i128);
+    assert_eq!(wide_aggregate.num_sources, 3u32);
+    assert!(tight_confidence < wide_confidence);
+    assert!(tight_confidence < 200u32);
+    assert!(wide_confidence > 2000u32);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #0)")]
 fn test_submit_price_unauthorized_source() {
     let e = Env::default();

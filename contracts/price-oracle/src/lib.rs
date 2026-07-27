@@ -927,6 +927,10 @@ impl PriceOracleContract {
         prices::get_price(&env, asset, max_age)
     }
 
+    pub fn get_price_with_confidence(env: Env, asset: Address) -> Option<(AggregatePrice, u32)> {
+        prices::get_price_with_confidence(&env, asset)
+    }
+
     /// Returns the most recent price submission from a specific oracle source for an asset.
     ///
     /// # Arguments
