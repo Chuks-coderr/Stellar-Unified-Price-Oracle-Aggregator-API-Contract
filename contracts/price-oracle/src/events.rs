@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, symbol_short, Address, Bytes, String, Symbol};
+use soroban_sdk::{contractevent, Address, Bytes, String, Symbol};
 
 /// Publishes a generic admin-action audit event.
 ///
@@ -555,7 +555,7 @@ pub struct AggregationTriggeredEvent {
 /// Emitted when the aggregation cooldown is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct AggregationCooldownChangedEvent {
+pub struct AggCooldownChangedEvent {
     pub cooldown_ledgers: u32,
 }
 
@@ -564,7 +564,7 @@ pub struct AggregationCooldownChangedEvent {
 /// Emitted when the minimum submission interval is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct MinSubmissionIntervalChangedEvent {
+pub struct SubmitIntervalChangedEvent {
     pub interval_ledgers: u32,
 }
 
@@ -696,7 +696,7 @@ pub struct SourceHealthChangedEvent {
 /// Emitted when the max_inactive_ledgers configuration is changed.
 #[contractevent]
 #[derive(Clone)]
-pub struct MaxInactiveLedgersChangedEvent {
+pub struct InactiveLedgersChangedEvent {
     /// The new maximum inactive ledgers threshold.
     pub value: u32,
 }
@@ -864,159 +864,406 @@ pub struct PricePendingFinalityEvent {
     pub finality_ledger: u32,
 }
 
-// =============================================================================
-// #176 — Prioritized Submission Fee Market
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// #171: Source Reputation & Slashing Events
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Emitted when a submission is enqueued in the fee market priority buffer.
+/// Emitted when an oracle source stakes tokens into contract custody.
 #[contractevent]
 #[derive(Clone)]
-pub struct FmSubmissionEnqueuedEvent {
-    /// Address of the source that submitted.
+pub struct SourceStakedEvent {
+    /// Address of the source that staked.
     #[topic]
     pub source: Address,
-    /// Priority fee attached to the submission.
-    pub priority_fee: u128,
-    /// Current depth of the queue after insertion.
-    pub queue_depth: u32,
+    /// Amount staked in this transaction (stroops).
+    pub amount: i128,
+    /// New total stake after this transaction (stroops).
+    pub total_stake: i128,
 }
 
-/// Emitted when a submission is processed out of the fee market queue.
+/// Emitted when a source's staked tokens are returned upon deregistration.
 #[contractevent]
 #[derive(Clone)]
-pub struct FmSubmissionProcessedEvent {
+pub struct SourceUnstakedEvent {
+    /// Address of the source whose stake was returned.
     #[topic]
     pub source: Address,
+    /// Amount returned (may be less than original stake if slashed).
+    pub amount_returned: i128,
+}
+
+/// Emitted when an admin slashes a portion of a source's locked stake.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceSlashedEvent {
+    /// Address of the slashed source.
+    #[topic]
+    pub source: Address,
+    /// Amount slashed (moved to treasury) in stroops.
+    pub slash_amount: i128,
+    /// Remaining stake after slashing.
+    pub remaining_stake: i128,
+    /// Configured slash percentage applied.
+    pub slash_percent: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #172: Cross-Asset Correlation Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a correlation ratio band is configured or updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationBandSetEvent {
+    /// Base asset of the pair.
+    #[topic]
+    pub base_asset: Address,
+    /// Quote asset of the pair.
+    #[topic]
+    pub quote_asset: Address,
+    /// Minimum acceptable ratio (scaled by RATIO_PRECISION = 10^7).
+    pub min_ratio: u128,
+    /// Maximum acceptable ratio (scaled by RATIO_PRECISION = 10^7).
+    pub max_ratio: u128,
+    /// Whether the check is currently enabled.
+    pub enabled: bool,
+}
+
+/// Emitted when a submitted price causes a correlation ratio violation.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationViolationEvent {
+    /// Base asset of the violated pair.
+    #[topic]
+    pub base_asset: Address,
+    /// Quote asset of the violated pair.
+    #[topic]
+    pub quote_asset: Address,
+    /// Source that submitted the out-of-band price.
+    #[topic]
+    pub source: Address,
+    /// The price just submitted.
+    pub submitted_price: i128,
+    /// The current aggregate price of the counterpart asset.
+    pub counterpart_price: i128,
+    /// Computed ratio (scaled by RATIO_PRECISION).
+    pub ratio: u128,
+    /// Configured minimum ratio.
+    pub min_ratio: u128,
+    /// Configured maximum ratio.
+    pub max_ratio: u128,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #173: Tiered Consumer Access Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a new consumer registers with a tier.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerRegisteredEvent {
+    /// Address of the newly registered consumer.
+    #[topic]
+    pub consumer: Address,
+    /// Tier discriminant (0=Free, 1=Basic, 2=Premium).
+    pub tier: u32,
+    /// Unix timestamp when the subscription expires (0 = no expiry for Free tier).
+    pub subscription_expiry_ts: u64,
+}
+
+/// Emitted when a consumer changes to a different tier.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerTierChangedEvent {
+    /// Address of the consumer changing tiers.
+    #[topic]
+    pub consumer: Address,
+    /// Old tier discriminant.
+    pub old_tier: u32,
+    /// New tier discriminant.
+    pub new_tier: u32,
+}
+
+/// Emitted when a subscription fee is paid.
+#[contractevent]
+#[derive(Clone)]
+pub struct TierFeePaidEvent {
+    /// Consumer that paid the fee.
+    #[topic]
+    pub consumer: Address,
+    /// Tier discriminant the fee was paid for.
+    pub tier: u32,
+    /// Amount paid in stroops.
+    pub amount: i128,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #174: Price Deviation Alert Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a consumer successfully subscribes to price deviation alerts.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertSubscribedEvent {
+    /// Address of the subscribing consumer.
+    #[topic]
+    pub consumer: Address,
+    /// Asset being monitored.
     #[topic]
     pub asset: Address,
+    /// Movement threshold in basis points.
+    pub threshold_bps: u32,
+    /// TTL in ledgers for this subscription.
+    pub ttl_ledgers: u32,
+}
+
+/// Emitted when an alert threshold is breached and a callback is dispatched.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertTriggeredEvent {
+    /// Subscriber that was notified.
+    #[topic]
+    pub consumer: Address,
+    /// Asset whose price moved.
+    #[topic]
+    pub asset: Address,
+    /// Previous aggregate price.
+    pub old_price: i128,
+    /// New aggregate price.
+    pub new_price: i128,
+    /// Actual price movement in basis points.
+    pub movement_bps: u32,
+    /// The configured threshold that was exceeded.
+    pub threshold_bps: u32,
+}
+
+/// Emitted when a consumer's callback invocation fails.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertCallbackFailedEvent {
+    /// Subscriber whose callback failed.
+    #[topic]
+    pub consumer: Address,
+    /// Asset being monitored.
+    #[topic]
+    pub asset: Address,
+}
+
+/// Emitted when a subscription expires and is pruned.
+#[contractevent]
+#[derive(Clone)]
+pub struct AlertSubscriptionExpiredEvent {
+    /// Consumer whose subscription expired.
+    #[topic]
+    pub consumer: Address,
+    /// Asset the subscription was for.
+    #[topic]
+    pub asset: Address,
+    /// Ledger at which expiry was detected.
+    pub expired_ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Off-chain relayer network integration events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when the admin approves a new relayer.
+///
+/// Topics: `relayer`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerAddedEvent {
+    /// Address of the newly approved relayer.
+    #[topic]
+    pub relayer: Address,
+    /// Address of the admin who approved the relayer.
+    #[topic]
+    pub admin: Address,
+    /// Human-readable display name for the relayer.
+    pub name: String,
+}
+
+/// Emitted when the admin revokes a relayer's approval.
+///
+/// Topics: `relayer`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerRemovedEvent {
+    /// Address of the relayer whose approval was revoked.
+    #[topic]
+    pub relayer: Address,
+    /// Address of the admin who performed the revocation.
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when an approved relayer successfully submits a price on behalf of a source.
+///
+/// Topics: `asset`, `source`, `relayer`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceRelayedEvent {
+    /// Address of the asset being priced.
+    #[topic]
+    pub asset: Address,
+    /// Address of the oracle source whose price data was relayed.
+    #[topic]
+    pub source: Address,
+    /// Address of the relayer that submitted the transaction.
+    #[topic]
+    pub relayer: Address,
+    /// Raw price value scaled by `10^decimals`.
     pub price: i128,
-    pub priority_fee: u128,
-    pub source_share: u128,
-    pub treasury_share: u128,
+    /// Unix timestamp (seconds) of the price observation.
+    pub timestamp: u64,
 }
 
-/// Emitted when the minimum priority fee threshold is changed.
-#[contractevent]
-#[derive(Clone)]
-pub struct FmMinPriorityFeeChangedEvent {
-    pub value: u128,
+/// Publishes the relayer-fee-changed event.
+///
+/// Uses manual event publishing because `i128` fields in `#[contractevent]` may
+/// trigger edge cases in some tooling.
+///
+/// # Arguments
+///
+/// * `env` - The Soroban execution environment.
+/// * `admin` - Address of the admin who set the new fee.
+/// * `fee` - New fee per submission in stroops.
+#[allow(deprecated)]
+pub fn emit_relayer_fee_set(env: &soroban_sdk::Env, admin: Address, fee: i128) {
+    let sym = soroban_sdk::symbol_short!("rfee");
+    env.events().publish((sym, admin), (fee,));
 }
 
-/// Emitted when the fee distribution ratio is changed.
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-reference oracle check events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a cross-reference check detects that our price deviates from a reference
+/// oracle's price by more than the configured threshold.
+///
+/// Topics: `asset`, `ref_contract`
 #[contractevent]
 #[derive(Clone)]
-pub struct FmFeeDistributionRatioChangedEvent {
-    /// Percentage of fees going to sources (0–100).
+pub struct CrossRefDeviationEvent {
+    /// Address of the asset for which the deviation was detected.
+    #[topic]
+    pub asset: Address,
+    /// Contract address of the reference oracle that reported the diverging price.
+    #[topic]
+    pub ref_contract: Address,
+    /// Our current aggregated price for the asset.
+    pub our_price: i128,
+    /// Price reported by the reference oracle.
+    pub ref_price: i128,
+    /// Absolute deviation between the two prices in basis points (1 % = 100 bps).
+    pub deviation_bps: u32,
+    /// Configured deviation threshold (in basis points) that was exceeded.
+    pub threshold_bps: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #92/#93/#94: history cap, event spam protection, max aggregation sources
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when per-asset history is pruned beyond `max_history_per_asset` (issue #94).
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct HistoryPerAssetPrunedEvent {
+    #[topic]
+    pub asset: Address,
+    /// Ledger removed from the history index.
+    pub pruned_ledger: u32,
+    /// Remaining entry count after pruning.
+    pub remaining: u32,
+}
+
+/// Emitted when the `max_history_per_asset` limit is changed (issue #94).
+#[contractevent]
+#[derive(Clone)]
+pub struct HistoryPerAssetChangedEvent {
     pub value: u32,
 }
 
-// =============================================================================
-// #178 — N-of-M Multi-Sig Governance & Ordered Timelock
-// =============================================================================
-
-/// Emitted when the governor set is updated.
+/// Emitted when the event-per-call cap is exceeded in a single invocation (issue #92).
+/// The transaction still succeeds; this is a warning only.
+///
+/// Topics: `asset`
 #[contractevent]
 #[derive(Clone)]
-pub struct MsGovernorsUpdatedEvent {
-    pub governor_count: u32,
-    pub required_approvals: u32,
-}
-
-/// Emitted when a new multi-sig operation is proposed.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationProposedEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
-    #[topic]
-    pub proposed_by: Address,
-    pub required_approvals: u32,
-    pub proposed_ledger: u32,
-}
-
-/// Emitted when a governor approves an operation.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationApprovedEvent {
-    pub operation_id: u32,
-    #[topic]
-    pub governor: Address,
-    pub total_approvals: u32,
-    pub required_approvals: u32,
-}
-
-/// Emitted when the N-th required approval is submitted and the timelock starts.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsQuorumReachedEvent {
-    pub operation_id: u32,
-    pub approvals: u32,
-    pub required: u32,
-    pub timelock_start_ledger: u32,
-}
-
-/// Emitted when a governor retracts their approval.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationRetractedEvent {
-    pub operation_id: u32,
-    #[topic]
-    pub governor: Address,
-    pub total_approvals: u32,
-}
-
-/// Emitted when a multi-sig operation is executed.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationExecutedEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
-    #[topic]
-    pub executed_by: Address,
-}
-
-/// Emitted when a multi-sig operation is cancelled.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationCancelledEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
-    #[topic]
-    pub cancelled_by: Address,
-}
-
-// =============================================================================
-// #177 — Exotic Asset Fair-Value Pricing Engine
-// =============================================================================
-
-/// Emitted when an exotic asset pricing configuration is set or updated.
-#[contractevent]
-#[derive(Clone)]
-pub struct ExoticAssetConfigSetEvent {
+pub struct EventLimitWarningEvent {
     #[topic]
     pub asset: Address,
+    /// Number of events that would have been emitted.
+    pub event_count: u32,
+    /// Configured cap that was exceeded.
+    pub max_events: u32,
 }
 
-// =============================================================================
-// #175 — Off-Chain ZK Proof Verification
-// =============================================================================
-
-/// Emitted when the Groth16 verifying key is updated.
+/// Emitted when the `max_events_per_call` limit is changed (issue #92).
 #[contractevent]
 #[derive(Clone)]
-pub struct ZkVerifyingKeySetEvent {
-    pub set_at_ledger: u32,
+pub struct EventsPerCallChangedEvent {
+    pub value: u32,
 }
 
-/// Emitted when a ZK-verified price is successfully submitted.
+/// Emitted when the `max_aggregation_sources` limit is changed (issue #93).
 #[contractevent]
 #[derive(Clone)]
-pub struct ZkPriceSubmittedEvent {
+pub struct MaxAggSourcesChangedEvent {
+    pub value: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #112: Storage migration events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a storage migration is resumed from a previously saved cursor.
+#[contractevent]
+#[derive(Clone)]
+pub struct MigrationResumedEvent {
     #[topic]
-    pub source: Address,
+    pub admin: Address,
+    pub cursor: u32,
+}
+
+/// Emitted when a new storage migration begins.
+#[contractevent]
+#[derive(Clone)]
+pub struct MigrationStartedEvent {
     #[topic]
-    pub asset: Address,
-    pub price: i128,
-    pub timestamp: u64,
-    pub verified_at_ledger: u32,
+    pub admin: Address,
+    pub from_version: u32,
+    pub to_version: u32,
+    pub started_ledger: u32,
+}
+
+/// Emitted when a storage migration finishes processing all items.
+#[contractevent]
+#[derive(Clone)]
+pub struct MigrationCompletedEvent {
+    #[topic]
+    pub admin: Address,
+    pub from_version: u32,
+    pub to_version: u32,
+    pub items_processed: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Misc admin config events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when historical-price interpolation is enabled or disabled.
+#[contractevent]
+#[derive(Clone)]
+pub struct InterpolationChangedEvent {
+    pub enabled: bool,
+}
+
+/// Emitted when the maximum number of registered oracle sources is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct MaxSourcesChangedEvent {
+    pub value: u32,
 }

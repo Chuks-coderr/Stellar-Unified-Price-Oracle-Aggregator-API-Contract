@@ -21,11 +21,11 @@
 //! 3. Implement the data-transformation logic.
 //! 4. Add tests in `migration_tests` below.
 
-use soroban_sdk::{panic_with_error, Address, Env};
+use soroban_sdk::{Address, Env};
 
 use crate::events::{MigrationCompletedEvent, MigrationResumedEvent, MigrationStartedEvent};
-use crate::storage::{get_admin, read_registered_assets, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD};
-use crate::types::{DataKey, ErrorCode, MigrationState, MigrationStatus};
+use crate::storage::{get_admin, read_registered_assets, LEDGER_BUMP, LEDGER_THRESHOLD};
+use crate::types::{DataKey, MigrationState, MigrationStatus};
 
 /// The storage schema version that this build of the contract targets.
 /// Increment this when releasing a schema-changing upgrade.
@@ -51,9 +51,7 @@ pub fn get_storage_version(env: &Env) -> u32 {
 
 /// Returns the active [`MigrationState`], or `None` when no migration is running.
 pub fn get_migration_state(env: &Env) -> Option<MigrationState> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::MigrationState)
+    env.storage().persistent().get(&DataKey::MigrationState)
 }
 
 /// Starts or resumes a storage migration.
@@ -77,7 +75,11 @@ pub fn migrate_storage(env: &Env, batch_size: u32) {
     let admin: Address = get_admin(env);
     admin.require_auth();
 
-    let effective_batch = if batch_size == 0 { DEFAULT_BATCH_SIZE } else { batch_size };
+    let effective_batch = if batch_size == 0 {
+        DEFAULT_BATCH_SIZE
+    } else {
+        batch_size
+    };
 
     let state_opt = get_migration_state(env);
 
@@ -132,9 +134,7 @@ pub fn migrate_storage(env: &Env, batch_size: u32) {
         env.storage()
             .persistent()
             .set(&DataKey::StorageVersion, &state.to_version);
-        env.storage()
-            .persistent()
-            .remove(&DataKey::MigrationState);
+        env.storage().persistent().remove(&DataKey::MigrationState);
 
         MigrationCompletedEvent {
             admin,

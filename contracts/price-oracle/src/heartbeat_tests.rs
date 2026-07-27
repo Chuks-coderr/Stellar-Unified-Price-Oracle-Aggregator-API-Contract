@@ -149,7 +149,10 @@ fn test_source_becomes_inactive_after_3_misses() {
     let is_inactive = client.is_source_inactive(&source);
     assert!(is_inactive);
     assert_eq!(client.get_missed_heartbeats(&source), 3u32);
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Inactive);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Inactive
+    );
 }
 
 #[test]
@@ -175,13 +178,19 @@ fn test_reactivation_requires_heartbeat_and_price() {
     client.is_source_inactive(&source);
     advance_time(&e, 40, 400);
     client.is_source_inactive(&source);
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Inactive);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Inactive
+    );
 
     // Heartbeat alone should NOT reactivate (price not yet submitted after reactivation attempt)
     advance_time(&e, 50, 500);
     client.submit_heartbeat(&source);
     // Still inactive because price hasn't been submitted
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Inactive);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Inactive
+    );
 
     // Now submit a price in the same ledger window
     client.submit_price(&source, &asset, &1000i128, &500u64);
@@ -189,7 +198,10 @@ fn test_reactivation_requires_heartbeat_and_price() {
     // Now submit another heartbeat — both conditions met, should reactivate
     advance_time(&e, 51, 510);
     client.submit_heartbeat(&source);
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Healthy);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Healthy
+    );
     assert_eq!(client.get_missed_heartbeats(&source), 0u32);
 }
 
@@ -212,12 +224,18 @@ fn test_heartbeat_alone_does_not_reactivate() {
     client.is_source_inactive(&source);
     advance_time(&e, 40, 400);
     client.is_source_inactive(&source);
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Inactive);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Inactive
+    );
 
     // Heartbeat-only does not reactivate
     advance_time(&e, 50, 500);
     client.submit_heartbeat(&source);
-    assert_eq!(client.get_source_health(&source), SourceHealthStatus::Inactive);
+    assert_eq!(
+        client.get_source_health(&source),
+        SourceHealthStatus::Inactive
+    );
 }
 
 // ---------------------------------------------------------------------------

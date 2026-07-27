@@ -9,8 +9,9 @@ use crate::test_helpers::*;
 
 /// Builds a soroban String of exactly `len` ASCII 'a' characters.
 fn make_string(e: &Env, len: usize) -> String {
-    let s: ::core::string::String = "a".repeat(len);
-    String::from_str(e, &s)
+    let buf = [b'a'; 512];
+    let s = core::str::from_utf8(&buf[..len]).unwrap();
+    String::from_str(e, s)
 }
 
 // ── Description ──────────────────────────────────────────────────────────────

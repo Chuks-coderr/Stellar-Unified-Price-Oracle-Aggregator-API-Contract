@@ -1,17 +1,17 @@
 use soroban_sdk::{panic_with_error, symbol_short, Address, Bytes, Env, String};
 
 use crate::events::{
-    emit_initialized, emit_max_price_deviation_changed, emit_timestamp_threshold_changed,
-    AdminChangedEvent, ContractUpgradedEvent, DecimalsChangedEvent, DescriptionChangedEvent,
-    HeartbeatIntervalChangedEvent, MaxHistoryChangedEvent, MinSourcesChangedEvent,
-    QueryRateLimitChangedEvent, ResolutionChangedEvent,
+    emit_admin_action, emit_initialized, emit_max_price_deviation_changed,
+    emit_timestamp_threshold_changed, AdminChangedEvent, AggCooldownChangedEvent,
+    AssetResolutionSetEvent, ContractUpgradedEvent, DecimalsChangedEvent, DescriptionChangedEvent,
+    EventsPerCallChangedEvent, HeartbeatIntervalChangedEvent, HistoryPerAssetChangedEvent,
+    InterpolationChangedEvent, MaxAggSourcesChangedEvent, MaxHistoryChangedEvent,
+    MaxSourcesChangedEvent, MinSourcesChangedEvent, QueryRateLimitChangedEvent,
+    ResolutionChangedEvent, SubmitIntervalChangedEvent,
 };
 use crate::storage::{
     get_admin, read_oracle_sources, read_subscription_plans, write_subscription_plans,
     DEFAULT_QUERY_RATE_LIMIT, LEDGER_BUMP, LEDGER_THRESHOLD,
-    HeartbeatIntervalChangedEvent, MaxAggregationSourcesChangedEvent, MaxEventsPerCallChangedEvent,
-    MaxHistoryChangedEvent, MaxHistoryPerAssetChangedEvent, MinSourcesChangedEvent,
-    ResolutionChangedEvent,
 };
 use crate::types::{AggregationMethod, DataKey, ErrorCode, OracleSources};
 
@@ -100,10 +100,9 @@ pub fn initialize(
         &DataKey::CfgAggregationMethod,
         &(AggregationMethod::Median as u32),
     );
-    env.storage().persistent().set(
-        &DataKey::QueryRateLimit,
-        &DEFAULT_QUERY_RATE_LIMIT,
-    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::QueryRateLimit, &DEFAULT_QUERY_RATE_LIMIT);
     let init_admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
     emit_initialized(
         env,
@@ -390,13 +389,208 @@ pub fn get_heartbeat_interval(env: &Env) -> u64 {
         .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL)
 }
 
+// --- Issue #94: per-asset history cap ---
+
+pub fn set_max_history_per_asset(env: &Env, new_max: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::MaxHistoryPerAsset, &new_max);
+    HistoryPerAssetChangedEvent { value: new_max }.publish(env);
+}
+
+pub fn get_max_history_per_asset(env: &Env) -> u32 {
+    let key = DataKey::MaxHistoryPerAsset;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_MAX_HISTORY_PER_ASSET)
+}
+
+// --- Issue #92: max events per call ---
+
+pub fn set_max_events_per_call(env: &Env, new_max: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::MaxEventsPerCall, &new_max);
+    EventsPerCallChangedEvent { value: new_max }.publish(env);
+}
+
+pub fn get_max_events_per_call(env: &Env) -> u32 {
+    let key = DataKey::MaxEventsPerCall;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_MAX_EVENTS_PER_CALL)
+}
+
+// --- Issue #93: max aggregation sources ---
+
+pub fn set_max_aggregation_sources(env: &Env, new_max: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::MaxAggregationSources, &new_max);
+    MaxAggSourcesChangedEvent { value: new_max }.publish(env);
+}
+
+pub fn get_max_aggregation_sources(env: &Env) -> u32 {
+    let key = DataKey::MaxAggregationSources;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_MAX_AGGREGATION_SOURCES)
+}
+
+// --- #67: Per-asset resolution ---
+
+pub fn set_asset_resolution(env: &Env, asset: Address, resolution: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    let key = DataKey::AssetResolution(asset.clone());
+    if resolution == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &resolution);
+    }
+    AssetResolutionSetEvent {
+        asset,
+        admin: admin.clone(),
+        resolution,
+    }
+    .publish(env);
+    emit_admin_action(env, symbol_short!("set_ares"), admin, Bytes::new(env));
+}
+
+pub fn get_asset_resolution(env: &Env, asset: Address) -> u32 {
+    let key = DataKey::AssetResolution(asset);
+    if let Some(r) = env.storage().persistent().get::<_, u32>(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        r
+    } else {
+        get_resolution(env)
+    }
+}
+
+// --- #69: Periodic aggregation trigger cooldown ---
+
+pub fn set_aggregation_cooldown(env: &Env, cooldown_ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::AggregationCooldown, &cooldown_ledgers);
+    AggCooldownChangedEvent { cooldown_ledgers }.publish(env);
+    emit_admin_action(env, symbol_short!("set_acd"), admin, Bytes::new(env));
+}
+
+pub fn get_aggregation_cooldown(env: &Env) -> u32 {
+    let key = DataKey::AggregationCooldown;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key).unwrap_or(10)
+}
+
+// --- #70: Minimum submission interval ---
+
+pub fn set_min_submission_interval(env: &Env, interval_ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::MinSubmissionInterval, &interval_ledgers);
+    SubmitIntervalChangedEvent { interval_ledgers }.publish(env);
+    emit_admin_action(env, symbol_short!("set_msi"), admin, Bytes::new(env));
+}
+
+pub fn get_min_submission_interval(env: &Env) -> u32 {
+    let key = DataKey::MinSubmissionInterval;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+// --- Historical price interpolation toggle ---
+
+pub fn set_interpolation_enabled(env: &Env, enabled: bool) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::InterpolationEnabled, &enabled);
+    InterpolationChangedEvent { enabled }.publish(env);
+    emit_admin_action(env, symbol_short!("set_intp"), admin, Bytes::new(env));
+}
+
+pub fn get_interpolation_enabled(env: &Env) -> bool {
+    let key = DataKey::InterpolationEnabled;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key).unwrap_or(true)
+}
+
+// --- Maximum registered oracle sources ---
+
+pub fn set_max_sources(env: &Env, new_max: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::MaxSources, &new_max);
+    MaxSourcesChangedEvent { value: new_max }.publish(env);
+    emit_admin_action(env, symbol_short!("set_msrc"), admin, Bytes::new(env));
+}
+
+pub fn get_max_sources(env: &Env) -> u32 {
+    let key = DataKey::MaxSources;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
 pub fn set_query_rate_limit(env: &Env, max_per_ledger: u32) {
     let admin = get_admin(env);
     admin.require_auth();
     env.storage()
         .persistent()
         .set(&DataKey::QueryRateLimit, &max_per_ledger);
-    QueryRateLimitChangedEvent { value: max_per_ledger }.publish(env);
+    QueryRateLimitChangedEvent {
+        value: max_per_ledger,
+    }
+    .publish(env);
 }
 
 pub fn get_query_rate_limit(env: &Env) -> u32 {

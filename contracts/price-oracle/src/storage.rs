@@ -132,6 +132,56 @@ pub fn compute_mean(prices: &soroban_sdk::Vec<i128>) -> i128 {
     sum / (n as i128)
 }
 
+fn integer_sqrt(value: i128) -> i128 {
+    if value <= 1 {
+        return value;
+    }
+
+    let mut lo = 0i128;
+    let mut hi = value;
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid.saturating_mul(mid) <= value {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+pub fn compute_stddev(prices: &soroban_sdk::Vec<i128>) -> u32 {
+    let n = prices.len();
+    if n == 0 {
+        return 0;
+    }
+
+    let mean = compute_mean(prices);
+    let mut sum_sq: i128 = 0;
+    for i in 0..n {
+        let diff = prices.get_unchecked(i) - mean;
+        sum_sq = sum_sq.saturating_add(diff.saturating_mul(diff));
+    }
+
+    let variance = sum_sq / (n as i128);
+    integer_sqrt(variance).max(0) as u32
+}
+
+pub fn compute_confidence_bps(prices: &soroban_sdk::Vec<i128>) -> u32 {
+    let n = prices.len();
+    if n == 0 {
+        return 0;
+    }
+
+    let mean = compute_mean(prices);
+    if mean <= 0 {
+        return 0;
+    }
+
+    let stddev = compute_stddev(prices) as u128;
+    ((stddev.saturating_mul(10000u128)) / (mean as u128)) as u32
+}
+
 pub fn compute_trimmed_mean(prices: &soroban_sdk::Vec<i128>, trim_percent: u32) -> i128 {
     let n = prices.len();
     if n == 0 {
@@ -211,22 +261,32 @@ pub fn mark_source_active(env: &Env, source: &Address) {
     env.storage().persistent().remove(&key);
 }
 
+/// Not currently wired into `get_price` — kept for a future rate-limiting pass.
+#[allow(dead_code)]
 pub fn check_rate_limit(env: &Env, consumer: &Address) -> bool {
     let ledger = env.ledger().sequence();
     let key = DataKey::QueryCount(consumer.clone(), ledger);
     let count: u32 = env.storage().temporary().get(&key).unwrap_or(0);
     let rate_limit_key = DataKey::QueryRateLimit;
-    let max_queries: u32 = env.storage().persistent().get(&rate_limit_key).unwrap_or(DEFAULT_QUERY_RATE_LIMIT);
+    let max_queries: u32 = env
+        .storage()
+        .persistent()
+        .get(&rate_limit_key)
+        .unwrap_or(DEFAULT_QUERY_RATE_LIMIT);
     count < max_queries
 }
 
+/// Not currently wired into `get_price` — kept for a future rate-limiting pass.
+#[allow(dead_code)]
 pub fn increment_query_count(env: &Env, consumer: &Address) -> u32 {
     let ledger = env.ledger().sequence();
     let key = DataKey::QueryCount(consumer.clone(), ledger);
     let count: u32 = env.storage().temporary().get(&key).unwrap_or(0);
     let new_count = count + 1;
     env.storage().temporary().set(&key, &new_count);
-    env.storage().temporary().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
     new_count
 }
 
@@ -258,6 +318,8 @@ pub fn get_plan_amount(env: &Env, duration: u32) -> Option<i128> {
     plans.get(duration)
 }
 
+/// Only reachable today via `check_rate_limit_and_increment`, which is itself unwired.
+#[allow(dead_code)]
 pub fn is_subscribed(env: &Env, consumer: &Address) -> bool {
     let key = DataKey::SubscriptionExpiry(consumer.clone());
     let expiry: u64 = env.storage().persistent().get(&key).unwrap_or(0);

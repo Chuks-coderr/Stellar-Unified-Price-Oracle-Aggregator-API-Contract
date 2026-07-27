@@ -52,7 +52,7 @@ fn make_hash(e: &Env, price: i128, salt_val: u64, round_ledger: u32) -> BytesN<3
     for b in round_bytes.iter() {
         preimage.push_back(*b);
     }
-    e.crypto().sha256(&preimage)
+    e.crypto().sha256(&preimage).into()
 }
 
 fn salt_bytes(e: &Env, val: u64) -> Bytes {
@@ -183,7 +183,13 @@ fn test_reveal_hash_mismatch() {
 
     advance_ledger(&e, 22);
     // Wrong price → hash mismatch
-    client.reveal_price(&source, &asset, &99_999i128, &salt_bytes(&e, salt_val), &round);
+    client.reveal_price(
+        &source,
+        &asset,
+        &99_999i128,
+        &salt_bytes(&e, salt_val),
+        &round,
+    );
 }
 
 #[test]

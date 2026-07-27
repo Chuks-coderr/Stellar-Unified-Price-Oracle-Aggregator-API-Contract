@@ -93,7 +93,7 @@ fn test_admin_functions() {
         String::from_str(&e, "Updated Description")
     );
 
-    assert_eq!(client.get_max_sources(), 50u32);
+    assert_eq!(client.get_max_sources(), 0u32);
     client.set_max_sources(&10u32);
     assert_eq!(client.get_max_sources(), 10u32);
 }
@@ -119,7 +119,7 @@ fn test_max_sources_enforced() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")]
+#[should_panic(expected = "Error(Contract, #23)")]
 fn test_max_sources_enforced_exact_limit() {
     let e = Env::default();
     let (client, _) = setup_contract(&e);
@@ -154,7 +154,7 @@ fn test_register_asset_twice() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")]
+#[should_panic(expected = "Error(Contract, #28)")]
 fn test_register_asset_max_assets_reached() {
     let e = Env::default();
     let (client, _) = setup_contract(&e);
@@ -264,12 +264,12 @@ fn test_submit_price_and_get_price() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
 
     // Only one source submitted, min_sources=2 → not aggregated yet → None
     assert!(client.get_price(&asset, &0u64).is_none());
 
-    submit_test_price(&client, &source2, &asset, 110i128, 1234567890, 1);
+    submit_test_price(&client, &source2, &asset, 110i128, 1234567890);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 105i128);
@@ -290,9 +290,9 @@ fn test_submit_price_median_odd() {
     client.set_min_sources_required(&3u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890, 1);
-    submit_test_price(&client, &source3, &asset, 300i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
+    submit_test_price(&client, &source3, &asset, 300i128, 1234567890);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 200i128);
@@ -312,14 +312,49 @@ fn test_submit_price_median_even() {
     client.set_min_sources_required(&4u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890, 1);
-    submit_test_price(&client, &source3, &asset, 300i128, 1234567890, 1);
-    submit_test_price(&client, &source4, &asset, 400i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
+    submit_test_price(&client, &source3, &asset, 300i128, 1234567890);
+    submit_test_price(&client, &source4, &asset, 400i128, 1234567890);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 250i128);
     assert_eq!(price.num_sources, 4u32);
+}
+
+#[test]
+fn test_get_price_with_confidence_tracks_source_dispersion() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1234567890);
+
+    let (client, _) = setup_contract(&e);
+    let source1 = register_test_source(&e, &client, "A");
+    let source2 = register_test_source(&e, &client, "B");
+    let source3 = register_test_source(&e, &client, "C");
+    client.set_min_sources_required(&3u32);
+
+    let tight_asset = register_test_asset(&e, &client);
+    let wide_asset = register_test_asset(&e, &client);
+
+    submit_test_price(&client, &source1, &tight_asset, 1000i128, 1234567890);
+    submit_test_price(&client, &source2, &tight_asset, 1001i128, 1234567890);
+    submit_test_price(&client, &source3, &tight_asset, 1002i128, 1234567890);
+
+    submit_test_price(&client, &source1, &wide_asset, 1000i128, 1234567890);
+    submit_test_price(&client, &source2, &wide_asset, 1400i128, 1234567890);
+    submit_test_price(&client, &source3, &wide_asset, 1800i128, 1234567890);
+
+    let (tight_aggregate, tight_confidence) =
+        client.get_price_with_confidence(&tight_asset).unwrap();
+    let (wide_aggregate, wide_confidence) = client.get_price_with_confidence(&wide_asset).unwrap();
+
+    assert_eq!(tight_aggregate.price, 1001i128);
+    assert_eq!(tight_aggregate.num_sources, 3u32);
+    assert_eq!(wide_aggregate.price, 1400i128);
+    assert_eq!(wide_aggregate.num_sources, 3u32);
+    assert!(tight_confidence < wide_confidence);
+    assert!(tight_confidence < 200u32);
+    assert!(wide_confidence > 2000u32);
 }
 
 #[test]
@@ -331,7 +366,7 @@ fn test_submit_price_unauthorized_source() {
     let fake_source = Address::generate(&e);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &fake_source, &asset, 100i128, 1234567890, 1);
+    submit_test_price(&client, &fake_source, &asset, 100i128, 1234567890);
 }
 
 #[test]
@@ -343,7 +378,7 @@ fn test_submit_price_invalid_zero() {
     register_test_source(&e, &client, "Band");
     let asset1 = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset1, 0i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset1, 0i128, 1234567890);
 }
 
 #[test]
@@ -355,7 +390,7 @@ fn test_submit_price_invalid_negative() {
     register_test_source(&e, &client, "Band");
     let asset1 = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset1, -100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset1, -100i128, 1234567890);
 }
 
 #[test]
@@ -366,7 +401,7 @@ fn test_submit_price_unregistered_asset() {
     let source1 = register_test_source(&e, &client, "Chainlink");
 
     let unregistered_asset = Address::generate(&e);
-    submit_test_price(&client, &source1, &unregistered_asset, 100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &unregistered_asset, 100i128, 1234567890);
 }
 
 #[test]
@@ -378,7 +413,7 @@ fn test_get_source_price() {
     register_test_source(&e, &client, "Band");
     let asset1 = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset1, 100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset1, 100i128, 1234567890);
 
     let entry: PriceEntry = client.get_source_price(&asset1, &source1);
     assert_eq!(entry.price, 100i128);
@@ -410,8 +445,8 @@ fn test_get_all_prices() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
 
     let all_prices = client.get_all_prices(&asset);
     assert_eq!(all_prices.len(), 2);
@@ -463,8 +498,8 @@ fn test_historical_prices() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 110i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 110i128, 1234567890);
 
     assert!(client.has_historical_price(&asset, &100u32));
 
@@ -491,19 +526,19 @@ fn test_historical_prices_multiple() {
     let asset = register_test_asset(&e, &client);
 
     ledger_default(&e, 100, 1234567890);
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890, 1);
-    submit_test_price(&client, &source3, &asset, 300i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
+    submit_test_price(&client, &source3, &asset, 300i128, 1234567890);
 
     ledger_default(&e, 101, 1234567891);
-    submit_test_price(&client, &source1, &asset, 110i128, 1234567891, 2);
-    submit_test_price(&client, &source2, &asset, 210i128, 1234567891, 2);
-    submit_test_price(&client, &source3, &asset, 310i128, 1234567891, 2);
+    submit_test_price(&client, &source1, &asset, 110i128, 1234567891);
+    submit_test_price(&client, &source2, &asset, 210i128, 1234567891);
+    submit_test_price(&client, &source3, &asset, 310i128, 1234567891);
 
     ledger_default(&e, 102, 1234567892);
-    submit_test_price(&client, &source1, &asset, 120i128, 1234567892, 3);
-    submit_test_price(&client, &source2, &asset, 220i128, 1234567892, 3);
-    submit_test_price(&client, &source3, &asset, 320i128, 1234567892, 3);
+    submit_test_price(&client, &source1, &asset, 120i128, 1234567892);
+    submit_test_price(&client, &source2, &asset, 220i128, 1234567892);
+    submit_test_price(&client, &source3, &asset, 320i128, 1234567892);
 
     let history_range = client.get_historical_prices(&asset, &100u32, &102u32);
     assert_eq!(history_range.len(), 3);
@@ -706,14 +741,14 @@ fn test_multiple_assets() {
     let eth = register_test_asset(&e, &client);
     let btc = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &xlm, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &xlm, 102i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &xlm, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &xlm, 102i128, 1234567890);
 
-    submit_test_price(&client, &source1, &eth, 180000i128, 1234567890, 2);
-    submit_test_price(&client, &source2, &eth, 181000i128, 1234567890, 2);
+    submit_test_price(&client, &source1, &eth, 180000i128, 1234567890);
+    submit_test_price(&client, &source2, &eth, 181000i128, 1234567890);
 
-    submit_test_price(&client, &source1, &btc, 30000000i128, 1234567890, 3);
-    submit_test_price(&client, &source2, &btc, 31000000i128, 1234567890, 3);
+    submit_test_price(&client, &source1, &btc, 30000000i128, 1234567890);
+    submit_test_price(&client, &source2, &btc, 31000000i128, 1234567890);
 
     let xlm_price = client.get_price(&xlm, &0u64).unwrap();
     assert_eq!(xlm_price.price, 101i128);
@@ -736,13 +771,13 @@ fn test_submit_price_updates_timestamp() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1000, 1);
-    submit_test_price(&client, &source2, &asset, 110i128, 2000, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1000);
+    submit_test_price(&client, &source2, &asset, 110i128, 2000);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.timestamp, 2000u64);
 
-    submit_test_price(&client, &source2, &asset, 120i128, 3000, 2);
+    submit_test_price(&client, &source2, &asset, 120i128, 3000);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.timestamp, 3000u64);
@@ -758,7 +793,7 @@ fn test_single_source_no_aggregation() {
     client.set_min_sources_required(&1u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 100i128);
@@ -778,8 +813,8 @@ fn test_price_source_not_affected_by_other_assets() {
     let asset_a = register_test_asset(&e, &client);
     let asset_b = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset_a, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset_a, 110i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset_a, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset_a, 110i128, 1234567890);
 
     let price_a = client.get_price(&asset_a, &0u64).unwrap();
     assert_eq!(price_a.price, 105i128);
@@ -835,8 +870,8 @@ fn test_sep40_lastprice() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 110i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 110i128, 1234567890);
 
     let result = client.lastprice(&Asset::Stellar(asset));
     assert!(result.is_some());
@@ -877,7 +912,7 @@ fn test_sep40_lastprice_stale() {
     client.set_resolution(&10u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
 
     // Advance ledger past resolution window
     ledger_default(&e, 200, 1234567910);
@@ -896,8 +931,8 @@ fn test_sep40_price() {
     client.set_min_sources_required(&2u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 110i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 110i128, 1234567890);
 
     let result = client.price(&Asset::Stellar(asset), &1234567890u64);
     assert!(result.is_some());
@@ -916,7 +951,7 @@ fn test_sep40_price_wrong_timestamp() {
     client.set_min_sources_required(&1u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1000, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1000);
 
     // Query with timestamp before data exists → should find no match
     let result = client.price(&Asset::Stellar(asset), &999u64);
@@ -944,9 +979,9 @@ fn test_sep40_prices() {
     client.set_min_sources_required(&3u32);
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890, 1);
-    submit_test_price(&client, &source3, &asset, 300i128, 1234567890, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
+    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
+    submit_test_price(&client, &source3, &asset, 300i128, 1234567890);
 
     let result = client.prices(&Asset::Stellar(asset), &5u32);
     assert!(result.is_some());
@@ -1006,7 +1041,7 @@ fn test_submit_price_current_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp equal to ledger time — accepted
-    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &1000u64);
 }
 
 #[test]
@@ -1016,7 +1051,7 @@ fn test_submit_price_past_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp in the past — accepted
-    client.submit_price(&source, &asset, &100i128, &500u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &500u64);
 }
 
 #[test]
@@ -1026,7 +1061,7 @@ fn test_submit_price_slightly_future_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp within threshold (default 300s) — accepted
-    client.submit_price(&source, &asset, &100i128, &1299u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &1299u64);
 }
 
 #[test]
@@ -1037,7 +1072,7 @@ fn test_submit_price_far_future_timestamp_rejected() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp more than 5 minutes (300s) in the future — rejected
-    client.submit_price(&source, &asset, &100i128, &1301u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &1301u64);
 }
 
 #[test]
@@ -1063,7 +1098,7 @@ fn test_timestamp_threshold_configurable() {
     client.set_timestamp_threshold(&600u64);
 
     // Now 1599 should be accepted (within 600s)
-    client.submit_price(&source, &asset, &100i128, &1599u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &1599u64);
 }
 
 #[test]
@@ -1076,7 +1111,7 @@ fn test_timestamp_threshold_custom_rejects_beyond() {
     client.set_timestamp_threshold(&60u64);
 
     // 1061 is 61s in future — beyond custom threshold of 60s
-    client.submit_price(&source, &asset, &100i128, &1061u64, &1u64);
+    client.submit_price(&source, &asset, &100i128, &1061u64);
 }
 
 // ---- Asset Lifecycle Tests ----
@@ -1092,7 +1127,7 @@ fn test_asset_lifecycle_register_submit_unregister_reregister() {
     let asset = register_test_asset(&e, &client);
 
     // Submit a price
-    submit_test_price(&client, &source, &asset, 500i128, 1000, 1);
+    submit_test_price(&client, &source, &asset, 500i128, 1000);
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 500i128);
     assert_eq!(price.price, 500i128);
@@ -1121,7 +1156,7 @@ fn test_asset_lifecycle_register_submit_unregister_reregister() {
     assert!(client.get_price(&asset, &0u64).is_none());
 
     // Submit new price after re-registration
-    submit_test_price(&client, &source, &asset, 600i128, 1000, 2);
+    submit_test_price(&client, &source, &asset, 600i128, 1000);
     let new_price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(new_price.price, 600i128);
 }
@@ -1148,7 +1183,7 @@ fn test_asset_reregister_after_unregister() {
 
     let asset_addr = Address::generate(&e);
     client.register_asset(&asset_addr);
-    submit_test_price(&client, &source, &asset_addr, 100i128, 1000, 1);
+    submit_test_price(&client, &source, &asset_addr, 100i128, 1000);
 
     client.unregister_asset(&asset_addr);
 
@@ -1157,7 +1192,7 @@ fn test_asset_reregister_after_unregister() {
     assert!(client.is_asset_registered(&asset_addr));
 
     // Submit fresh price
-    submit_test_price(&client, &source, &asset_addr, 200i128, 1000, 2);
+    submit_test_price(&client, &source, &asset_addr, 200i128, 1000);
     let p = client.get_price(&asset_addr, &0u64).unwrap();
     assert_eq!(p.price, 200i128);
 }
@@ -1173,13 +1208,13 @@ fn test_removed_source_cannot_submit_prices() {
     let source = register_test_source(&e, &client, "Oracle");
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source, &asset, 100i128, 1000, 1);
+    submit_test_price(&client, &source, &asset, 100i128, 1000);
 
     client.remove_source(&source);
 
     // Removed source cannot submit
     assert!(client
-        .try_submit_price(&source, &asset, &200i128, &1000u64, &1u64)
+        .try_submit_price(&source, &asset, &200i128, &1000u64)
         .is_err());
 }
 
@@ -1194,8 +1229,8 @@ fn test_removed_source_price_not_in_get_all_prices() {
     let source2 = register_test_source(&e, &client, "Oracle2");
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1000, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1000, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1000);
+    submit_test_price(&client, &source2, &asset, 200i128, 1000);
 
     // Remove source1
     client.remove_source(&source1);
@@ -1218,8 +1253,8 @@ fn test_removed_source_historical_price_still_accessible() {
     let source2 = register_test_source(&e, &client, "Oracle2");
     let asset = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &asset, 100i128, 1000, 1);
-    submit_test_price(&client, &source2, &asset, 200i128, 1000, 1);
+    submit_test_price(&client, &source1, &asset, 100i128, 1000);
+    submit_test_price(&client, &source2, &asset, 200i128, 1000);
 
     // Aggregate was recorded at ledger 100
     assert!(client.has_historical_price(&asset, &100u32));
@@ -1861,7 +1896,7 @@ fn test_median_duplicate_source_no_inflation() {
     submit_test_price(&client, &source1, &asset, 500i128, 2000);
     let second_agg = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(second_agg.price, 325i128); // median(500, 150) = 325
-    // Still only 2 contributors — the overwrite did not inflate the count
+                                           // Still only 2 contributors — the overwrite did not inflate the count
     assert_eq!(second_agg.num_sources, 2u32);
 }
 
@@ -1886,12 +1921,15 @@ fn test_subscription_bypasses_rate_limit() {
     // Subscribed consumer can make many queries without hitting rate limit
     for _ in 0..10 {
         let _ = client.get_price(&asset, &0u64);
+    }
+}
+
 // ===== Issue #85: Strict Input Validation Tests =====
 
 // --- add_source name validation ---
 
 #[test]
-#[should_panic(expected = "Error(Contract, #16)")]
+#[should_panic(expected = "Error(Contract, #21)")]
 fn test_add_source_empty_name_rejected() {
     let e = Env::default();
     let (client, _) = setup_contract(&e);
@@ -1900,13 +1938,16 @@ fn test_add_source_empty_name_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #17)")]
+#[should_panic(expected = "Error(Contract, #22)")]
 fn test_add_source_name_too_long_rejected() {
     let e = Env::default();
     let (client, _) = setup_contract(&e);
     let source = soroban_sdk::Address::generate(&e);
     // 65-character name (max is 64)
-    let long_name = String::from_str(&e, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let long_name = String::from_str(
+        &e,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
     client.add_source(&source, &long_name);
 }
 
@@ -1916,7 +1957,10 @@ fn test_add_source_name_exactly_64_chars_accepted() {
     let (client, _) = setup_contract(&e);
     let source = soroban_sdk::Address::generate(&e);
     // exactly 64 characters
-    let name = String::from_str(&e, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let name = String::from_str(
+        &e,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
     client.add_source(&source, &name);
     assert!(client.is_source(&source));
 }
@@ -1971,7 +2015,7 @@ fn test_initialize_decimals_above_18_rejected() {
 // --- override_price reason length validation ---
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")]
+#[should_panic(expected = "Error(Contract, #29)")]
 fn test_override_price_reason_too_long_rejected() {
     let e = Env::default();
     ledger_default(&e, 100, 1234567890);
@@ -2003,7 +2047,7 @@ fn test_override_price_reason_exactly_256_chars_accepted() {
 // --- prices SEP-40 records cap validation ---
 
 #[test]
-#[should_panic(expected = "Error(Contract, #19)")]
+#[should_panic(expected = "Error(Contract, #30)")]
 fn test_prices_records_exceeds_max_history_rejected() {
     let e = Env::default();
     ledger_default(&e, 100, 1234567890);
@@ -2028,7 +2072,7 @@ fn test_prices_records_at_max_history_accepted() {
 // --- propose_operation invalid op_type validation ---
 
 #[test]
-#[should_panic(expected = "Error(Contract, #18)")]
+#[should_panic(expected = "Error(Contract, #24)")]
 fn test_propose_operation_invalid_type_rejected() {
     let e = Env::default();
     let (client, _) = setup_contract(&e);
@@ -2114,7 +2158,9 @@ fn test_migrate_pause_and_resume() {
     // First call: processes asset[0], pauses (cursor=1).
     client.migrate_storage(&1u32);
     assert_eq!(client.get_storage_version(), 1u32); // not done yet
-    let state = client.get_migration_state().expect("state should exist after pause");
+    let state = client
+        .get_migration_state()
+        .expect("state should exist after pause");
     assert_eq!(state.cursor, 1u32);
     assert_eq!(state.from_version, 1u32);
     assert_eq!(state.to_version, 2u32);
@@ -2122,7 +2168,9 @@ fn test_migrate_pause_and_resume() {
     // Second call: processes asset[1], pauses (cursor=2).
     client.migrate_storage(&1u32);
     assert_eq!(client.get_storage_version(), 1u32);
-    let state2 = client.get_migration_state().expect("state should still exist");
+    let state2 = client
+        .get_migration_state()
+        .expect("state should still exist");
     assert_eq!(state2.cursor, 2u32);
 
     // Third call: processes asset[2], completes.

@@ -15,6 +15,7 @@ use soroban_sdk::contracterror;
 /// | 20–29  | Source management      |
 /// | 30–39  | Commit-reveal (#187)   |
 /// | 40–49  | Finality gadget (#188) |
+/// | 50–59  | Relayer & misc         |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -112,35 +113,13 @@ pub enum ErrorCode {
     /// A reorg was detected via ledger hash chain inconsistency.
     ReorgDetected = 44,
 
-    // ── 50–59: Fee Market (#176) ──────────────────────────────────────────────
-    /// The attached priority fee is below the configured minimum.
-    FeeMarketBelowMinimum = 50,
-    /// The fee market queue is full and cannot accept more submissions.
-    FeeMarketQueueFull = 51,
-
-    // ── 60–69: Multi-Sig Governance (#178) ───────────────────────────────────
-    /// The governor has already approved this operation.
-    AlreadyApproved = 60,
-    /// No approval found for this governor on the given operation.
-    ApprovalNotFound = 61,
-    /// The operation is not the current queue head; ordered execution required.
-    MsNotQueueHead = 62,
-    /// The operation has not yet reached the required approval quorum.
-    MsQuorumNotReached = 63,
-
-    // ── 70–79: Exotic Asset Pricing (#177) ───────────────────────────────────
-    /// Asset has no exotic pricing configuration registered.
-    ExoticAssetNotConfigured = 70,
-    /// Recursive component resolution exceeded the maximum depth (3).
-    ExoticCycleLimitExceeded = 71,
-    /// A circular dependency was detected between asset components.
-    ExoticCycleDetected = 72,
-
-    // ── 80–89: ZK Proof Verification (#175) ──────────────────────────────────
-    /// No verifying key has been set via `set_verification_key`.
-    ZkVkNotSet = 80,
-    /// The submitted Groth16 proof failed verification.
-    ZkProofInvalid = 81,
-    /// The public signals array has the wrong length for the verifying key.
-    ZkInvalidPublicSignals = 82,
+    // ── 50–59: Relayer & misc ────────────────────────────────────────────────
+    /// The caller is not a registered and approved relayer.
+    RelayerNotAuthorized = 50,
+    /// `add_relayer` was called for an address that is already an approved relayer.
+    RelayerAlreadyExists = 51,
+    /// Source reputation is too high to be eligible for slashing.
+    ReputationTooHighToSlash = 52,
+    /// Maximum number of alert subscriptions has been reached.
+    MaxSubscriptionsReached = 53,
 }

@@ -1,4 +1,10 @@
 #![no_std]
+// The reputation/staking (#171), correlation (#172), tiered whitelisting (#173), and
+// alert-subscription (#174) modules compile and are fully implemented, but a previous
+// botched merge dropped their `#[contractimpl]` wiring in this file, so none of their
+// public functions are reachable from the deployed contract yet. Silencing dead_code
+// here until that wiring lands, rather than deleting working, tested implementations.
+#![allow(dead_code)]
 
 mod admin;
 mod alerts;
@@ -39,15 +45,15 @@ mod prop_tests;
 mod string_boundary_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, AssetPricingConfig, AssetType, BatchOperation,
-    DataKey, ErrorCode, FeeMarketSubmission, FinalityStatus, FinalizedPrice,
-    Groth16Proof, Groth16VerifyingKey, MultiSigOperation, OracleSources, PendingBatch,
-    PendingFeeSubmissions, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry,
-    PriceHistoryEntry, PriceOverrideEntry, SourceHealthStatus, SubscriptionPlans,
-    ZkPriceAttestation,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
+    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
+    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
+    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
 };
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec,
+};
 
 use crate::storage::read_registered_assets;
 
@@ -628,6 +634,46 @@ impl PriceOracleContract {
         reentrancy::exit(&env);
     }
 
+    /// Sets the maximum number of oracle sources that may be registered. `0` = unlimited.
+    pub fn set_max_sources(env: Env, new_max: u32) {
+        admin::set_max_sources(&env, new_max);
+    }
+
+    /// Returns the current maximum registered-source cap. Defaults to `0` (unlimited).
+    pub fn get_max_sources(env: Env) -> u32 {
+        admin::get_max_sources(&env)
+    }
+
+    /// Sets the maximum number of price history entries retained per asset (issue #94).
+    pub fn set_max_history_per_asset(env: Env, new_max: u32) {
+        admin::set_max_history_per_asset(&env, new_max);
+    }
+
+    /// Returns the current per-asset history cap. Defaults to `1000`.
+    pub fn get_max_history_per_asset(env: Env) -> u32 {
+        admin::get_max_history_per_asset(&env)
+    }
+
+    /// Sets the maximum number of events emitted per aggregation call (issue #92).
+    pub fn set_max_events_per_call(env: Env, new_max: u32) {
+        admin::set_max_events_per_call(&env, new_max);
+    }
+
+    /// Returns the current per-call event cap. Defaults to `20`.
+    pub fn get_max_events_per_call(env: Env) -> u32 {
+        admin::get_max_events_per_call(&env)
+    }
+
+    /// Sets the maximum number of sources used per aggregation; `0` = no limit (issue #93).
+    pub fn set_max_aggregation_sources(env: Env, new_max: u32) {
+        admin::set_max_aggregation_sources(&env, new_max);
+    }
+
+    /// Returns the current maximum aggregation-sources limit. Defaults to `0` (no limit).
+    pub fn get_max_aggregation_sources(env: Env) -> u32 {
+        admin::get_max_aggregation_sources(&env)
+    }
+
     /// Removes an oracle source from the authorized set.
     ///
     /// The admin must authorize this call. Existing price submissions from the source
@@ -804,7 +850,6 @@ impl PriceOracleContract {
     ///
     /// The admin must authorize this call. An asset cannot receive prices until it is
     /// registered.
-
     ///
     /// # Arguments
     ///
@@ -931,6 +976,10 @@ impl PriceOracleContract {
     /// * [`ErrorCode::RateLimitExceeded`] — if the caller has exceeded the query rate limit.
     pub fn get_price(env: Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
         prices::get_price(&env, asset, max_age)
+    }
+
+    pub fn get_price_with_confidence(env: Env, asset: Address) -> Option<(AggregatePrice, u32)> {
+        prices::get_price_with_confidence(&env, asset)
     }
 
     /// Returns the most recent price submission from a specific oracle source for an asset.
@@ -1672,8 +1721,8 @@ impl PriceOracleContract {
     ///
     /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
     /// * [`ErrorCode::InvalidConfiguration`] — if `threshold_bps > 100_000`.
-    pub fn set_cross_ref_deviation_threshold(env: Env, threshold_bps: u32) {
-        cross_reference::set_cross_ref_deviation_threshold(&env, threshold_bps);
+    pub fn set_cross_ref_deviation_bps(env: Env, threshold_bps: u32) {
+        cross_reference::set_cross_ref_deviation_bps(&env, threshold_bps);
     }
 
     /// Returns the current cross-reference deviation threshold in basis points.
@@ -1685,77 +1734,8 @@ impl PriceOracleContract {
     /// # Returns
     ///
     /// Threshold in basis points. Defaults to `500` (5 %).
-    pub fn get_cross_ref_deviation_threshold(env: Env) -> u32 {
-        cross_reference::get_cross_ref_deviation_threshold(&env)
-    }
-
-    // --- Cross-Reference Oracle ---
-
-    /// Registers an external oracle as a cross-reference source for price verification.
-    ///
-    /// `asset_mapping` maps each of our asset `Address` values to the equivalent asset
-    /// `Address` accepted by the external oracle's `lastprice` function. Calling
-    /// [`get_cross_reference`](Self::get_cross_reference) will invoke this oracle when
-    /// a mapping exists for the queried asset.
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
-    pub fn add_reference_oracle(
-        env: Env,
-        contract_id: Address,
-        asset_mapping: Map<Address, Address>,
-    ) {
-        cross_reference::add_reference_oracle(&env, contract_id, asset_mapping);
-    }
-
-    /// Removes a previously registered reference oracle.
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
-    pub fn remove_reference_oracle(env: Env, contract_id: Address) {
-        cross_reference::remove_reference_oracle(&env, contract_id);
-    }
-
-    /// Returns the ordered list of registered reference oracle contract addresses.
-    pub fn get_reference_oracles(env: Env) -> Vec<Address> {
-        cross_reference::get_reference_oracles(&env)
-    }
-
-    /// Queries our aggregated price for `asset` against the first registered reference
-    /// oracle that has a mapping for it.
-    ///
-    /// Calls `lastprice(mapped_asset)` on the reference oracle via cross-contract
-    /// invocation. Returns `None` when no local aggregate exists, no oracle has a
-    /// mapping for `asset`, or every oracle returned `0`.
-    ///
-    /// Emits [`CrossRefDeviationEvent`](crate::events::CrossRefDeviationEvent) when
-    /// the computed deviation exceeds the configured threshold.
-    pub fn get_cross_reference(env: Env, asset: Address) -> Option<CrossReferenceResult> {
-        cross_reference::get_cross_reference(&env, asset)
-    }
-
-    /// Sets the maximum acceptable price deviation between our oracle and a reference
-    /// oracle, expressed in basis points (100 bps = 1 %).
-    ///
-    /// When the deviation for a given asset exceeds this threshold a
-    /// [`CrossRefDeviationEvent`](crate::events::CrossRefDeviationEvent) is emitted.
-    /// Defaults to `500` (5 %). Values above `100_000` are rejected.
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
-    /// * [`ErrorCode::InvalidConfiguration`] — if `threshold_bps > 100_000`.
-    pub fn set_cross_ref_deviation_threshold(env: Env, threshold_bps: u32) {
-        cross_reference::set_cross_ref_deviation_threshold(&env, threshold_bps);
-    }
-
-    /// Returns the current cross-reference deviation threshold in basis points.
-    ///
-    /// Defaults to `500` (5 %) when no value has been configured.
-    pub fn get_cross_ref_deviation_threshold(env: Env) -> u32 {
-        cross_reference::get_cross_ref_deviation_threshold(&env)
+    pub fn get_cross_ref_deviation_bps(env: Env) -> u32 {
+        cross_reference::get_cross_ref_deviation_bps(&env)
     }
 
     // =========================================================================
@@ -1776,7 +1756,7 @@ impl PriceOracleContract {
 
     /// Returns the number of consecutive missed heartbeats for a source.
     pub fn get_missed_heartbeats(env: Env, source: Address) -> u32 {
-        sources::get_missed_heartbeats(&env, source)
+        sources::get_missed_heartbeats(&env, &source)
     }
 
     /// Returns the ledger sequence number of the most recent price submission from a source.
@@ -1857,12 +1837,7 @@ impl PriceOracleContract {
     /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
     /// * [`ErrorCode::AlreadyCommitted`] — source already committed this round.
     /// * [`ErrorCode::RevealWindowClosed`] — called after commit window closed.
-    pub fn commit_price(
-        env: Env,
-        source: Address,
-        asset: Address,
-        hash: soroban_sdk::BytesN<32>,
-    ) {
+    pub fn commit_price(env: Env, source: Address, asset: Address, hash: soroban_sdk::BytesN<32>) {
         reentrancy::enter(&env);
         prices::commit_price(&env, source, asset, hash);
         reentrancy::exit(&env);
