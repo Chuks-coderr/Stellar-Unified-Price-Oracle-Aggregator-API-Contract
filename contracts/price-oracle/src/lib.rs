@@ -13,10 +13,13 @@ mod correlation;
 mod cross_reference;
 mod errors;
 mod events;
+mod exotic_pricing;
+mod fee_market;
 mod finality;
 mod health;
 mod history;
 mod migration;
+mod multisig;
 mod pause;
 mod prices;
 mod reentrancy;
@@ -27,6 +30,7 @@ mod subscription;
 mod timelock;
 mod types;
 mod whitelisting;
+mod zk_verify;
 
 #[cfg(test)]
 mod cross_ref_tests;
@@ -2017,6 +2021,285 @@ impl PriceOracleContract {
     /// for past ledgers, use `retract_price` after external reorg detection.
     pub fn check_reorg(env: Env, asset: Address, suspect_ledger: u32) -> bool {
         finality::check_reorg(&env, asset, suspect_ledger)
+    }
+
+    // =========================================================================
+    // #176 — Prioritized Submission Fee Market
+    // =========================================================================
+
+    /// Enqueues a price submission into the priority fee market buffer.
+    ///
+    /// The `source` must authorize this call. Submissions are ordered by
+    /// `priority_fee DESC, timestamp ASC` and processed in batches via
+    /// `process_fee_market`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::SourceNotFound`] — source is not registered.
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::InvalidPrice`] — price is zero.
+    /// * [`ErrorCode::FeeMarketBelowMinimum`] — priority_fee < min_priority_fee.
+    pub fn fm_enqueue_submission(
+        env: Env,
+        source: Address,
+        asset: Asset,
+        price: u128,
+        timestamp: u64,
+        priority_fee: u128,
+    ) {
+        reentrancy::enter(&env);
+        fee_market::enqueue_submission(&env, source, asset, price, timestamp, priority_fee);
+        reentrancy::exit(&env);
+    }
+
+    /// Processes up to 20 queued submissions from the priority buffer.
+    ///
+    /// Callable by anyone. Returns the number of submissions processed.
+    pub fn fm_process_fee_market(env: Env) -> u32 {
+        reentrancy::enter(&env);
+        let result = fee_market::process_fee_market(&env);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the current depth of the fee market priority queue.
+    pub fn fm_get_pending_submissions(env: Env) -> u32 {
+        fee_market::get_pending_submissions(&env)
+    }
+
+    /// Returns the accumulated fee balance owed to a source.
+    pub fn fm_get_source_fee_balance(env: Env, source: Address) -> u128 {
+        fee_market::get_source_fee_balance(&env, source)
+    }
+
+    /// Returns the accumulated treasury fee balance.
+    pub fn fm_get_treasury_fee_balance(env: Env) -> u128 {
+        fee_market::get_treasury_fee_balance(&env)
+    }
+
+    /// Sets the minimum priority fee. Admin only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    pub fn fm_set_min_priority_fee(env: Env, min_fee: u128) {
+        fee_market::set_min_priority_fee(&env, min_fee);
+    }
+
+    /// Returns the current minimum priority fee. Default: 0.
+    pub fn fm_get_min_priority_fee(env: Env) -> u128 {
+        fee_market::get_min_priority_fee(&env)
+    }
+
+    /// Sets the fee distribution ratio (% to sources, remainder to treasury). Admin only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — ratio > 100.
+    pub fn fm_set_fee_distribution_ratio(env: Env, ratio: u32) {
+        fee_market::set_fee_distribution_ratio(&env, ratio);
+    }
+
+    /// Returns the current fee distribution ratio (% to sources). Default: 80.
+    pub fn fm_get_fee_distribution_ratio(env: Env) -> u32 {
+        fee_market::get_fee_distribution_ratio(&env)
+    }
+
+    /// Sets the treasury address for fee disbursement. Admin only.
+    pub fn fm_set_treasury_address(env: Env, treasury: Address) {
+        fee_market::set_treasury_address(&env, treasury);
+    }
+
+    // =========================================================================
+    // #178 — N-of-M Multi-Sig Governance & Ordered Timelock
+    // =========================================================================
+
+    /// Sets the governor list and required approval threshold. Admin only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — required is 0 or > governor count.
+    pub fn ms_set_governors(env: Env, governors: Vec<Address>, required: u32) {
+        multisig::set_governors(&env, governors, required);
+    }
+
+    /// Returns the current governor list.
+    pub fn ms_get_governors(env: Env) -> Vec<Address> {
+        multisig::get_governors(&env)
+    }
+
+    /// Returns the required approvals threshold.
+    pub fn ms_get_required_approvals(env: Env) -> u32 {
+        multisig::get_required_approvals(&env)
+    }
+
+    /// Proposes a new multi-sig governance operation.
+    ///
+    /// Any registered governor may propose. The operation enters the queue
+    /// in pending state and requires N-of-M approvals before the timelock starts.
+    ///
+    /// Returns the assigned operation ID.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — proposer is not a registered governor.
+    pub fn ms_propose_operation(
+        env: Env,
+        proposer: Address,
+        op_type: u32,
+        data: soroban_sdk::Bytes,
+    ) -> u32 {
+        reentrancy::enter(&env);
+        let op_enum = match op_type {
+            0 => types::OperationType::Upgrade,
+            1 => types::OperationType::SetAdmin,
+            2 => types::OperationType::SetMinSources,
+            3 => types::OperationType::SetMaxHistory,
+            4 => types::OperationType::SetResolution,
+            5 => types::OperationType::SetDecimals,
+            6 => types::OperationType::SetDescription,
+            7 => types::OperationType::SetTimestampThreshold,
+            _ => panic_with_error!(&env, ErrorCode::InvalidOperationType),
+        };
+        let result = multisig::propose_ms_operation(&env, proposer, op_enum, data);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Approves a pending multi-sig operation.
+    ///
+    /// Once the N-th approval is submitted the timelock clock starts.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — governor is not registered.
+    /// * [`ErrorCode::OperationNotFound`] — no operation with this ID.
+    /// * [`ErrorCode::AlreadyApproved`] — governor already approved this op.
+    pub fn ms_approve_operation(env: Env, governor: Address, op_id: u32) {
+        reentrancy::enter(&env);
+        multisig::approve_operation(&env, governor, op_id);
+        reentrancy::exit(&env);
+    }
+
+    /// Retracts a governor's previous approval.
+    ///
+    /// If approval count drops below quorum the timelock is paused.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — governor is not registered.
+    /// * [`ErrorCode::OperationNotFound`] — no operation with this ID.
+    /// * [`ErrorCode::ApprovalNotFound`] — governor had not approved this op.
+    pub fn ms_retract_approval(env: Env, governor: Address, op_id: u32) {
+        reentrancy::enter(&env);
+        multisig::retract_approval(&env, governor, op_id);
+        reentrancy::exit(&env);
+    }
+
+    /// Executes the head operation of the multi-sig queue after quorum and timelock.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — executor is not admin or governor.
+    /// * [`ErrorCode::MsNotQueueHead`] — op_id is not the current queue head.
+    /// * [`ErrorCode::MsQuorumNotReached`] — insufficient approvals.
+    /// * [`ErrorCode::TimelockNotReady`] — timelock delay not elapsed.
+    pub fn ms_execute_operation(env: Env, executor: Address, op_id: u32) {
+        reentrancy::enter(&env);
+        multisig::execute_ms_operation(&env, executor, op_id);
+        reentrancy::exit(&env);
+    }
+
+    /// Cancels a pending multi-sig operation. Admin or any governor may cancel.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — canceller is not admin or governor.
+    /// * [`ErrorCode::OperationNotFound`] — no operation with this ID.
+    pub fn ms_cancel_operation(env: Env, canceller: Address, op_id: u32) {
+        reentrancy::enter(&env);
+        multisig::cancel_ms_operation(&env, canceller, op_id);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns a pending multi-sig operation by ID.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::OperationNotFound`] — no operation with this ID.
+    pub fn ms_get_operation(env: Env, op_id: u32) -> MultiSigOperation {
+        multisig::get_ms_operation(&env, op_id)
+    }
+
+    /// Returns the ID of the current queue head (0 if the queue is empty).
+    pub fn ms_get_queue_head(env: Env) -> u32 {
+        multisig::get_ms_queue_head(&env)
+    }
+
+    // =========================================================================
+    // #177 — Exotic Asset Fair-Value Pricing Engine
+    // =========================================================================
+
+    /// Registers the pricing configuration for an exotic asset. Admin only.
+    ///
+    /// Supports Direct, LPToken, Index, and Option asset types.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    pub fn exotic_set_config(env: Env, asset: Address, config: AssetPricingConfig) {
+        exotic_pricing::set_exotic_asset_config(&env, asset, config);
+    }
+
+    /// Returns the pricing configuration for an exotic asset.
+    pub fn exotic_get_config(env: Env, asset: Address) -> Option<AssetPricingConfig> {
+        exotic_pricing::get_exotic_asset_config(&env, asset)
+    }
+
+    /// Computes and returns the fair value of an exotic asset.
+    ///
+    /// Performs recursive component resolution (max depth 3) with cycle detection.
+    /// Returns the price scaled by 10^18.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ExoticAssetNotConfigured`] — no config set for asset.
+    /// * [`ErrorCode::ExoticCycleDetected`] — circular component dependency.
+    /// * [`ErrorCode::ExoticCycleLimitExceeded`] — max recursion depth reached.
+    /// * [`ErrorCode::NoData`] — a required component price is unavailable.
+    pub fn exotic_get_price(env: Env, asset: Address) -> i128 {
+        exotic_pricing::get_exotic_price(&env, &asset)
+    }
+
+    // =========================================================================
+    // #175 — Off-Chain ZK Proof Verification (Groth16/BN254)
+    // =========================================================================
+
+    /// Stores the Groth16 verifying key. Admin / governance only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    pub fn zk_set_verification_key(env: Env, vk: Groth16VerifyingKey) {
+        zk_verify::set_verification_key(&env, vk);
+    }
+
+    /// Returns the stored Groth16 verifying key, or `None` if not configured.
+    pub fn zk_get_verification_key(env: Env) -> Option<Groth16VerifyingKey> {
+        zk_verify::get_verification_key(&env)
+    }
+
+    /// Verifies a Groth16/BN254 proof and submits the attested price if valid.
+    ///
+    /// `public_signals` must contain at least 3 field elements:
+    /// `[asset_id_hash, price, timestamp]`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ZkVkNotSet`] — no verifying key has been set.
+    /// * [`ErrorCode::ZkProofInvalid`] — proof verification failed.
+    /// * [`ErrorCode::ZkInvalidPublicSignals`] — wrong number of public signals.
+    /// * [`ErrorCode::SourceNotFound`] — source is not registered.
+    /// * [`ErrorCode::AssetNotRegistered`] — asset is not registered.
+    /// * [`ErrorCode::InvalidPrice`] — attested price is zero or negative.
+    pub fn zk_submit_price(
+        env: Env,
+        source: Address,
+        asset: Address,
+        proof: Groth16Proof,
+        public_signals: Vec<soroban_sdk::BytesN<32>>,
+    ) {
+        reentrancy::enter(&env);
+        zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
+        reentrancy::exit(&env);
     }
 }
 

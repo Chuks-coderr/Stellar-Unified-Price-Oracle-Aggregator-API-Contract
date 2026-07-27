@@ -1275,3 +1275,42 @@ fn _compute_commit_hash(
 
     env.crypto().sha256(&preimage).into()
 }
+
+/// Internal submit_price helper used by fee_market and zk_verify modules.
+///
+/// Skips `source.require_auth()` and pause check — callers are responsible
+/// for performing those checks before invoking this function.
+pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+
+    if price <= 0 {
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+
+    let decimals = get_decimals(env);
+    let current_ledger = env.ledger().sequence();
+
+    let entry = PriceEntry {
+        price,
+        timestamp,
+        source: source.clone(),
+        decimals,
+        last_updated: current_ledger,
+        ledger_timestamp: env.ledger().timestamp(),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    PriceSubmittedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        timestamp,
+    }
+    .publish(env);
+
+    aggregate_asset(env, &asset, current_ledger, decimals);
+}
