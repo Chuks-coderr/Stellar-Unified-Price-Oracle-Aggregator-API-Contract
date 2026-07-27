@@ -49,8 +49,6 @@ fn bench_asset_registry_lookup_50_assets() {
     // Measure CPU instructions + memory bytes through budget API.
     e.budget().reset_default();
     let _ = client.is_asset_registered(&query_asset);
-    let cpu = e.budget().cpu_instruction_count();
-    let mem = e.budget().memory_bytes_count();
-
-    println!("bench_asset_registry_lookup_50_assets: cpu={cpu} mem={mem}");
+    let _cpu = e.budget().cpu_instruction_cost();
+    let _mem = e.budget().memory_bytes_cost();
 }

@@ -8,7 +8,9 @@ pub fn pause(env: &Env) {
     let admin = get_admin(env);
     admin.require_auth();
 
-    env.storage().persistent().set(&DataKey::CfgPauseFlag, &true);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgPauseFlag, &true);
 
     ContractPausedEvent {
         admin: admin.clone(),
@@ -21,7 +23,9 @@ pub fn unpause(env: &Env) {
     let admin = get_admin(env);
     admin.require_auth();
 
-    env.storage().persistent().set(&DataKey::CfgPauseFlag, &false);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgPauseFlag, &false);
 
     ContractUnpausedEvent {
         admin: admin.clone(),

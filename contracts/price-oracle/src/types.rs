@@ -30,8 +30,6 @@ pub enum DataKey {
     ReentrancyGuard,
     /// Existence flag for a registered oracle source (`true` when present).
     Source(Address),
-    /// Existence flag for a registered asset (`true` when present).
-    AssetRegistered(Address),
     /// Latest [`PriceEntry`] submitted by a specific source for a specific asset.
     Submission(Address, Address),
     /// Ledger sequence number of the last submission by a source for an asset.
@@ -106,7 +104,7 @@ pub enum DataKey {
     /// Monotonically incrementing counter used to assign IDs to pending operations.
     TlPendingOpCount,
     /// A [`PendingOperation`] awaiting timelock expiry before execution.
-    PendingOp(u32),
+    TlPendingOp(u32),
     /// Number of ledgers that must pass between proposing and executing a timelock operation.
     TimelockDuration,
     /// Tracks the number of queries made by a consumer for a specific ledger.
@@ -140,8 +138,6 @@ pub enum DataKey {
     MigrationState,
 
     // --- #66: Phased removal (used in sources.rs but missing from original enum) ---
-    /// Alias key used by phased-removal logic in sources.rs (mirrors SrcActive).
-    Source(Address),
     /// Ledger at which a source becomes eligible for finalization after mark_source_for_removal.
     SourcePendingRemoval(Address),
     /// Decay factor for source reputation scores (u32, out of 100).
@@ -154,17 +150,40 @@ pub enum DataKey {
     MaxPriceDeviation,
     /// Timestamp threshold key used in admin.rs set path (mirrors CfgTimestampThreshold).
     TimestampThreshold,
+    /// Minimum sources key used in timelock.rs batch execution (mirrors CfgMinSources).
+    MinSourcesRequired,
+    /// Max history length key used in timelock.rs batch execution (mirrors CfgMaxHistory).
+    MaxHistoryLength,
+    /// Resolution key used in timelock.rs batch execution (mirrors CfgResolution).
+    Resolution,
+    /// Decimals key used in timelock.rs batch execution (mirrors CfgDecimals).
+    Decimals,
+
+    // -------------------------------------------------------------------------
+    // #92/#93/#94: event spam protection, max aggregation sources, per-asset history cap
+    // -------------------------------------------------------------------------
+    /// Per-asset maximum number of price entries before the oldest is pruned (issue #94).
+    MaxHistoryPerAsset,
+    /// Maximum number of events that may be emitted in a single call (issue #92).
+    MaxEventsPerCall,
+    /// Maximum number of sources used for aggregation; excess sources are randomly
+    /// sub-sampled using the ledger hash (issue #93).
+    MaxAggregationSources,
+    /// Maximum number of oracle sources that may be registered. `0` = unlimited.
+    MaxSources,
+    /// Whether linear interpolation is used for historical price lookups that miss
+    /// an exact ledger match.
+    InterpolationEnabled,
 
     // -------------------------------------------------------------------------
     // #186: Adaptive heartbeat / liveness detection
     // -------------------------------------------------------------------------
-
     /// Number of consecutive missed heartbeats for a source (u32).
     SrcMissedHeartbeats(Address),
     /// Ledger sequence of the last price submission from a source (u32).
     SrcLastPriceLedger(Address),
     /// Flag: source has submitted a price since its last heartbeat reactivation (bool).
-    SrcPriceSubmittedAfterReactivation(Address),
+    SrcPriceSubmitAfterReactivation(Address),
     /// Ledger sequence at which a source first became inactive — for auto-removal timer (u32).
     SrcInactiveSinceLedger(Address),
     /// Maximum ledgers a source may remain inactive before automatic removal (u32).
@@ -175,7 +194,6 @@ pub enum DataKey {
     // -------------------------------------------------------------------------
     // #187: Commit-reveal MEV resistance
     // -------------------------------------------------------------------------
-
     /// A pending price commit: stores PriceCommit under (asset, source, round_ledger).
     PriceCommit(Address, Address, u32),
     /// Number of ledgers that the commit phase lasts (sources must commit within this window).
@@ -186,7 +204,6 @@ pub enum DataKey {
     // -------------------------------------------------------------------------
     // #188: Economic finality gadget
     // -------------------------------------------------------------------------
-
     /// A pending finality entry for an asset at a given ledger (PendingFinalityEntry).
     PendingFinality(Address, u32),
     /// Number of ledgers to wait before an aggregated price is considered finalized (u32).
@@ -195,6 +212,78 @@ pub enum DataKey {
     LedgerHashChain(u32),
     /// The finalized aggregate price for an asset (FinalizedPrice).
     FinalizedPrice(Address),
+
+    // -------------------------------------------------------------------------
+    // #171: Source Reputation & Slashing
+    // -------------------------------------------------------------------------
+    /// Staking record for an oracle source (SourceStakeRecord).
+    SourceStake(Address),
+    /// Address of the XLM/oracle token contract used for staking and fees.
+    StakeTokenContract,
+    /// Percentage of stake to slash (u32, 0–100) per slash event.
+    SlashPercent,
+    /// Threshold below which a source's reputation triggers slash eligibility (u32, 0–100).
+    SlashReputationThreshold,
+    /// Total slashed funds held in contract treasury (i128 stroops).
+    TreasuryBalance,
+
+    // -------------------------------------------------------------------------
+    // #172: Cross-Asset Correlation
+    // -------------------------------------------------------------------------
+    /// Min/max ratio band for a (base_asset, quote_asset) pair.
+    CorrelationBand(Address, Address),
+    /// Ordered list of (base, quote) correlation pairs registered.
+    CorrelationPairList,
+
+    // -------------------------------------------------------------------------
+    // #173: Tiered Consumer Whitelisting
+    // -------------------------------------------------------------------------
+    /// Consumer tier and quota info for an address.
+    ConsumerInfo(Address),
+    /// Pricing for each tier (ConsumerTier discriminant → price in stroops per ledger cycle).
+    TierPricing(u32),
+    /// Per-ledger query counter for a tiered consumer.
+    TierQueryCount(Address, u32),
+    /// Treasury address for XLM fee sweeps.
+    WhitelistTreasury,
+    /// Address of the XLM token contract used for subscription fee collection.
+    XlmTokenContract,
+
+    // -------------------------------------------------------------------------
+    // #174: Price Deviation Alerts
+    // -------------------------------------------------------------------------
+    /// Alert subscription record for a (consumer, asset) pair.
+    AlertSubscription(Address, Address),
+    /// Ordered list of (consumer, asset) pairs that have active alert subscriptions.
+    AlertSubscriptionList,
+    /// Maximum number of alert subscriptions allowed globally.
+    MaxAlertSubscriptions,
+    /// TTL in ledgers for alert subscriptions before auto-expiry.
+    AlertSubscriptionTtl,
+    /// Last aggregate price recorded per asset for deviation comparison.
+    AlertLastPrice(Address),
+
+    // -------------------------------------------------------------------------
+    // Off-chain relayer network integration
+    // -------------------------------------------------------------------------
+    /// Metadata for an approved relayer address.
+    ApprovedRelayer(Address),
+    /// Fee (in stroops) credited to a relayer per successful relayed price submission.
+    RelayerFeePerSubmission,
+    /// Accumulated fee balance (in stroops) owed to a relayer.
+    RelayerFeeBalance(Address),
+    /// Running count of successful price submissions made by a relayer.
+    RelayerSubmissionCount(Address),
+
+    // -------------------------------------------------------------------------
+    // Cross-reference oracle checks
+    // -------------------------------------------------------------------------
+    /// Stored [`ReferenceOracleEntry`] for a registered external reference oracle.
+    ReferenceOracle(Address),
+    /// Ordered list of registered reference oracle contract addresses.
+    ReferenceOracleList,
+    /// Allowed deviation in basis points before a cross-reference alert is emitted.
+    CrossRefDeviationThreshold,
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -575,4 +664,158 @@ pub struct FinalizedPrice {
     pub committed_ledger: u32,
     /// Ledger at which finality was confirmed.
     pub finalized_ledger: u32,
+}
+
+// =============================================================================
+// #171 — Source Reputation & Slashing
+// =============================================================================
+
+/// Staking record for an oracle source.
+///
+/// Stored under [`DataKey::SourceStake`] keyed by source address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceStakeRecord {
+    /// Locked stake amount in stroops.
+    pub amount: i128,
+    /// Ledger at which the stake was last updated.
+    pub last_updated_ledger: u32,
+}
+
+// =============================================================================
+// #172 — Cross-Asset Correlation
+// =============================================================================
+
+/// Acceptable ratio band between two correlated assets.
+///
+/// The ratio is computed as `price_base * RATIO_PRECISION / price_quote` and must
+/// fall within `[min_ratio, max_ratio]`. All values are scaled by `RATIO_PRECISION`
+/// (10^7) to avoid floating-point arithmetic.
+///
+/// Stored under [`DataKey::CorrelationBand`] keyed by `(base_asset, quote_asset)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CorrelationBand {
+    /// Minimum acceptable ratio (scaled by 10^7).
+    pub min_ratio: u128,
+    /// Maximum acceptable ratio (scaled by 10^7).
+    pub max_ratio: u128,
+    /// Whether this correlation check is currently active.
+    pub enabled: bool,
+}
+
+/// A registered correlation pair for enumeration purposes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CorrelationPair {
+    pub base_asset: Address,
+    pub quote_asset: Address,
+}
+
+// =============================================================================
+// #173 — Tiered Consumer Access
+// =============================================================================
+
+/// Consumer access tier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum ConsumerTier {
+    /// Free tier: 10 queries/ledger, data up to 1-hour stale.
+    Free = 0,
+    /// Basic tier: 100 queries/ledger, max 30-second fresh data.
+    Basic = 1,
+    /// Premium tier: unlimited queries/ledger, real-time data.
+    Premium = 2,
+}
+
+/// Per-consumer tier, quota, and subscription state.
+///
+/// Stored under [`DataKey::ConsumerInfo`] keyed by consumer address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ConsumerInfo {
+    /// Current access tier.
+    pub tier: ConsumerTier,
+    /// Ledger-based subscription expiration. 0 = no active subscription.
+    pub subscription_expiry_ledger: u32,
+    /// Unix timestamp-based subscription expiration. 0 = no active subscription.
+    pub subscription_expiry_ts: u64,
+    /// Number of queries consumed in the current ledger.
+    pub queries_this_ledger: u32,
+    /// Ledger sequence for which `queries_this_ledger` was last reset.
+    pub quota_reset_ledger: u32,
+}
+
+// =============================================================================
+// #174 — On-Chain Alert Subscriptions
+// =============================================================================
+
+/// An alert subscription record.
+///
+/// Stored under [`DataKey::AlertSubscription`] keyed by `(consumer, asset)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AlertSubscription {
+    /// Address of the subscriber (consumer contract or account).
+    pub consumer: Address,
+    /// Asset being monitored.
+    pub asset: Address,
+    /// Price movement threshold in basis points (100 bps = 1%) that triggers an alert.
+    pub threshold_bps: u32,
+    /// Contract address to invoke when the threshold is breached.
+    pub callback_contract: Address,
+    /// Function selector (Symbol) on the callback contract to call.
+    pub callback_fn: Symbol,
+    /// Ledger at which this subscription was created or last renewed.
+    pub created_ledger: u32,
+    /// TTL in ledgers; subscription expires at `created_ledger + ttl`.
+    pub ttl_ledgers: u32,
+}
+
+// =============================================================================
+// Off-chain relayer network integration
+// =============================================================================
+
+/// Metadata stored for each admin-approved relayer.
+///
+/// Stored under [`DataKey::ApprovedRelayer`] keyed by relayer address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayerInfo {
+    /// Human-readable display name for this relayer.
+    pub name: String,
+    /// Ledger sequence number when the relayer was approved by the admin.
+    pub approved_at_ledger: u32,
+}
+
+// =============================================================================
+// Cross-reference oracle checks
+// =============================================================================
+
+/// A registered external oracle contract used for cross-reference price checks.
+///
+/// Stored under [`DataKey::ReferenceOracle`] keyed by the oracle's contract address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ReferenceOracleEntry {
+    /// Contract address of the external oracle.
+    pub contract_id: Address,
+    /// Maps our asset addresses to the corresponding asset addresses used by the reference oracle.
+    pub asset_mapping: Map<Address, Address>,
+}
+
+/// The result of a cross-reference price comparison for a single asset.
+///
+/// Returned by `get_cross_reference`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CrossReferenceResult {
+    /// Our current aggregated price for the asset.
+    pub our_price: i128,
+    /// Price reported by the reference oracle for the same asset.
+    pub ref_price: i128,
+    /// Absolute deviation between the two prices expressed in basis points (1 % = 100 bps).
+    pub deviation_bps: u32,
+    /// Contract address of the reference oracle that provided `ref_price`.
+    pub ref_contract: Address,
 }

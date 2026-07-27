@@ -2,8 +2,8 @@ use soroban_sdk::{panic_with_error, symbol_short, Address, Bytes, Env, String, V
 
 use crate::events::{
     emit_admin_action, RemovalCooldownChangedEvent, SourceActiveAgainEvent, SourceAddedEvent,
-    SourceHeartbeatEvent, SourceInactiveEvent, SourceRemovedEvent, SourceMarkedForRemovalEvent,
-    SourceRemovalCancelledEvent,
+    SourceHeartbeatEvent, SourceInactiveEvent, SourceMarkedForRemovalEvent,
+    SourceRemovalCancelledEvent, SourceRemovedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -32,7 +32,7 @@ pub fn add_source(env: &Env, source: Address, name: String) {
 
     let oracle_sources: OracleSources = read_oracle_sources(env);
     let max_sources = crate::admin::get_max_sources(env);
-    if oracle_sources.sources.len() >= max_sources {
+    if max_sources > 0 && oracle_sources.sources.len() >= max_sources {
         panic_with_error!(env, ErrorCode::MaxSourcesReached);
     }
 
@@ -129,7 +129,7 @@ pub fn submit_heartbeat(env: &Env, source: Address) {
         // Reactivation requires BOTH a heartbeat AND a price submission in the same or
         // adjacent ledger. Check whether the source has submitted a price after the last
         // reactivation attempt.
-        let price_submitted_key = DataKey::SrcPriceSubmittedAfterReactivation(source.clone());
+        let price_submitted_key = DataKey::SrcPriceSubmitAfterReactivation(source.clone());
         let has_price: bool = env
             .storage()
             .persistent()
@@ -178,9 +178,10 @@ pub fn submit_heartbeat(env: &Env, source: Address) {
     }
 
     // Update the last-heartbeat ledger for adaptive interval computation.
-    env.storage()
-        .persistent()
-        .set(&DataKey::SrcLastPriceLedger(source.clone()), &current_ledger);
+    env.storage().persistent().set(
+        &DataKey::SrcLastPriceLedger(source.clone()),
+        &current_ledger,
+    );
 
     SourceHeartbeatEvent {
         source: source.clone(),
@@ -214,7 +215,11 @@ pub fn is_source_inactive(env: &Env, source: Address) -> bool {
 
             if new_missed >= MISS_THRESHOLD {
                 // Cross the inactivity threshold.
-                let old_status = if new_missed == MISS_THRESHOLD { 1u32 } else { 2u32 };
+                let old_status = if new_missed == MISS_THRESHOLD {
+                    1u32
+                } else {
+                    2u32
+                };
                 mark_source_inactive(env, &source);
 
                 // Record when inactivity started (only on first trip).
@@ -439,7 +444,15 @@ pub fn get_source_reputation(env: &Env, source: Address) -> i128 {
 /// Called after aggregation to update a source's reputation based on deviation from median.
 /// `source_price`: the price submitted by this source
 /// `median_price`: the aggregated median for the asset
-pub fn update_source_reputation(env: &Env, source: &Address, source_price: i128, median_price: i128) {
+///
+/// Not currently wired into `aggregate_asset` — kept for a future reputation-scoring pass.
+#[allow(dead_code)]
+pub fn update_source_reputation(
+    env: &Env,
+    source: &Address,
+    source_price: i128,
+    median_price: i128,
+) {
     if median_price == 0 {
         return;
     }
@@ -496,7 +509,7 @@ pub fn set_max_inactive_ledgers(env: &Env, ledgers: u32) {
     env.storage()
         .persistent()
         .set(&DataKey::CfgMaxInactiveLedgers, &ledgers);
-    crate::events::MaxInactiveLedgersChangedEvent { value: ledgers }.publish(env);
+    crate::events::InactiveLedgersChangedEvent { value: ledgers }.publish(env);
 }
 
 /// Returns the configured max-inactive-ledgers threshold (default 64).
@@ -618,7 +631,7 @@ pub fn record_price_submitted(env: &Env, source: &Address, ledger: u32) {
         .set(&DataKey::SrcLastPriceLedger(source.clone()), &ledger);
     // Mark that a price has been submitted after the most recent reactivation.
     env.storage().persistent().set(
-        &DataKey::SrcPriceSubmittedAfterReactivation(source.clone()),
+        &DataKey::SrcPriceSubmitAfterReactivation(source.clone()),
         &true,
     );
 }
@@ -755,5 +768,5 @@ fn _remove_source_internal(env: &Env, source: Address) {
         .remove(&DataKey::SrcLastPriceLedger(source.clone()));
     env.storage()
         .persistent()
-        .remove(&DataKey::SrcPriceSubmittedAfterReactivation(source));
+        .remove(&DataKey::SrcPriceSubmitAfterReactivation(source));
 }

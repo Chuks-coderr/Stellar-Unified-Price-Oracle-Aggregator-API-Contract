@@ -185,8 +185,7 @@ pub fn validate_correlation(
             continue; // this pair doesn't involve the submitted asset
         };
 
-        let band_key =
-            DataKey::CorrelationBand(pair.base_asset.clone(), pair.quote_asset.clone());
+        let band_key = DataKey::CorrelationBand(pair.base_asset.clone(), pair.quote_asset.clone());
         let band: CorrelationBand = match env.storage().persistent().get(&band_key) {
             Some(b) => b,
             None => continue,

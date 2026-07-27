@@ -95,7 +95,7 @@ pub fn get_ledger_hash(env: &Env, ledger: u32) -> Option<BytesN<32>> {
 /// recorded at aggregation time with the current ledger hash if `suspect_ledger ==
 /// current_ledger`.  For past ledgers, reorg detection is signalled externally via
 /// `retract_price` (admin-triggered).
-pub fn check_reorg(env: &Env, asset: Address, suspect_ledger: u32) -> bool {
+pub fn check_reorg(env: &Env, _asset: Address, suspect_ledger: u32) -> bool {
     let stored_hash: Option<BytesN<32>> = get_ledger_hash(env, suspect_ledger);
     let current_ledger = env.ledger().sequence();
 
@@ -146,7 +146,7 @@ pub fn mark_price_pending(env: &Env, asset: &Address, aggregate: &AggregatePrice
     // When the SDK exposes env.ledger().hash() this line becomes:
     //   let lhash = env.ledger().hash();
     let seq_bytes = soroban_sdk::Bytes::from_slice(env, &current_ledger.to_le_bytes());
-    let lhash: BytesN<32> = env.crypto().sha256(&seq_bytes);
+    let lhash: BytesN<32> = env.crypto().sha256(&seq_bytes).into();
     record_ledger_hash(env, current_ledger, lhash.clone());
 
     let entry = PendingFinalityEntry {
@@ -346,11 +346,7 @@ pub fn retract_price(env: &Env, asset: Address, committed_ledger: u32) {
 /// # Errors
 /// - `NoData` if no finalized price exists.
 /// - `InsufficientFinality` if the finalized price is too new for `min_finality`.
-pub fn get_finalized_price(
-    env: &Env,
-    asset: Address,
-    min_finality: u32,
-) -> FinalizedPrice {
+pub fn get_finalized_price(env: &Env, asset: Address, min_finality: u32) -> FinalizedPrice {
     let fin_key = DataKey::FinalizedPrice(asset.clone());
     let finalized: FinalizedPrice = env
         .storage()
