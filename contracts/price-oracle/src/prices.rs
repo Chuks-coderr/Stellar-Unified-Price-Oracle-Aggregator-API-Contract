@@ -1,83 +1,204 @@
-use soroban_sdk::{panic_with_error, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, Address, Env, String, Vec};
 
 use crate::admin::{
-    get_aggregation_method, get_decimals, get_max_history_length, get_min_sources_required,
-    get_resolution, get_timestamp_threshold,
+    get_aggregation_cooldown, get_aggregation_method, get_asset_resolution, get_decimals,
+    get_max_history_length, get_min_sources_required, get_min_submission_interval,
+    get_timestamp_threshold,
 };
 use crate::events::{
-    HistoryPrunedEvent, PriceAggregatedEvent, PriceStaleEvent, PriceSubmittedEvent,
-    SourcesInsufficientEvent,
+    AggregationTriggeredEvent, HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent,
+    PriceOverrideRemovedEvent, PriceOverrideSetEvent, PriceStaleEvent, PriceSubmittedEvent,
+    RateLimitExceededEvent, SourceNonCompliantEvent, SourcesInsufficientEvent,
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
     check_registered_asset, check_source, compute_confidence_bps, compute_mean, compute_median,
     compute_trimmed_mean, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
+    check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
+    get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
+    check_rate_limit, increment_query_count,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
-    PriceHistoryEntry,
+    PriceHistoryEntry, PriceOverrideEntry,
 };
 
-pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+/// Submits prices for multiple assets in a single atomic transaction.
+///
+/// Authorization is checked once for `source`. Each `(asset, price, timestamp)` tuple
+/// is validated individually; if any entry is invalid the entire call panics (atomicity).
+/// Aggregation is triggered for each asset after all submissions are stored.
+///
+/// # Arguments
+///
+/// * `env` - The Soroban execution environment.
+/// * `source` - Address of the submitting oracle source. Must authorize this call.
+/// * `asset_prices` - Ordered list of `(asset, price, timestamp)` tuples.
+///
+/// # Errors
+///
+/// Same error conditions as `submit_price`, applied per entry.
+pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i128, u64)>) {
     check_not_paused(env);
     source.require_auth();
     check_source(env, &source);
-    check_registered_asset(env, &asset);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::NotAuthorized);
     }
 
-    if price <= 0 {
-        crate::sources::record_invalid_submission(env, source.clone());
-        panic_with_error!(env, ErrorCode::InvalidPrice);
-    }
-
-    let min_price = crate::assets::get_min_price(env, asset.clone());
-    if price < min_price {
-        panic_with_error!(env, ErrorCode::PriceBelowMinimum);
-    }
-
+    let decimals = get_decimals(env);
     let ledger_time = env.ledger().timestamp();
     let threshold = get_timestamp_threshold(env);
-    if timestamp > ledger_time + threshold {
-        crate::sources::record_invalid_submission(env, source.clone());
-        panic_with_error!(env, ErrorCode::InvalidTimestamp);
-    }
-
-    let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
-    let entry = PriceEntry {
-        price,
-        timestamp,
-        source: source.clone(),
-        decimals,
-        last_updated: current_ledger,
-    };
+    let mut event_count: u32 = 0;
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+    // Validate all entries first for atomicity — any invalid entry aborts the whole call.
+    for i in 0..asset_prices.len() {
+        let (ref asset, price, timestamp) = asset_prices.get_unchecked(i);
+        check_registered_asset(env, asset);
 
-    PriceSubmittedEvent {
-        asset: asset.clone(),
-        source: source.clone(),
-        price,
-        timestamp,
+        if price <= 0 {
+            crate::sources::record_invalid_submission(env, source.clone());
+            panic_with_error!(env, ErrorCode::InvalidPrice);
+        }
+
+        let min_price = crate::assets::get_min_price(env, asset.clone());
+        if price < min_price {
+            panic_with_error!(env, ErrorCode::PriceBelowMinimum);
+        }
+
+        if timestamp > ledger_time.saturating_add(threshold) {
+            crate::sources::record_invalid_submission(env, source.clone());
+            panic_with_error!(env, ErrorCode::InvalidTimestamp);
+        }
     }
-    .publish(env);
 
+    // All valid — store submissions and trigger aggregation.
+    for i in 0..asset_prices.len() {
+        let (asset, price, timestamp) = asset_prices.get_unchecked(i);
+
+        let entry = PriceEntry {
+            price,
+            timestamp,
+            source: source.clone(),
+            decimals,
+            last_updated: current_ledger,
+            ledger_timestamp: ledger_time,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+        // #70: track last submission ledger for compliance
+        env.storage().persistent().set(
+            &DataKey::LastSubmissionLedger(source.clone(), asset.clone()),
+            &current_ledger,
+        );
+        // If source was non-compliant, clear the flag on new submission
+        let nc_key = DataKey::SourceNonCompliant(source.clone(), asset.clone());
+        if env.storage().persistent().has(&nc_key) {
+            env.storage().persistent().remove(&nc_key);
+        }
+
+        PriceSubmittedEvent {
+            asset: asset.clone(),
+            source: source.clone(),
+            price,
+            timestamp,
+        }
+        .publish(env);
+        event_count += 1;
+    }
+
+    // Trigger aggregation for each submitted asset.
+    for i in 0..asset_prices.len() {
+        let (asset, _, _) = asset_prices.get_unchecked(i);
+        aggregate_asset(env, asset, current_ledger, decimals);
+    }
+}
+
+/// Internal helper: re-aggregate all sources for a single asset and write history.
+fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u32) {
     let min_required = get_min_sources_required(env);
     let oracle_sources: OracleSources = read_oracle_sources(env);
     let total_sources = oracle_sources.sources.len();
+    let decimals = get_decimals(env);
+    let current_ledger = env.ledger().sequence();
+
+    // Issue #93: if MaxAggregationSources > 0 and we have more sources than the cap,
+    // randomly select a subset using the current ledger hash for determinism.
+    let max_agg = get_max_aggregation_sources(env);
+    let selected_sources: Vec<Address> = if max_agg > 0 && total_sources > max_agg {
+        // Use ledger hash bytes as a deterministic seed.
+        let hash_bytes = env.ledger().sequence().to_le_bytes();
+        // Simple LCG-style selection: pick indices derived from the hash.
+        let seed = u32::from_le_bytes(hash_bytes);
+        let mut selected: Vec<Address> = Vec::new(env);
+        // Reservoir-style: include source[i] if deterministic hash says so.
+        // We iterate all sources and keep `max_agg` of them pseudo-randomly.
+        let mut kept: u32 = 0;
+        for i in 0..total_sources {
+            let remaining = total_sources - i;
+            let needed = max_agg - kept;
+            // Probability of keeping: needed / remaining (integer check).
+            // Use a hash of seed XOR index to decide.
+            let h = seed
+                .wrapping_mul(1664525u32)
+                .wrapping_add(i)
+                .wrapping_add(1013904223u32);
+            if needed >= remaining || (h % remaining) < needed {
+                selected.push_back(oracle_sources.sources.get_unchecked(i));
+                kept += 1;
+                if kept >= max_agg {
+                    break;
+                }
+            }
+        }
+        selected
+    } else {
+        oracle_sources.sources.clone()
+    };
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
+    let min_interval = get_min_submission_interval(env);
+    let current_ledger_for_agg = env.ledger().sequence();
+
     for i in 0..total_sources {
         let src = oracle_sources.sources.get_unchecked(i);
+
+        // #70: enforce min submission interval compliance
+        if min_interval > 0 {
+            let last_sub_key = DataKey::LastSubmissionLedger(src.clone(), asset.clone());
+            let last_sub: Option<u32> = env.storage().persistent().get(&last_sub_key);
+            if let Some(last) = last_sub {
+                if current_ledger_for_agg.saturating_sub(last) > min_interval {
+                    // Flag source as non-compliant
+                    let nc_key = DataKey::SourceNonCompliant(src.clone(), asset.clone());
+                    if !env.storage().persistent().has(&nc_key) {
+                        env.storage().persistent().set(&nc_key, &true);
+                        SourceNonCompliantEvent {
+                            source: src.clone(),
+                            asset: asset.clone(),
+                            last_submission_ledger: last,
+                            required_interval: min_interval,
+                        }
+                        .publish(env);
+                    }
+                    continue; // exclude from aggregation
+                }
+            }
+            // If never submitted, skip (not compliant yet)
+            if last_sub.is_none() {
+                continue;
+            }
+        }
+
         let sub_key = DataKey::Submission(asset.clone(), src.clone());
         let sub: Option<PriceEntry> = env.storage().persistent().get(&sub_key);
         if let Some(entry_data) = sub {
@@ -111,6 +232,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
                     timestamp: 0,
                     num_sources: 0,
                     decimals,
+                    is_override: false,
                 });
 
         let aggregate = AggregatePrice {
@@ -118,6 +240,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
             timestamp: latest_timestamp,
             num_sources: contributing_sources,
             decimals,
+            is_override: false,
         };
         env.storage()
             .persistent()
@@ -134,13 +257,14 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
                 timestamp: latest_timestamp,
                 ledger: current_ledger,
                 num_sources: contributing_sources,
+                is_interpolated: false,
             };
             env.storage().temporary().set(
                 &DataKey::PriceHistory(asset.clone(), current_ledger),
                 &history_entry,
             );
 
-            // Track ledger in history index for pruning
+            // Track ledger in history index for pruning.
             let ledgers_key = DataKey::PriceHistoryLedgers(asset.clone());
             let mut ledger_list: soroban_sdk::Vec<u32> = env
                 .storage()
@@ -149,8 +273,22 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
                 .unwrap_or(soroban_sdk::Vec::new(env));
             ledger_list.push_back(current_ledger);
 
+            // Issue #92: check event budget before emitting prune events.
+            // Each prune loop iteration emits 1 event.
+
+            // Global history cap (existing MaxHistoryLength).
             let max_history = get_max_history_length(env);
             while ledger_list.len() > max_history {
+                // Issue #92: stop emitting prune events if we hit the cap.
+                if event_count >= max_events {
+                    EventLimitWarningEvent {
+                        asset: asset.clone(),
+                        event_count,
+                        max_events,
+                    }
+                    .publish(env);
+                    break;
+                }
                 let oldest_ledger = ledger_list.get_unchecked(0);
                 ledger_list.remove(0);
                 env.storage()
@@ -162,58 +300,211 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
                     remaining: ledger_list.len(),
                 }
                 .publish(env);
+                event_count += 1;
             }
+
+            // Issue #94: per-asset history cap (MaxHistoryPerAsset, default 1000).
+            let max_per_asset = get_max_history_per_asset(env);
+            while ledger_list.len() > max_per_asset {
+                if event_count >= max_events {
+                    EventLimitWarningEvent {
+                        asset: asset.clone(),
+                        event_count,
+                        max_events,
+                    }
+                    .publish(env);
+                    break;
+                }
+                let oldest_ledger = ledger_list.get_unchecked(0);
+                ledger_list.remove(0);
+                env.storage()
+                    .temporary()
+                    .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
+                HistoryPerAssetPrunedEvent {
+                    asset: asset.clone(),
+                    pruned_ledger: oldest_ledger,
+                    remaining: ledger_list.len(),
+                }
+                .publish(env);
+                event_count += 1;
+            }
+
             env.storage().persistent().set(&ledgers_key, &ledger_list);
         }
 
-        PriceAggregatedEvent {
-            asset: asset.clone(),
-            price: median_price,
-            num_sources: contributing_sources,
-            timestamp: latest_timestamp,
+        // Issue #92: only emit aggregation event if within budget.
+        if event_count < max_events {
+            PriceAggregatedEvent {
+                asset: asset.clone(),
+                price: median_price,
+                num_sources: contributing_sources,
+                timestamp: latest_timestamp,
+            }
+            .publish(env);
+        } else {
+            EventLimitWarningEvent {
+                asset: asset.clone(),
+                event_count,
+                max_events,
+            }
+            .publish(env);
         }
-        .publish(env);
     } else {
-        SourcesInsufficientEvent {
-            asset: asset.clone(),
-            current_source_count: contributing_sources,
-            min_sources_required: min_required,
+        if event_count < max_events {
+            SourcesInsufficientEvent {
+                asset: asset.clone(),
+                current_source_count: contributing_sources,
+                min_sources_required: min_required,
+            }
+            .publish(env);
+        } else {
+            EventLimitWarningEvent {
+                asset: asset.clone(),
+                event_count,
+                max_events,
+            }
+            .publish(env);
         }
-        .publish(env);
     }
 }
 
-pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
+pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
     check_registered_asset(env, &asset);
-    let key = DataKey::Aggregate(asset.clone());
-    let result: AggregatePrice = env.storage().persistent().get(&key)?;
+
+    if crate::sources::is_source_suspended(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    if price <= 0 {
+        crate::sources::record_invalid_submission(env, source.clone());
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+
+    let min_price = crate::assets::get_min_price(env, asset.clone());
+    if price < min_price {
+        panic_with_error!(env, ErrorCode::PriceBelowMinimum);
+    }
+
+    let ledger_time = env.ledger().timestamp();
+    let threshold = get_timestamp_threshold(env);
+    if timestamp > ledger_time.saturating_add(threshold) {
+        crate::sources::record_invalid_submission(env, source.clone());
+        panic_with_error!(env, ErrorCode::InvalidTimestamp);
+    }
+
+    let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
-    if max_age > 0 {
-        let ledger_time = env.ledger().timestamp();
-        if result.timestamp + max_age < ledger_time {
-            PriceStaleEvent {
+    let entry = PriceEntry {
+        price,
+        timestamp,
+        source: source.clone(),
+        decimals,
+        last_updated: current_ledger,
+        ledger_timestamp: env.ledger().timestamp(),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    PriceSubmittedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        timestamp,
+    }
+    .publish(env);
+
+    aggregate_asset(env, &asset, current_ledger, decimals);
+}
+
+pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Storage reads (hot path) and when they occur:
+    //  1) check_registered_asset() → DataKey::AssetRegistered(asset)
+    //  2) Override branch (only if not expired):
+    //       DataKey::PriceOverride(asset)
+    //       - if active: also reads global decimals via get_decimals(env)
+    //  3) Aggregate branch:
+    //       DataKey::Aggregate(asset)
+    //       - resolution gating reads per-asset resolution via get_asset_resolution(env, asset)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    check_registered_asset(env, &asset);
+    let current_ledger = env.ledger().sequence();
+    let ledger_time = env.ledger().timestamp();
+
+    // Check for active price override
+    let override_key = DataKey::PriceOverride(asset.clone());
+    if let Some(ovr) = env
+        .storage()
+        .persistent()
+        .get::<_, PriceOverrideEntry>(&override_key)
+    {
+        if current_ledger <= ovr.expiry_ledger {
+            env.storage()
+                .persistent()
+                .extend_ttl(&override_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+            // Only needed when override is active.
+            let decimals = get_decimals(env);
+            return Some(AggregatePrice {
+                price: ovr.price,
+                timestamp: ledger_time,
+                num_sources: 0,
+                decimals,
+                is_override: true,
+            });
+        } else {
+            // Override has expired
+            PriceOverrideExpiredEvent {
                 asset: asset.clone(),
-                last_update_ledger: 0,
+                expiry_ledger: ovr.expiry_ledger,
                 current_ledger,
             }
             .publish(env);
-            return None;
+            env.storage().persistent().remove(&override_key);
         }
     }
-    let resolution = get_resolution(env);
-    if resolution > 0 {
-        let ledger_time = env.ledger().timestamp();
-        if result.timestamp + (resolution as u64) < ledger_time {
-            PriceStaleEvent {
-                asset: asset.clone(),
-                last_update_ledger: 0,
-                current_ledger,
-            }
-            .publish(env);
-            return None;
+
+    let key = DataKey::Aggregate(asset.clone());
+    let result: AggregatePrice = env.storage().persistent().get(&key)?;
+
+    // max_age gating (if enabled)
+    if max_age > 0 && result
+        .timestamp
+        .saturating_add(max_age)
+        < ledger_time
+    {
+        PriceStaleEvent {
+            asset: asset.clone(),
+            last_update_ledger: 0,
+            current_ledger,
         }
+        .publish(env);
+        return None;
     }
+
+    // resolution gating (if enabled)
+    let resolution = get_asset_resolution(env, asset.clone());
+    if resolution > 0 && result
+        .timestamp
+        .saturating_add(resolution as u64)
+        < ledger_time
+    {
+        PriceStaleEvent {
+            asset: asset.clone(),
+            last_update_ledger: 0,
+            current_ledger,
+        }
+        .publish(env);
+        return None;
+    }
+
     env.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -246,20 +537,44 @@ pub fn get_source_price(env: &Env, asset: Address, source: Address) -> PriceEntr
 
 pub fn get_all_prices(env: &Env, asset: Address) -> Vec<PriceEntry> {
     check_registered_asset(env, &asset);
+    // Read the sources list once; iterate without extra reads or writes per entry.
     let oracle_sources: OracleSources = read_oracle_sources(env);
     let mut prices: Vec<PriceEntry> = Vec::new(env);
     for i in 0..oracle_sources.sources.len() {
         let src = oracle_sources.sources.get_unchecked(i);
         let sub_key = DataKey::Submission(asset.clone(), src);
-        let sub: Option<PriceEntry> = env.storage().persistent().get(&sub_key);
-        if let Some(entry) = sub {
-            env.storage()
-                .persistent()
-                .extend_ttl(&sub_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        if let Some(entry) = env.storage().persistent().get::<_, PriceEntry>(&sub_key) {
             prices.push_back(entry);
         }
     }
     prices
+}
+
+pub fn check_rate_limit_and_increment(env: &Env, consumer: &Address) {
+    if is_subscribed(env, consumer) {
+        return;
+    }
+
+    let ledger = env.ledger().sequence();
+    let rate_limit_key = DataKey::QueryRateLimit;
+    let max_queries: u32 = env.storage().persistent().get(&rate_limit_key).unwrap_or(100);
+
+    let count_key = DataKey::QueryCount(consumer.clone(), ledger);
+    let current_count: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
+
+    if current_count >= max_queries {
+        RateLimitExceededEvent {
+            consumer: consumer.clone(),
+            current_count,
+            limit: max_queries,
+        }
+        .publish(env);
+        panic_with_error!(env, ErrorCode::RateLimitExceeded);
+    }
+
+    let new_count = current_count + 1;
+    env.storage().temporary().set(&count_key, &new_count);
+    env.storage().temporary().extend_ttl(&count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
 pub fn lastprice(env: &Env, asset: Asset) -> Option<PriceData> {
@@ -271,12 +586,13 @@ pub fn lastprice(env: &Env, asset: Asset) -> Option<PriceData> {
     if !env.storage().persistent().get(&reg_key).unwrap_or(false) {
         return None;
     }
-    let agg_key = DataKey::Aggregate(addr);
+    let agg_key = DataKey::Aggregate(addr.clone());
     let result: AggregatePrice = env.storage().persistent().get(&agg_key)?;
-    let resolution = get_resolution(env);
+    // #67: use per-asset resolution (falls back to contract-wide)
+    let resolution = get_asset_resolution(env, addr.clone());
     if resolution > 0 {
         let ledger_time = env.ledger().timestamp();
-        if result.timestamp + (resolution as u64) < ledger_time {
+        if result.timestamp.saturating_add(resolution as u64) < ledger_time {
             return None;
         }
     }
@@ -351,6 +667,10 @@ pub fn prices(env: &Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
     if records == 0 {
         return Some(Vec::new(env));
     }
+    let max_history = get_max_history_length(env);
+    if records > max_history {
+        panic_with_error!(env, ErrorCode::RecordsLimitExceeded);
+    }
     let mut result: Vec<PriceData> = Vec::new(env);
     let current_ledger = env.ledger().sequence();
     let max_to_check = (records * 10).min(10000);
@@ -394,27 +714,84 @@ pub fn prices(env: &Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
     Some(result)
 }
 
-#[allow(dead_code)]
-pub fn get_prices(env: &Env, assets: Vec<Address>) -> Vec<Option<AggregatePrice>> {
-    let mut results: Vec<Option<AggregatePrice>> = Vec::new(env);
-    for i in 0..assets.len() {
-        let asset = assets.get_unchecked(i);
-        let price = get_price(env, asset, 0);
-        results.push_back(price);
-    }
-    results
-}
-
-#[allow(dead_code)]
-pub fn get_price_change(env: &Env, asset: Address, ledgers_back: u32) -> Option<i128> {
+pub fn override_price(env: &Env, asset: Address, price: i128, reason: String, expiry_ledger: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
     check_registered_asset(env, &asset);
 
-    let current_price = get_price(env, asset.clone(), 0)?;
-
-    if current_price.price == 0 {
-        return None;
+    const MAX_REASON_LENGTH: u32 = 256;
+    if reason.len() > MAX_REASON_LENGTH {
+        panic_with_error!(env, ErrorCode::ReasonTooLong);
     }
 
+    let current_ledger = env.ledger().sequence();
+    if price <= 0 {
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+    if expiry_ledger <= current_ledger {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+
+    let entry = PriceOverrideEntry {
+        price,
+        reason: reason.clone(),
+        expiry_ledger,
+        set_ledger: current_ledger,
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::PriceOverride(asset.clone()), &entry);
+    env.storage().persistent().extend_ttl(
+        &DataKey::PriceOverride(asset.clone()),
+        LEDGER_THRESHOLD,
+        LEDGER_BUMP,
+    );
+
+    PriceOverrideSetEvent {
+        asset: asset.clone(),
+        admin: admin.clone(),
+        price,
+        reason,
+        expiry_ledger,
+    }
+    .publish(env);
+}
+
+pub fn remove_price_override(env: &Env, asset: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    check_registered_asset(env, &asset);
+
+    let override_key = DataKey::PriceOverride(asset.clone());
+    if !env.storage().persistent().has(&override_key) {
+        panic_with_error!(env, ErrorCode::NoData);
+    }
+    env.storage().persistent().remove(&override_key);
+
+    PriceOverrideRemovedEvent {
+        asset: asset.clone(),
+        admin: admin.clone(),
+    }
+    .publish(env);
+}
+
+pub fn get_price_override(env: &Env, asset: Address) -> Option<PriceOverrideEntry> {
+    check_registered_asset(env, &asset);
+    let override_key = DataKey::PriceOverride(asset);
+    if env.storage().persistent().has(&override_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&override_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&override_key)
+}
+
+pub fn historical_price_change_percent(
+    env: &Env,
+    asset: Address,
+    current_price: AggregatePrice,
+    ledgers_back: u32,
+) -> Option<i128> {
     let current_ledger = env.ledger().sequence();
     let target_ledger = current_ledger.saturating_sub(ledgers_back);
 
@@ -430,6 +807,471 @@ pub fn get_price_change(env: &Env, asset: Address, ledgers_back: u32) -> Option<
         return None;
     }
 
-    let change_percent = ((current_price.price - old_price) * 100) / old_price;
+    let diff = current_price.price.saturating_sub(old_price);
+    let change_percent = diff.saturating_mul(100) / old_price;
     Some(change_percent)
+}
+
+/// #69: Trigger aggregation manually. Callable by anyone, subject to cooldown.
+pub fn trigger_aggregation(env: &Env, asset: Address) {
+    check_registered_asset(env, &asset);
+
+    let current_ledger = env.ledger().sequence();
+    let cooldown = get_aggregation_cooldown(env);
+
+    // Check cooldown
+    let last_trigger_key = DataKey::LastAggregationTrigger(asset.clone());
+    if let Some(last_triggered) = env.storage().persistent().get::<_, u32>(&last_trigger_key) {
+        if current_ledger.saturating_sub(last_triggered) < cooldown {
+            panic_with_error!(env, ErrorCode::InvalidConfiguration);
+        }
+    }
+
+    // Re-aggregate from stored submissions
+    let oracle_sources: OracleSources = read_oracle_sources(env);
+    let total_sources = oracle_sources.sources.len();
+    let min_required = get_min_sources_required(env);
+    let decimals = get_decimals(env);
+
+    let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut latest_timestamp: u64 = 0;
+    let mut contributing_sources: u32 = 0;
+
+    let min_interval = get_min_submission_interval(env);
+
+    for i in 0..total_sources {
+        let src = oracle_sources.sources.get_unchecked(i);
+
+        if min_interval > 0 {
+            let last_sub_key = DataKey::LastSubmissionLedger(src.clone(), asset.clone());
+            let last_sub: Option<u32> = env.storage().persistent().get(&last_sub_key);
+            if let Some(last) = last_sub {
+                if current_ledger.saturating_sub(last) > min_interval {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        let sub_key = DataKey::Submission(asset.clone(), src.clone());
+        if let Some(entry_data) = env.storage().persistent().get::<_, PriceEntry>(&sub_key) {
+            if entry_data.timestamp > latest_timestamp {
+                latest_timestamp = entry_data.timestamp;
+            }
+            valid_prices.push_back(entry_data.price);
+            contributing_sources += 1;
+        }
+    }
+
+    if contributing_sources >= min_required && !valid_prices.is_empty() {
+        let method = get_aggregation_method(env);
+        let agg_price = match method {
+            0 => compute_median(&valid_prices),
+            1 => compute_mean(&valid_prices),
+            2 => compute_trimmed_mean(&valid_prices, 10),
+            _ => compute_median(&valid_prices),
+        };
+
+        let aggregate = AggregatePrice {
+            price: agg_price,
+            timestamp: latest_timestamp,
+            num_sources: contributing_sources,
+            decimals,
+            is_override: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Aggregate(asset.clone()), &aggregate);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Aggregate(asset.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+
+        env.storage()
+            .persistent()
+            .set(&last_trigger_key, &current_ledger);
+
+        AggregationTriggeredEvent {
+            asset,
+            price: agg_price,
+            num_sources: contributing_sources,
+            triggered_at_ledger: current_ledger,
+        }
+        .publish(env);
+    } else {
+        panic_with_error!(env, ErrorCode::InsufficientSources);
+    }
+}
+
+/// #70: Returns sources that are currently compliant for a given asset.
+pub fn get_compliant_sources(env: &Env, asset: Address) -> Vec<Address> {
+    check_registered_asset(env, &asset);
+    let oracle_sources = read_oracle_sources(env);
+    let min_interval = get_min_submission_interval(env);
+    let current_ledger = env.ledger().sequence();
+    let mut result: Vec<Address> = Vec::new(env);
+
+    for i in 0..oracle_sources.sources.len() {
+        let src = oracle_sources.sources.get_unchecked(i);
+
+        if min_interval > 0 {
+            let last_sub_key = DataKey::LastSubmissionLedger(src.clone(), asset.clone());
+            let last_sub: Option<u32> = env.storage().persistent().get(&last_sub_key);
+            match last_sub {
+                Some(last) if current_ledger.saturating_sub(last) <= min_interval => {
+                    result.push_back(src);
+                }
+                _ => {} // not compliant
+            }
+        } else {
+            result.push_back(src);
+        }
+    }
+    result
+}
+
+// =============================================================================
+// #187 — Commit-Reveal MEV Resistance
+// =============================================================================
+
+/// Default commit window: sources have 20 ledgers to submit their commit hash.
+const DEFAULT_COMMIT_WINDOW: u32 = 20;
+/// Default reveal window: sources have 20 ledgers after the commit deadline to reveal.
+const DEFAULT_REVEAL_WINDOW: u32 = 20;
+/// Maximum number of prices a source can reveal in a single batch transaction.
+const MAX_BATCH_REVEALS: u32 = 100;
+
+// --- Config accessors ---
+
+pub fn set_commit_window(env: &Env, ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgCommitWindow, &ledgers);
+    crate::events::CommitWindowChangedEvent { value: ledgers }.publish(env);
+}
+
+pub fn get_commit_window(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgCommitWindow)
+        .unwrap_or(DEFAULT_COMMIT_WINDOW)
+}
+
+pub fn set_reveal_window(env: &Env, ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgRevealWindow, &ledgers);
+    crate::events::RevealWindowChangedEvent { value: ledgers }.publish(env);
+}
+
+pub fn get_reveal_window(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgRevealWindow)
+        .unwrap_or(DEFAULT_REVEAL_WINDOW)
+}
+
+// --- Round ledger helper ---
+
+/// Derives the canonical round ledger for the current ledger.
+///
+/// A "round" starts every `commit_window` ledgers, beginning from ledger 0.
+/// This makes the round boundary predictable to all sources.
+///
+/// ```
+/// round_ledger = (current_ledger / commit_window) * commit_window
+/// ```
+pub fn current_round_ledger(env: &Env) -> u32 {
+    let current = env.ledger().sequence();
+    let window = get_commit_window(env);
+    if window == 0 {
+        return current;
+    }
+    (current / window) * window
+}
+
+// --- Commit phase ---
+
+/// Commits a price hash for a specific asset in the current round.
+///
+/// The source must call this during the commit window for the round.
+/// A commit is a 32-byte hash computed as:
+///   `sha256(price_le_bytes || salt_bytes || round_ledger_le_bytes)`
+/// where `price` is i128 (16 bytes LE), `salt` is arbitrary caller-chosen bytes,
+/// and `round_ledger` is u32 (4 bytes LE).
+///
+/// The hash is stored in **temporary storage** with a TTL of
+/// `commit_window + reveal_window + 1` ledgers, automatically expiring without
+/// revealing (bounding storage costs against griefing).
+///
+/// # Errors
+/// - `SourceNotFound` — source is not registered.
+/// - `AssetNotRegistered` — asset is not registered.
+/// - `AlreadyCommitted` — source already committed this round for this asset.
+/// - `RevealWindowClosed` — called outside the commit window for this round.
+pub fn commit_price(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    hash: soroban_sdk::BytesN<32>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+
+    let current_ledger = env.ledger().sequence();
+    let round_ledger = current_round_ledger(env);
+    let commit_window = get_commit_window(env);
+
+    // The commit phase is [round_ledger, round_ledger + commit_window).
+    // After the commit window closes, commits for this round are rejected.
+    if current_ledger >= round_ledger + commit_window {
+        panic_with_error!(env, ErrorCode::RevealWindowClosed);
+    }
+
+    let commit_key = DataKey::PriceCommit(asset.clone(), source.clone(), round_ledger);
+
+    // Reject double-commit.
+    if env.storage().temporary().has(&commit_key) {
+        panic_with_error!(env, ErrorCode::AlreadyCommitted);
+    }
+
+    let commit = crate::types::PriceCommit {
+        hash,
+        committed_ledger: round_ledger,
+        source: source.clone(),
+        asset: asset.clone(),
+        revealed: false,
+    };
+
+    // Use temporary storage so the commitment expires automatically after the reveal window,
+    // preventing griefing through permanent storage bloat.
+    let ttl = commit_window + get_reveal_window(env) + 1;
+    env.storage().temporary().set(&commit_key, &commit);
+    env.storage()
+        .temporary()
+        .extend_ttl(&commit_key, ttl, ttl);
+
+    crate::events::PriceCommittedEvent {
+        asset,
+        source,
+        round_ledger,
+        committed_at_ledger: current_ledger,
+    }
+    .publish(env);
+}
+
+// --- Reveal phase ---
+
+/// Reveals a committed price for a specific round.
+///
+/// The source provides `(asset, price, salt, round_ledger)`. The contract recomputes
+/// `sha256(price_le_bytes || salt_bytes || round_ledger_le_bytes)` and verifies it
+/// matches the stored commit hash. If it matches, the price is stored as a normal
+/// `PriceEntry` and aggregation is triggered.
+///
+/// The reveal must happen in the window:
+/// `[round_ledger + commit_window, round_ledger + commit_window + reveal_window)`
+///
+/// # Errors
+/// - `CommitNotFound` — no commit for this (source, asset, round).
+/// - `CommitExpired` — the reveal window has closed.
+/// - `RevealWindowClosed` — called before the reveal window opens.
+/// - `CommitHashMismatch` — the recomputed hash does not match the commit.
+pub fn reveal_price(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    price: i128,
+    salt: soroban_sdk::Bytes,
+    round_ledger: u32,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+
+    _do_reveal(env, &source, &asset, price, salt, round_ledger);
+}
+
+/// Reveals up to `MAX_BATCH_REVEALS` committed prices in a single transaction.
+///
+/// Each tuple is `(asset, price, salt, round_ledger)`. Atomic: if any entry fails,
+/// the whole transaction reverts.
+pub fn reveal_prices_batch(
+    env: &Env,
+    source: Address,
+    reveals: Vec<(Address, i128, soroban_sdk::Bytes, u32)>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+
+    if reveals.len() > MAX_BATCH_REVEALS {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+
+    for i in 0..reveals.len() {
+        let (asset, price, salt, round_ledger) = reveals.get_unchecked(i);
+        check_registered_asset(env, &asset);
+        _do_reveal(env, &source, &asset, price, salt, round_ledger);
+    }
+}
+
+/// Internal reveal logic shared by single and batch reveal.
+fn _do_reveal(
+    env: &Env,
+    source: &Address,
+    asset: &Address,
+    price: i128,
+    salt: soroban_sdk::Bytes,
+    round_ledger: u32,
+) {
+    let current_ledger = env.ledger().sequence();
+    let commit_window = get_commit_window(env);
+    let reveal_window = get_reveal_window(env);
+
+    let reveal_start = round_ledger + commit_window;
+    let reveal_end = reveal_start + reveal_window;
+
+    // Enforce reveal window boundaries.
+    if current_ledger < reveal_start {
+        // Commit phase hasn't closed yet.
+        panic_with_error!(env, ErrorCode::RevealWindowClosed);
+    }
+    if current_ledger >= reveal_end {
+        // Reveal window has expired.
+        panic_with_error!(env, ErrorCode::CommitExpired);
+    }
+
+    let commit_key = DataKey::PriceCommit(asset.clone(), source.clone(), round_ledger);
+
+    let mut commit: crate::types::PriceCommit = env
+        .storage()
+        .temporary()
+        .get(&commit_key)
+        .unwrap_or_else(|| panic_with_error!(env, ErrorCode::CommitNotFound));
+
+    if commit.revealed {
+        // Already revealed — prevent double-reveal.
+        panic_with_error!(env, ErrorCode::AlreadyCommitted);
+    }
+
+    // Recompute the expected hash: sha256(price_le || salt || round_ledger_le)
+    let expected_hash = _compute_commit_hash(env, price, &salt, round_ledger);
+
+    if expected_hash != commit.hash {
+        panic_with_error!(env, ErrorCode::CommitHashMismatch);
+    }
+
+    // Mark revealed to prevent double-reveal.
+    commit.revealed = true;
+    env.storage().temporary().set(&commit_key, &commit);
+
+    // Price is valid — store as a regular PriceEntry and trigger aggregation.
+    let decimals = get_decimals(env);
+    let ledger_time = env.ledger().timestamp();
+    let threshold = get_timestamp_threshold(env);
+    // The timestamp for commit-reveal submissions is the current ledger time.
+    // We use current time because the commit was blinded; no user-provided timestamp needed.
+    if ledger_time > ledger_time.saturating_add(threshold) {
+        // Shouldn't trigger, but defensive guard.
+        panic_with_error!(env, ErrorCode::InvalidTimestamp);
+    }
+
+    if price <= 0 {
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+
+    let min_price = crate::assets::get_min_price(env, asset.clone());
+    if price < min_price {
+        panic_with_error!(env, ErrorCode::PriceBelowMinimum);
+    }
+
+    let entry = PriceEntry {
+        price,
+        timestamp: ledger_time,
+        source: source.clone(),
+        decimals,
+        last_updated: current_ledger,
+        ledger_timestamp: ledger_time,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    // Track last submission for compliance and #186 reactivation.
+    env.storage().persistent().set(
+        &DataKey::LastSubmissionLedger(source.clone(), asset.clone()),
+        &current_ledger,
+    );
+    crate::sources::record_price_submitted(env, source, current_ledger);
+
+    // Clear non-compliance flag.
+    let nc_key = DataKey::SourceNonCompliant(source.clone(), asset.clone());
+    if env.storage().persistent().has(&nc_key) {
+        env.storage().persistent().remove(&nc_key);
+    }
+
+    PriceSubmittedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        timestamp: ledger_time,
+    }
+    .publish(env);
+
+    crate::events::PriceRevealedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        round_ledger,
+        revealed_at_ledger: current_ledger,
+    }
+    .publish(env);
+
+    aggregate_asset(env, asset, current_ledger, decimals);
+}
+
+/// Computes `sha256(price_le_bytes || salt_bytes || round_le_bytes)`.
+///
+/// - `price` is encoded as 16 bytes little-endian (i128).
+/// - `salt` is arbitrary bytes provided by the caller.
+/// - `round_ledger` is encoded as 4 bytes little-endian (u32).
+fn _compute_commit_hash(
+    env: &Env,
+    price: i128,
+    salt: &soroban_sdk::Bytes,
+    round_ledger: u32,
+) -> soroban_sdk::BytesN<32> {
+    let price_bytes = price.to_le_bytes();
+    let round_bytes = round_ledger.to_le_bytes();
+
+    let mut preimage = soroban_sdk::Bytes::new(env);
+    // Append price bytes (16 bytes).
+    for b in price_bytes.iter() {
+        preimage.push_back(*b);
+    }
+    // Append salt.
+    preimage.append(salt);
+    // Append round_ledger bytes (4 bytes).
+    for b in round_bytes.iter() {
+        preimage.push_back(*b);
+    }
+
+    env.crypto().sha256(&preimage)
 }
