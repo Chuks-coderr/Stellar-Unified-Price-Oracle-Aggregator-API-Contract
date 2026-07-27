@@ -10,8 +10,8 @@ use crate::events::{
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
-    check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
-    read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
+    check_registered_asset, check_source, compute_confidence_bps, compute_mean, compute_median,
+    compute_trimmed_mean, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
@@ -218,6 +218,20 @@ pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePri
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
     Some(result)
+}
+
+pub fn get_price_with_confidence(env: &Env, asset: Address) -> Option<(AggregatePrice, u32)> {
+    let aggregate = get_price(env, asset.clone(), 0)?;
+
+    let mut prices: Vec<i128> = Vec::new(env);
+    let entries = get_all_prices(env, asset.clone());
+    for i in 0..entries.len() {
+        let entry = entries.get_unchecked(i);
+        prices.push_back(entry.price);
+    }
+
+    let confidence_bps = compute_confidence_bps(&prices);
+    Some((aggregate, confidence_bps))
 }
 
 pub fn get_source_price(env: &Env, asset: Address, source: Address) -> PriceEntry {

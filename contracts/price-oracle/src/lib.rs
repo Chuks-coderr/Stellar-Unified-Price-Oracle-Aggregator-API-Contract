@@ -183,6 +183,10 @@ impl PriceOracleContract {
         prices::get_price(&env, asset, max_age)
     }
 
+    pub fn get_price_with_confidence(env: Env, asset: Address) -> Option<(AggregatePrice, u32)> {
+        prices::get_price_with_confidence(&env, asset)
+    }
+
     pub fn get_source_price(env: Env, asset: Address, source: Address) -> PriceEntry {
         prices::get_source_price(&env, asset, source)
     }
