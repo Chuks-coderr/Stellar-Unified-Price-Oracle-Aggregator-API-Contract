@@ -2353,4 +2353,52 @@ fn test_multi_sig_source_governance() {
     assert!(res.is_err());
 }
 
+#[test]
+fn test_source_geolocation_metrics() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let src1 = register_test_source(&e, &client, "Source1");
+    let src2 = register_test_source(&e, &client, "Source2");
+
+    let geo1 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "US"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "US"),
+    };
+    let geo2 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "EU"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "DE"),
+    };
+
+    // Initially both should return None
+    assert!(client.get_source_geo(&src1).is_none());
+    assert!(client.get_source_geo(&src2).is_none());
+
+    // Set geo metadata
+    client.set_source_geo(&src1, &geo1);
+    client.set_source_geo(&src2, &geo2);
+
+    // Verify geo metadata retrieval
+    let retrieved1 = client.get_source_geo(&src1).unwrap();
+    assert_eq!(retrieved1.region, String::from_str(&e, "US"));
+    assert_eq!(retrieved1.provider, String::from_str(&e, "AWS"));
+    assert_eq!(retrieved1.jurisdiction, String::from_str(&e, "US"));
+
+    // Verify decentralization report
+    let report = client.get_decentralization_report();
+    // 2 sources. Region counts: US: 1, EU: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.region_hhi, 5000u32);
+    // Provider counts: AWS: 2. HHI = (2^2) * 10000 / 4 = 10000.
+    assert_eq!(report.provider_hhi, 10000u32);
+    // Jurisdiction counts: US: 1, DE: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.jurisdiction_hhi, 5000u32);
+    // Average HHI = (5000 + 10000 + 5000) / 3 = 6666.
+    // Overall score = 10000 - 6666 = 3334.
+    assert_eq!(report.overall_score, 3334u32);
+}
+
+
 

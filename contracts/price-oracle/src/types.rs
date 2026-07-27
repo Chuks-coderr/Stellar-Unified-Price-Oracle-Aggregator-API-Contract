@@ -294,6 +294,8 @@ pub enum DataKey {
     SourceProposalCount,
     /// A pending source proposal details.
     SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -885,5 +887,29 @@ pub struct SourceProposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
 }
+
+// =============================================================================
+// #208 — Source Geolocation & Decentralization Metrics
+// =============================================================================
+
+/// Geolocation and provider tags for an oracle source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+/// Decentralization and concentration report for registered sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
+}
+
 
 

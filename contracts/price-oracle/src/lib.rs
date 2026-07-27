@@ -51,7 +51,9 @@ pub use types::{
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal,
+    SourceGeoMetadata, DecentralizationReport,
 };
+
 
 
 use soroban_sdk::{
@@ -878,6 +880,23 @@ impl PriceOracleContract {
     pub fn get_source_proposal(env: Env, proposal_id: u32) -> SourceProposal {
         sources::get_source_proposal(&env, proposal_id)
     }
+
+    // --- #208: Source Geolocation & Decentralization Metrics ---
+
+    pub fn set_source_geo(env: Env, source: Address, metadata: SourceGeoMetadata) {
+        reentrancy::enter(&env);
+        sources::set_source_geo(&env, source, metadata);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_geo(env: Env, source: Address) -> Option<SourceGeoMetadata> {
+        sources::get_source_geo(&env, source)
+    }
+
+    pub fn get_decentralization_report(env: Env) -> DecentralizationReport {
+        sources::get_decentralization_report(&env)
+    }
+
 
 
 

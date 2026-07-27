@@ -7,6 +7,7 @@ use crate::events::{
     SourceWarningEvent, SourceProbationEvent, SourceDisqualifiedEvent, SourceDemeritsResetEvent,
     DemeritConfigChangedEvent, InvalidSubmissionRecordedEvent,
     SourceGovConfigChangedEvent, SourceProposalCreatedEvent, SourceProposalApprovedEvent, SourceProposalExecutedEvent,
+    SourceGeoUpdatedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -14,8 +15,9 @@ use crate::storage::{
 };
 use crate::types::{
     DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
-    SourceGovernance, SourceProposal,
+    SourceGovernance, SourceProposal, SourceGeoMetadata, DecentralizationReport,
 };
+
 
 
 const MAX_SOURCE_NAME_LENGTH: u32 = 64;
@@ -1109,4 +1111,103 @@ pub fn get_source_proposal(env: &Env, proposal_id: u32) -> SourceProposal {
             panic_with_error!(env, ErrorCode::ProposalNotFound);
         })
 }
+
+pub fn get_source_geo(env: &Env, source: Address) -> Option<SourceGeoMetadata> {
+    let key = DataKey::SourceGeo(source);
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_source_geo(env: &Env, source: Address, metadata: SourceGeoMetadata) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let key = DataKey::SourceGeo(source.clone());
+    env.storage().persistent().set(&key, &metadata);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceGeoUpdatedEvent {
+        source,
+        region: metadata.region,
+        provider: metadata.provider,
+        jurisdiction: metadata.jurisdiction,
+    }
+    .publish(env);
+}
+
+fn calculate_hhi(env: &Env, counts: soroban_sdk::Map<soroban_sdk::String, u32>, total: u32) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let mut sum_squares = 0u64;
+    let keys = counts.keys();
+    for i in 0..keys.len() {
+        let key = keys.get_unchecked(i);
+        let count = counts.get_unchecked(key);
+        sum_squares = sum_squares.saturating_add((count as u64) * (count as u64));
+    }
+    let hhi = sum_squares.saturating_mul(10000) / ((total as u64) * (total as u64));
+    hhi as u32
+}
+
+pub fn get_decentralization_report(env: &Env) -> DecentralizationReport {
+    let oracle_sources = read_oracle_sources(env);
+    let total = oracle_sources.sources.len();
+    if total == 0 {
+        return DecentralizationReport {
+            region_hhi: 0,
+            provider_hhi: 0,
+            jurisdiction_hhi: 0,
+            overall_score: 0,
+        };
+    }
+
+    let mut region_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+    let mut provider_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+    let mut jurisdiction_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+
+    let default_str = soroban_sdk::String::from_str(env, "unknown");
+
+    for i in 0..total {
+        let source = oracle_sources.sources.get_unchecked(i);
+        let geo = get_source_geo(env, source);
+        let (region, provider, jurisdiction) = match geo {
+            Some(g) => (g.region, g.provider, g.jurisdiction),
+            None => (default_str.clone(), default_str.clone(), default_str.clone()),
+        };
+
+        let rc = region_counts.get(region.clone()).unwrap_or(0);
+        region_counts.set(region, rc + 1);
+
+        let pc = provider_counts.get(provider.clone()).unwrap_or(0);
+        provider_counts.set(provider, pc + 1);
+
+        let jc = jurisdiction_counts.get(jurisdiction.clone()).unwrap_or(0);
+        jurisdiction_counts.set(jurisdiction, jc + 1);
+    }
+
+    let region_hhi = calculate_hhi(env, region_counts, total);
+    let provider_hhi = calculate_hhi(env, provider_counts, total);
+    let jurisdiction_hhi = calculate_hhi(env, jurisdiction_counts, total);
+
+    let avg_hhi = (region_hhi + provider_hhi + jurisdiction_hhi) / 3;
+    let overall_score = 10000u32.saturating_sub(avg_hhi);
+
+    DecentralizationReport {
+        region_hhi,
+        provider_hhi,
+        jurisdiction_hhi,
+        overall_score,
+    }
+}
+
 
