@@ -6,6 +6,7 @@ use crate::events::{
     SourceRemovalCancelledEvent, SourceRemovedEvent,
     SourceWarningEvent, SourceProbationEvent, SourceDisqualifiedEvent, SourceDemeritsResetEvent,
     DemeritConfigChangedEvent, InvalidSubmissionRecordedEvent,
+    SourceGovConfigChangedEvent, SourceProposalCreatedEvent, SourceProposalApprovedEvent, SourceProposalExecutedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -13,13 +14,13 @@ use crate::storage::{
 };
 use crate::types::{
     DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal,
 };
+
 
 const MAX_SOURCE_NAME_LENGTH: u32 = 64;
 
-pub fn add_source(env: &Env, source: Address, name: String) {
-    let admin = get_admin(env);
-    admin.require_auth();
+fn register_source_internal(env: &Env, source: Address, name: String) {
     if name.is_empty() {
         panic_with_error!(env, ErrorCode::SourceNameEmpty);
     }
@@ -53,12 +54,26 @@ pub fn add_source(env: &Env, source: Address, name: String) {
         .set(&DataKey::SrcRegistry, &oracle_sources);
     SourceAddedEvent {
         source: source.clone(),
-        admin: admin.clone(),
+        admin: get_admin(env),
         name: source_name,
     }
     .publish(env);
+}
+
+pub fn add_source(env: &Env, source: Address, name: String) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if let Some(gov) = get_source_governance(env) {
+        if gov.threshold > 0 {
+            panic_with_error!(env, ErrorCode::NotAuthorized);
+        }
+    }
+
+    register_source_internal(env, source, name);
     emit_admin_action(env, symbol_short!("add_src"), admin, Bytes::new(env));
 }
+
 
 pub fn remove_source(env: &Env, source: Address) {
     let admin = get_admin(env);
@@ -932,3 +947,166 @@ fn _remove_source_internal(env: &Env, source: Address) {
         .persistent()
         .remove(&DataKey::SrcPriceSubmitAfterReactivation(source));
 }
+
+pub fn get_source_governance(env: &Env) -> Option<SourceGovernance> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceGovConfig)
+}
+
+pub fn set_source_governance(env: &Env, approvers: Vec<Address>, threshold: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if threshold > approvers.len() {
+        panic_with_error!(env, ErrorCode::InvalidGovernanceConfig);
+    }
+
+    if threshold == 0 && approvers.len() > 0 {
+        panic_with_error!(env, ErrorCode::InvalidGovernanceConfig);
+    }
+
+    let gov = SourceGovernance {
+        approvers: approvers.clone(),
+        threshold,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceGovConfig, &gov);
+
+    SourceGovConfigChangedEvent {
+        admin,
+        threshold,
+        approvers_count: approvers.len(),
+    }
+    .publish(env);
+}
+
+pub fn propose_source(env: &Env, proposer: Address, source: Address, name: String) -> u32 {
+    proposer.require_auth();
+
+    let gov = get_source_governance(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    });
+
+    if gov.threshold == 0 {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let mut is_approver = false;
+    for i in 0..gov.approvers.len() {
+        if gov.approvers.get_unchecked(i) == proposer {
+            is_approver = true;
+            break;
+        }
+    }
+    if !is_approver {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let count_key = DataKey::SourceProposalCount;
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let proposal_id = count.saturating_add(1);
+    env.storage().persistent().set(&count_key, &proposal_id);
+
+    let proposal = SourceProposal {
+        id: proposal_id,
+        source: source.clone(),
+        name: name.clone(),
+        approvals: Vec::new(env),
+        executed: false,
+    };
+
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    env.storage().persistent().set(&prop_key, &proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&prop_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceProposalCreatedEvent {
+        proposal_id,
+        proposer,
+        source,
+        name,
+    }
+    .publish(env);
+
+    proposal_id
+}
+
+pub fn approve_source(env: &Env, approver: Address, proposal_id: u32) {
+    approver.require_auth();
+
+    let gov = get_source_governance(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    });
+
+    if gov.threshold == 0 {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let mut is_approver = false;
+    for i in 0..gov.approvers.len() {
+        if gov.approvers.get_unchecked(i) == approver {
+            is_approver = true;
+            break;
+        }
+    }
+    if !is_approver {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    let mut proposal: SourceProposal = env
+        .storage()
+        .persistent()
+        .get(&prop_key)
+        .unwrap_or_else(|| {
+            panic_with_error!(env, ErrorCode::ProposalNotFound);
+        });
+
+    if proposal.executed {
+        panic_with_error!(env, ErrorCode::ProposalAlreadyExecuted);
+    }
+
+    for i in 0..proposal.approvals.len() {
+        if proposal.approvals.get_unchecked(i) == approver {
+            panic_with_error!(env, ErrorCode::AlreadyApproved);
+        }
+    }
+
+    proposal.approvals.push_back(approver.clone());
+
+    SourceProposalApprovedEvent {
+        proposal_id,
+        approver,
+    }
+    .publish(env);
+
+    if proposal.approvals.len() >= gov.threshold {
+        proposal.executed = true;
+        register_source_internal(env, proposal.source.clone(), proposal.name.clone());
+        SourceProposalExecutedEvent {
+            proposal_id,
+            source: proposal.source.clone(),
+        }
+        .publish(env);
+    }
+
+    env.storage().persistent().set(&prop_key, &proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&prop_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+pub fn get_source_proposal(env: &Env, proposal_id: u32) -> SourceProposal {
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    env.storage()
+        .persistent()
+        .get(&prop_key)
+        .unwrap_or_else(|| {
+            panic_with_error!(env, ErrorCode::ProposalNotFound);
+        })
+}
+

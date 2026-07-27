@@ -50,7 +50,9 @@ pub use types::{
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal,
 };
+
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec,
@@ -847,6 +849,36 @@ impl PriceOracleContract {
         sources::reset_source_demerits(&env, source);
         reentrancy::exit(&env);
     }
+
+    // --- #207: Multi-sig Source Governance ---
+
+    pub fn set_source_governance(env: Env, approvers: Vec<Address>, threshold: u32) {
+        reentrancy::enter(&env);
+        sources::set_source_governance(&env, approvers, threshold);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_governance(env: Env) -> Option<SourceGovernance> {
+        sources::get_source_governance(&env)
+    }
+
+    pub fn propose_source(env: Env, proposer: Address, source: Address, name: String) -> u32 {
+        reentrancy::enter(&env);
+        let id = sources::propose_source(&env, proposer, source, name);
+        reentrancy::exit(&env);
+        id
+    }
+
+    pub fn approve_source(env: Env, approver: Address, proposal_id: u32) {
+        reentrancy::enter(&env);
+        sources::approve_source(&env, approver, proposal_id);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_proposal(env: Env, proposal_id: u32) -> SourceProposal {
+        sources::get_source_proposal(&env, proposal_id)
+    }
+
 
 
     // --- Assets ---

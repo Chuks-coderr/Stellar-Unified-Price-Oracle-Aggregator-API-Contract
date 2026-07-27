@@ -1331,3 +1331,51 @@ pub struct InvalidSubmissionRecordedEvent {
     pub demerits: u32,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #207: Multi-sig Source Governance Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when source governance config is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGovConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub threshold: u32,
+    pub approvers_count: u32,
+}
+
+/// Emitted when a new source proposal is proposed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalCreatedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub proposer: Address,
+    #[topic]
+    pub source: Address,
+    pub name: String,
+}
+
+/// Emitted when an approver approves a source proposal.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalApprovedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub approver: Address,
+}
+
+/// Emitted when a source proposal is executed (threshold met).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalExecutedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub source: Address,
+}
+
+

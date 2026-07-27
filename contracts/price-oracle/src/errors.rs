@@ -126,5 +126,14 @@ pub enum ErrorCode {
     SourceSuspended = 54,
     /// Demerit configuration thresholds are invalid.
     InvalidDemeritThreshold = 55,
+    /// Invalid source governance config.
+    InvalidGovernanceConfig = 56,
+    /// The specified source proposal does not exist.
+    ProposalNotFound = 57,
+    /// Approver has already approved the proposal.
+    AlreadyApproved = 58,
+    /// The source proposal was already executed.
+    ProposalAlreadyExecuted = 59,
 }
+
 

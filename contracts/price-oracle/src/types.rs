@@ -288,6 +288,12 @@ pub enum DataKey {
     SourceDemerits(Address),
     /// Configured thresholds for progressive disqualification.
     DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -856,4 +862,28 @@ pub struct DemeritConfig {
     pub disqualified_threshold: u32,
     pub cooldown_ledgers: u32,
 }
+
+// =============================================================================
+// #207 — Multi-sig Source Registration Governance
+// =============================================================================
+
+/// Configuration for source registration multi-sig governance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
+    pub id: u32,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
+
 

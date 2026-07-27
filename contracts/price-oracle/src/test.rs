@@ -2284,3 +2284,73 @@ fn test_demerits_lifecycle() {
     assert_eq!(state.status, crate::DisqualificationStatus::Active);
 }
 
+#[test]
+fn test_multi_sig_source_governance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let app1 = Address::generate(&e);
+    let app2 = Address::generate(&e);
+    let app3 = Address::generate(&e);
+    let mut approvers = Vec::new(&e);
+    approvers.push_back(app1.clone());
+    approvers.push_back(app2.clone());
+    approvers.push_back(app3.clone());
+
+    // Initially governance is None
+    assert!(client.get_source_governance().is_none());
+
+    // Set governance configuration: 2-of-3 multi-sig
+    client.set_source_governance(&approvers, &2u32);
+    let gov = client.get_source_governance().unwrap();
+    assert_eq!(gov.threshold, 2u32);
+    assert_eq!(gov.approvers.len(), 3u32);
+
+    // Direct add_source should fail now because multi-sig governance is active
+    let source = Address::generate(&e);
+    let name = String::from_str(&e, "TestGovSource");
+    let res = client.try_add_source(&source, &name);
+    assert!(res.is_err());
+
+    // Propose a source from non-approver should fail
+    let non_approver = Address::generate(&e);
+    let res = client.try_propose_source(&non_approver, &source, &name);
+    assert!(res.is_err());
+
+    // Propose from app1 (approver)
+    let proposal_id = client.propose_source(&app1, &source, &name);
+    assert_eq!(proposal_id, 1u32);
+
+    // Check proposal state
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.id, 1u32);
+    assert_eq!(prop.source, source);
+    assert_eq!(prop.approvals.len(), 0u32);
+    assert_eq!(prop.executed, false);
+
+    // Approve from app1
+    client.approve_source(&app1, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.approvals.len(), 1u32);
+    assert_eq!(prop.executed, false);
+
+    // Duplicate approval should fail
+    let res = client.try_approve_source(&app1, &proposal_id);
+    assert!(res.is_err());
+
+    // Approve from app2 (this should meet the threshold 2 and execute)
+    client.approve_source(&app2, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.executed, true);
+    assert_eq!(prop.approvals.len(), 2u32);
+
+    // Source should now be successfully registered
+    assert!(client.is_source(&source));
+
+    // Try to approve already executed proposal should fail
+    let res = client.try_approve_source(&app3, &proposal_id);
+    assert!(res.is_err());
+}
+
+
