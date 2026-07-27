@@ -284,6 +284,18 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+    /// Price deviation circuit breaker threshold in basis points.
+    CircuitBreakerThreshold,
+    /// Suspension state for a source (bool).
+    SrcSuspended(Address),
+    /// Minimum submission interval override in ledgers for an asset.
+    AssetMinSubmissionInterval(Address),
+    /// Successful price submission count per source.
+    SourceSubmissionCount(Address),
+    /// Total successful price submissions across all sources.
+    TotalSubmissionCount,
+    /// Accumulated fee balance in stroops per source.
+    SourceFeeBalance(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -503,7 +515,21 @@ pub struct AssetMetadata {
     /// Optional override for the number of decimals used by this asset's token contract.
     /// When `None`, the contract-wide decimal setting applies.
     pub decimals: Option<u32>,
+    /// Logo URI of the asset.
+    pub logo_uri: String,
 }
+
+/// Helper struct for batch asset metadata updates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetMetadataUpdate {
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]

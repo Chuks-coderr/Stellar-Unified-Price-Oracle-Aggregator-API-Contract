@@ -3,7 +3,7 @@
 use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String, Symbol, Vec};
 
 use crate::test_helpers::*;
-use crate::{Asset, PriceData, PriceEntry};
+use crate::{Asset, PriceData, PriceEntry, AssetMetadataUpdate};
 
 #[test]
 fn test_initialize() {
@@ -2185,3 +2185,167 @@ fn test_get_migration_state_none_before_migration() {
     let (client, _) = setup_contract(&e);
     assert!(client.get_migration_state().is_none());
 }
+
+#[test]
+fn test_asset_metadata_management() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    let asset = register_test_asset(&e, &client);
+
+    let name = String::from_str(&e, "Bitcoin");
+    let symbol = String::from_str(&e, "BTC");
+    let logo_uri = String::from_str(&e, "https://logo.uri/btc.png");
+
+    client.set_asset_metadata(&asset, &name, &symbol, &Some(8u32), &logo_uri);
+
+    let meta = client.get_asset_metadata(&asset).unwrap();
+    assert_eq!(meta.name, name);
+    assert_eq!(meta.symbol, symbol);
+    assert_eq!(meta.decimals, Some(8u32));
+    assert_eq!(meta.logo_uri, logo_uri);
+}
+
+#[test]
+fn test_batch_asset_metadata_management() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    let asset1 = register_test_asset(&e, &client);
+    let asset2 = register_test_asset(&e, &client);
+
+    let name1 = String::from_str(&e, "Asset One");
+    let symbol1 = String::from_str(&e, "AONE");
+    let logo1 = String::from_str(&e, "https://a1.png");
+
+    let name2 = String::from_str(&e, "Asset Two");
+    let symbol2 = String::from_str(&e, "ATWO");
+    let logo2 = String::from_str(&e, "https://a2.png");
+
+    let mut updates = soroban_sdk::Vec::new(&e);
+    updates.push_back(AssetMetadataUpdate {
+        asset: asset1.clone(),
+        name: name1.clone(),
+        symbol: symbol1.clone(),
+        decimals: Some(4u32),
+        logo_uri: logo1.clone(),
+    });
+    updates.push_back(AssetMetadataUpdate {
+        asset: asset2.clone(),
+        name: name2.clone(),
+        symbol: symbol2.clone(),
+        decimals: None,
+        logo_uri: logo2.clone(),
+    });
+
+    client.batch_set_asset_metadata(&updates);
+
+    let meta1 = client.get_asset_metadata(&asset1).unwrap();
+    assert_eq!(meta1.name, name1);
+    assert_eq!(meta1.symbol, symbol1);
+    assert_eq!(meta1.decimals, Some(4u32));
+    assert_eq!(meta1.logo_uri, logo1);
+
+    let meta2 = client.get_asset_metadata(&asset2).unwrap();
+    assert_eq!(meta2.name, name2);
+    assert_eq!(meta2.symbol, symbol2);
+    assert_eq!(meta2.decimals, None);
+    assert_eq!(meta2.logo_uri, logo2);
+}
+
+#[test]
+fn test_circuit_breaker_auto_suspension() {
+    let e = Env::default();
+    ledger_default(&e, 100, 10000);
+    let (client, _) = setup_contract(&e);
+    client.set_min_sources_required(&1u32);
+    client.set_circuit_breaker_threshold(&1000u32); // 10%
+
+    let source = register_test_source(&e, &client, "Oracle");
+    let asset = register_test_asset(&e, &client);
+
+    // Initial submission establishing aggregate price
+    submit_test_price(&client, &source, &asset, 100i128, 9999);
+    assert_eq!(client.get_price(&asset, &0u64).unwrap().price, 100i128);
+
+    // Deviating submission: 150 (50% deviation > 10% threshold)
+    submit_test_price(&client, &source, &asset, 150i128, 9999);
+
+    // Source should now be suspended!
+    // Trying to submit again should panic with NotAuthorized (suspension)
+    let res = e.try_run_with_auth(source.clone(), || {
+        client.submit_price(&source, &asset, &100i128, &9999);
+    });
+    assert!(res.is_err());
+
+    // Reactivate source
+    client.reactivate_source(&source);
+
+    // Now it should be able to submit again
+    submit_test_price(&client, &source, &asset, 100i128, 9999);
+}
+
+#[test]
+fn test_per_asset_min_submission_interval() {
+    let e = Env::default();
+    ledger_default(&e, 100, 10000);
+    let (client, _) = setup_contract(&e);
+    client.set_min_sources_required(&1u32);
+
+    let source = register_test_source(&e, &client, "Oracle");
+    let asset = register_test_asset(&e, &client);
+
+    client.set_asset_min_submission_interval(&asset, &10u32);
+    assert_eq!(client.get_asset_min_submission_interval(&asset), 10u32);
+
+    // First submission
+    submit_test_price(&client, &source, &asset, 100i128, 9999);
+
+    // Immediately trigger aggregation - since ledger hasn't advanced 10 sequences,
+    // compliance check flags it and excludes it from aggregation.
+    e.ledger().set_sequence(111);
+    submit_test_price(&client, &source, &asset, 110i128, 9999);
+    assert_eq!(client.get_price(&asset, &0u64).unwrap().price, 110i128);
+
+    client.clear_asset_min_submission_interval(&asset);
+    // Should fall back to global
+    assert_eq!(client.get_asset_min_submission_interval(&asset), client.get_min_submission_interval());
+}
+
+#[test]
+fn test_source_fee_withdrawal() {
+    let e = Env::default();
+    ledger_default(&e, 100, 10000);
+    let (client, _) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Oracle");
+    let asset = register_test_asset(&e, &client);
+
+    // Set XLM Token Contract Address in whitelisting
+    let token_admin = Address::generate(&e);
+    let xlm_addr = e.register_stellar_asset_contract(token_admin.clone());
+    client.set_xlm_token_contract(&xlm_addr);
+
+    // Setup subscription plan basic: 30 days, 1000 stroops
+    let basic_plan_dur = 30 * 24 * 3600;
+    client.set_subscription_plan(&basic_plan_dur, &1000i128);
+
+    // Generate consumer, mint tokens to consumer
+    let consumer = Address::generate(&e);
+    let xlm_client = soroban_sdk::token::Client::new(&e, &xlm_addr);
+    e.mock_all_auths();
+    xlm_client.mint(&consumer, &10000i128);
+
+    // Make some submissions to earn contribution weight
+    submit_test_price(&client, &source, &asset, 100i128, 9999);
+
+    // Purchase subscription
+    client.register_consumer(&consumer, &types::ConsumerTier::Basic);
+
+    // Source should have been credited fees based on contribution
+    let balance = client.get_source_fee_balance(&source);
+    assert!(balance > 0);
+
+    // Withdraw fees
+    client.withdraw_fees(&source);
+    assert_eq!(client.get_source_fee_balance(&source), 0);
+    assert_eq!(xlm_client.balance(&source), balance);
+}
+

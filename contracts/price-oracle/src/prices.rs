@@ -78,6 +78,10 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     for i in 0..asset_prices.len() {
         let (asset, price, timestamp) = asset_prices.get_unchecked(i);
 
+        if check_deviation_circuit_breaker(env, &source, &asset, price) {
+            return;
+        }
+
         let entry = PriceEntry {
             price,
             timestamp,
@@ -90,6 +94,9 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
         env.storage()
             .persistent()
             .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+        record_successful_submission(env, source.clone());
+
 
         // #70: track last submission ledger for compliance
         env.storage().persistent().set(
@@ -165,7 +172,15 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
-    let min_interval = get_min_submission_interval(env);
+    let min_interval = {
+        let key = DataKey::AssetMinSubmissionInterval(asset.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            get_min_submission_interval(env)
+        }
+    };
     let current_ledger_for_agg = env.ledger().sequence();
     let selected_count = selected_sources.len();
 
@@ -400,6 +415,10 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         panic_with_error!(env, ErrorCode::InvalidTimestamp);
     }
 
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
@@ -415,6 +434,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     env.storage()
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    record_successful_submission(env, source.clone());
+
 
     PriceSubmittedEvent {
         asset: asset.clone(),
@@ -1288,6 +1310,10 @@ pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: 
         panic_with_error!(env, ErrorCode::InvalidPrice);
     }
 
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
@@ -1304,6 +1330,8 @@ pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: 
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
 
+    record_successful_submission(env, source.clone());
+
     PriceSubmittedEvent {
         asset: asset.clone(),
         source: source.clone(),
@@ -1314,3 +1342,46 @@ pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: 
 
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
+
+pub fn check_deviation_circuit_breaker(env: &Env, source: &Address, asset: &Address, price: i128) -> bool {
+    let threshold = crate::admin::get_circuit_breaker_threshold(env);
+    if threshold == 0 {
+        return false;
+    }
+
+    let agg_key = DataKey::Aggregate(asset.clone());
+    let prev_aggregate: Option<AggregatePrice> = env.storage().persistent().get(&agg_key);
+    if let Some(agg) = prev_aggregate {
+        if agg.price > 0 {
+            let diff = (price - agg.price).abs();
+            let deviation_bps = (diff * 10_000) / agg.price;
+            if deviation_bps as u32 > threshold {
+                crate::sources::suspend_source_internal(env, source.clone());
+                crate::events::SourceAutoSuspendedEvent {
+                    source: source.clone(),
+                    asset: asset.clone(),
+                    submitted_price: price,
+                    reference_price: agg.price,
+                    deviation_bps: deviation_bps as u32,
+                    threshold_bps: threshold,
+                }
+                .publish(env);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn record_successful_submission(env: &Env, source: Address) {
+    let src_key = DataKey::SourceSubmissionCount(source.clone());
+    let current_count: u32 = env.storage().persistent().get(&src_key).unwrap_or(0);
+    env.storage().persistent().set(&src_key, &(current_count + 1));
+    env.storage().persistent().extend_ttl(&src_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    let total_key = DataKey::TotalSubmissionCount;
+    let total_count: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+    env.storage().persistent().set(&total_key, &(total_count + 1));
+    env.storage().persistent().extend_ttl(&total_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+

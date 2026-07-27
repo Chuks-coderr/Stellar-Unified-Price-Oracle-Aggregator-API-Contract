@@ -48,7 +48,8 @@ pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
     ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans, AssetMetadata,
+    AssetMetadataUpdate,
 };
 
 use soroban_sdk::{
@@ -2300,6 +2301,103 @@ impl PriceOracleContract {
         reentrancy::enter(&env);
         zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
         reentrancy::exit(&env);
+    }
+
+    // --- Asset Metadata (#195) ---
+
+    pub fn set_asset_metadata(
+        env: Env,
+        asset: Address,
+        name: String,
+        symbol: String,
+        decimals: Option<u32>,
+        logo_uri: String,
+    ) {
+        reentrancy::enter(&env);
+        let metadata = AssetMetadata {
+            name,
+            symbol,
+            decimals,
+            logo_uri,
+        };
+        assets::set_asset_metadata(&env, asset, metadata);
+        reentrancy::exit(&env);
+    }
+
+    pub fn batch_set_asset_metadata(env: Env, updates: Vec<AssetMetadataUpdate>) {
+        reentrancy::enter(&env);
+        assets::batch_set_asset_metadata(&env, updates);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_asset_metadata(env: Env, asset: Address) -> Option<AssetMetadata> {
+        assets::get_asset_metadata(&env, asset)
+    }
+
+    // --- Price Deviation Circuit Breaker (#198) ---
+
+    pub fn set_circuit_breaker_threshold(env: Env, threshold_bps: u32) {
+        reentrancy::enter(&env);
+        admin::set_circuit_breaker_threshold(&env, threshold_bps);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_circuit_breaker_threshold(env: Env) -> u32 {
+        admin::get_circuit_breaker_threshold(&env)
+    }
+
+    pub fn reactivate_source(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::reactivate_source(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    // --- Per-Asset Min Submission Interval (#196) ---
+
+    pub fn set_asset_min_submission_interval(env: Env, asset: Address, interval: u32) {
+        reentrancy::enter(&env);
+        let admin = crate::storage::get_admin(&env);
+        admin.require_auth();
+        crate::storage::check_registered_asset(&env, &asset);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AssetMinSubmissionInterval(asset), &interval);
+        reentrancy::exit(&env);
+    }
+
+    pub fn clear_asset_min_submission_interval(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        let admin = crate::storage::get_admin(&env);
+        admin.require_auth();
+        crate::storage::check_registered_asset(&env, &asset);
+        let key = DataKey::AssetMinSubmissionInterval(asset);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+        }
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_asset_min_submission_interval(env: Env, asset: Address) -> u32 {
+        crate::storage::check_registered_asset(&env, &asset);
+        let key = DataKey::AssetMinSubmissionInterval(asset);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, crate::storage::LEDGER_THRESHOLD, crate::storage::LEDGER_BUMP);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            admin::get_min_submission_interval(&env)
+        }
+    }
+
+    // --- Source Fees (#197) ---
+
+    pub fn withdraw_fees(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        whitelisting::withdraw_fees(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_fee_balance(env: Env, source: Address) -> i128 {
+        whitelisting::get_source_fee_balance(&env, source)
     }
 }
 

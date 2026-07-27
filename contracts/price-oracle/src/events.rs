@@ -1267,3 +1267,48 @@ pub struct InterpolationChangedEvent {
 pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
+
+/// Emitted when an asset's metadata is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct AssetMetadataUpdatedEvent {
+    #[topic]
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
+/// Emitted when a source is automatically suspended by the circuit breaker due to price deviation.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAutoSuspendedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub submitted_price: i128,
+    pub reference_price: i128,
+    pub deviation_bps: u32,
+    pub threshold_bps: u32,
+}
+
+/// Emitted when a source withdraws their collected fees.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceFeesWithdrawnEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when fees are credited to a source.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceFeeCreditedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
