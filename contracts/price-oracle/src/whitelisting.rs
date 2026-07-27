@@ -101,6 +101,8 @@ pub fn register_consumer(env: &Env, consumer: Address, tier: ConsumerTier) {
             amount: fee,
         }
         .publish(env);
+
+        distribute_subscription_fee(env, fee);
     }
 
     // Determine whether existing record exists (for tier-change event).
@@ -360,3 +362,132 @@ pub fn tier_staleness(tier: &ConsumerTier) -> u64 {
         ConsumerTier::Premium => PREMIUM_STALENESS_SECS,
     }
 }
+
+pub fn distribute_subscription_fee(env: &Env, fee: i128) {
+    if fee <= 0 {
+        return;
+    }
+
+    let oracle_sources: crate::types::OracleSources = crate::storage::read_oracle_sources(env);
+    let total_sources = oracle_sources.sources.len();
+    if total_sources == 0 {
+        return;
+    }
+
+    // Get total submission count across all sources
+    let total_sub_key = DataKey::TotalSubmissionCount;
+    let total_submissions: u32 = env.storage().persistent().get(&total_sub_key).unwrap_or(0);
+
+    if total_submissions > 0 {
+        let mut distributed_fee = 0i128;
+        for i in 0..total_sources {
+            let source = oracle_sources.sources.get_unchecked(i);
+            let src_sub_key = DataKey::SourceSubmissionCount(source.clone());
+            let source_submissions: u32 = env.storage().persistent().get(&src_sub_key).unwrap_or(0);
+
+            if source_submissions > 0 {
+                let share = (fee * source_submissions as i128) / total_submissions as i128;
+                if share > 0 {
+                    let balance_key = DataKey::SourceFeeBalance(source.clone());
+                    let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+                    env.storage().persistent().set(&balance_key, &(current_balance + share));
+                    env.storage().persistent().extend_ttl(&balance_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+                    distributed_fee += share;
+
+                    crate::events::SourceFeeCreditedEvent {
+                        source: source.clone(),
+                        amount: share,
+                    }
+                    .publish(env);
+                }
+            }
+        }
+        
+        let remainder = fee - distributed_fee;
+        if remainder > 0 {
+            let source = oracle_sources.sources.get_unchecked(0);
+            let balance_key = DataKey::SourceFeeBalance(source.clone());
+            let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+            env.storage().persistent().set(&balance_key, &(current_balance + remainder));
+            env.storage().persistent().extend_ttl(&balance_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+            crate::events::SourceFeeCreditedEvent {
+                source: source.clone(),
+                amount: remainder,
+            }
+            .publish(env);
+        }
+    } else {
+        let share = fee / total_sources as i128;
+        if share > 0 {
+            let mut distributed_fee = 0i128;
+            for i in 0..total_sources {
+                let source = oracle_sources.sources.get_unchecked(i);
+                let balance_key = DataKey::SourceFeeBalance(source.clone());
+                let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+                env.storage().persistent().set(&balance_key, &(current_balance + share));
+                env.storage().persistent().extend_ttl(&balance_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+                distributed_fee += share;
+
+                crate::events::SourceFeeCreditedEvent {
+                    source: source.clone(),
+                    amount: share,
+                }
+                .publish(env);
+            }
+            let remainder = fee - distributed_fee;
+            if remainder > 0 {
+                let source = oracle_sources.sources.get_unchecked(0);
+                let balance_key = DataKey::SourceFeeBalance(source.clone());
+                let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+                env.storage().persistent().set(&balance_key, &(current_balance + remainder));
+                env.storage().persistent().extend_ttl(&balance_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+                crate::events::SourceFeeCreditedEvent {
+                    source: source.clone(),
+                    amount: remainder,
+                }
+                .publish(env);
+            }
+        }
+    }
+}
+
+pub fn withdraw_fees(env: &Env, source: Address) {
+    source.require_auth();
+    crate::storage::check_source(env, &source);
+
+    let balance_key = DataKey::SourceFeeBalance(source.clone());
+    let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+
+    if balance <= 0 {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let token_addr = get_xlm_token_contract(env)
+        .unwrap_or_else(|| panic_with_error!(env, ErrorCode::NotAuthorized));
+    let client = soroban_sdk::token::Client::new(env, &token_addr);
+    let contract_addr = env.current_contract_address();
+
+    client.transfer(&contract_addr, &source, &balance);
+
+    env.storage().persistent().set(&balance_key, &0i128);
+
+    crate::events::SourceFeesWithdrawnEvent {
+        source,
+        amount: balance,
+    }
+    .publish(env);
+}
+
+pub fn get_source_fee_balance(env: &Env, source: Address) -> i128 {
+    crate::storage::check_source(env, &source);
+    let key = DataKey::SourceFeeBalance(source);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key).unwrap_or(0i128)
+}
+
