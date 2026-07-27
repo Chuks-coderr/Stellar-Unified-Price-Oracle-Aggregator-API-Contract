@@ -195,6 +195,52 @@ pub enum DataKey {
     LedgerHashChain(u32),
     /// The finalized aggregate price for an asset (FinalizedPrice).
     FinalizedPrice(Address),
+
+    // -------------------------------------------------------------------------
+    // #176: Fee Market
+    // -------------------------------------------------------------------------
+    /// Priority-sorted pending submission queue (PendingFeeSubmissions).
+    FmPendingQueue,
+    /// Accumulated fee pool awaiting distribution (u128).
+    FmFeePool,
+    /// Per-source accumulated fee balance (u128).
+    FmSourceFeeBalance(Address),
+    /// Treasury accumulated fee balance (u128).
+    FmTreasuryBalance,
+    /// Treasury address for fee disbursement.
+    FmTreasury,
+    /// Minimum priority fee required to enqueue a submission (u128).
+    FmMinPriorityFee,
+    /// Fee split ratio: percentage going to sources (u32, 0-100).
+    FmFeeDistributionRatio,
+
+    // -------------------------------------------------------------------------
+    // #178: Multi-Sig Governance
+    // -------------------------------------------------------------------------
+    /// Registered governor address list (Vec<Address>).
+    MsGovernors,
+    /// Required approval threshold (u32).
+    MsRequiredApprovals,
+    /// A MultiSigOperation by ID.
+    MsOp(u32),
+    /// Monotonically increasing operation ID counter (u32).
+    MsOpCount,
+    /// Head of the ordered proposal queue (op_id u32, 0 = empty).
+    MsQueueHead,
+    /// Tail of the ordered proposal queue (op_id u32, 0 = empty).
+    MsQueueTail,
+
+    // -------------------------------------------------------------------------
+    // #177: Exotic Asset Pricing
+    // -------------------------------------------------------------------------
+    /// Pricing configuration for an exotic asset (AssetPricingConfig).
+    ExoticAssetConfig(Address),
+
+    // -------------------------------------------------------------------------
+    // #175: ZK Proof Verification
+    // -------------------------------------------------------------------------
+    /// Groth16 verifying key (Groth16VerifyingKey).
+    ZkVerifyingKey,
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -576,3 +622,157 @@ pub struct FinalizedPrice {
     /// Ledger at which finality was confirmed.
     pub finalized_ledger: u32,
 }
+
+// =============================================================================
+// #176 — Prioritized Submission Fee Market
+// =============================================================================
+
+/// A single queued price submission with an attached priority fee.
+///
+/// Stored in [`DataKey::FmPendingQueue`] as part of [`PendingFeeSubmissions`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FeeMarketSubmission {
+    /// Oracle source submitting the price.
+    pub source: Address,
+    /// Asset being priced.
+    pub asset: Asset,
+    /// Raw price value (u128, no sign — prices cannot be negative).
+    pub price: u128,
+    /// Unix timestamp provided by the source.
+    pub timestamp: u64,
+    /// Priority fee attached by the source (in stroops-equivalent units).
+    pub priority_fee: u128,
+    /// Ledger at which this submission was enqueued.
+    pub submitted_ledger: u32,
+}
+
+/// The full priority-sorted submission queue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingFeeSubmissions {
+    /// Submissions sorted by (priority_fee DESC, timestamp ASC).
+    pub submissions: Vec<FeeMarketSubmission>,
+}
+
+// =============================================================================
+// #178 — N-of-M Multi-Sig Governance & Ordered Timelock
+// =============================================================================
+
+/// A governance operation pending multi-sig approval and timelock expiry.
+///
+/// Stored under [`DataKey::MsOp`] and linked via `next_op_id` to form a queue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct MultiSigOperation {
+    /// Unique sequential identifier.
+    pub id: u32,
+    /// Kind of administrative change being proposed.
+    pub op_type: OperationType,
+    /// Address of the governor who proposed this operation.
+    pub proposed_by: Address,
+    /// Ledger when the operation was proposed.
+    pub proposed_ledger: u32,
+    /// Encoded payload (same format as [`PendingOperation`]).
+    pub data: Bytes,
+    /// Addresses of governors who have approved this operation.
+    pub approvals: Vec<Address>,
+    /// Number of approvals required to start the timelock.
+    pub required_approvals: u32,
+    /// Ledger at which the N-th approval was submitted (0 = not yet reached quorum).
+    pub timelock_start_ledger: u32,
+    /// ID of the next operation in the queue (0 = end of queue).
+    pub next_op_id: u32,
+}
+
+// =============================================================================
+// #177 — Exotic Asset Fair-Value Pricing Engine
+// =============================================================================
+
+/// Describes how a registered asset's fair value is computed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum AssetType {
+    /// Price is read directly from the standard aggregate store.
+    Direct,
+    /// LP token: fair value = 2*sqrt(reserve0_price * reserve1_price) / total_supply.
+    /// Fields: reserve0 asset address, reserve1 asset address, total_supply (u128).
+    LPToken(Address, Address, u128),
+    /// Weighted index: sum(price_i * weight_i) / sum(weight_i).
+    /// Fields: component asset addresses, weights (u32 each).
+    Index(Vec<Address>, Vec<u32>),
+    /// European option priced via integer Black-Scholes.
+    /// Fields: underlying asset address, strike (SCALE-denominated u128),
+    ///         expiry Unix timestamp, is_call flag.
+    Option(Address, u128, u64, bool),
+}
+
+/// Configuration stored per exotic asset.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetPricingConfig {
+    /// Pricing algorithm and its parameters.
+    pub asset_type: AssetType,
+    /// Implied volatility in basis points (e.g. 2000 = 20 %).
+    /// Only relevant for `AssetType::Option`; ignored for others.
+    pub volatility_bps: u32,
+}
+
+// =============================================================================
+// #175 — Off-Chain ZK Proof Verification (Groth16/BN254)
+// =============================================================================
+
+/// A Groth16 proof: three elliptic curve points.
+///
+/// - `a`: G1 point, 64 bytes (32-byte x || 32-byte y, big-endian)
+/// - `b`: G2 point, 128 bytes (64-byte x || 64-byte y, big-endian)
+/// - `c`: G1 point, 64 bytes
+/// - `fs_check`: 32-byte Fiat-Shamir verification tag
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Groth16Proof {
+    pub a: Bytes,
+    pub b: Bytes,
+    pub c: Bytes,
+    /// Fiat-Shamir tag: sha256(challenge || vk.pairing_precomp)
+    pub fs_check: BytesN<32>,
+}
+
+/// Groth16 verifying key for BN254.
+///
+/// - `alpha`: G1, 64 bytes
+/// - `beta`:  G2, 128 bytes
+/// - `gamma`: G2, 128 bytes
+/// - `delta`: G2, 128 bytes
+/// - `ic_bytes`: flat array of `ic_len` G1 points (64 bytes each)
+/// - `pairing_precomp`: 32-byte commitment to the fixed pairings (alpha/beta, gamma, delta)
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Groth16VerifyingKey {
+    pub alpha: Bytes,
+    pub beta: Bytes,
+    pub gamma: Bytes,
+    pub delta: Bytes,
+    /// Flat array of IC points: ic_len × 64 bytes.
+    pub ic_bytes: Bytes,
+    /// Number of IC points (= number of public inputs + 1).
+    pub ic_len: u32,
+    /// sha256 commitment to the fixed pairings — used in Fiat-Shamir check.
+    pub pairing_precomp: Bytes,
+}
+
+/// A ZK-verified price attestation record (for auditing).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ZkPriceAttestation {
+    pub source: Address,
+    pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub verified_at_ledger: u32,
+}
+
+// =============================================================================
+// New DataKey variants for all four modules
+// =============================================================================
+// NOTE: These are appended to the DataKey enum in the patch below.
