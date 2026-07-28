@@ -450,6 +450,18 @@ pub struct PriceHistoryEntry {
     pub is_interpolated: bool,
 }
 
+/// Report entry describing a storage key and (where available) remaining TTL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageTtlEntry {
+    /// Descriptive key name.
+    pub key: String,
+    /// Whether the key currently exists.
+    pub exists: bool,
+    /// Remaining TTL in ledgers (0 if unavailable/unknown).
+    pub remaining_ttl: u32,
+}
+
 /// Registry of all authorized oracle sources and their display names.
 ///
 /// Stored under [`DataKey::OracleSources`] and updated by [`add_source`] /

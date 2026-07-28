@@ -91,6 +91,7 @@ pub use types::{
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal,
     SourceGeoMetadata, DecentralizationReport,
+    StorageTtlEntry,
 };
 
 
@@ -1165,6 +1166,12 @@ impl PriceOracleContract {
     /// Same error conditions as `submit_price`, applied per entry.
     pub fn submit_prices(env: Env, source: Address, asset_prices: Vec<(Address, i128, u64)>) {
         prices::submit_prices(&env, source, asset_prices);
+    }
+
+    /// Returns storage TTL status for well-known keys. Remaining TTL is `0`
+    /// when the runtime does not expose a retrievable TTL value.
+    pub fn get_storage_ttl_status(env: Env) -> Vec<StorageTtlEntry> {
+        crate::storage::get_storage_ttl_status(&env)
     }
 
     /// Returns the latest aggregate price for an asset, filtered by a maximum age.
