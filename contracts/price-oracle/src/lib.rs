@@ -2730,3 +2730,6 @@ mod commit_reveal_tests;
 
 #[cfg(test)]
 mod finality_tests;
+
+#[cfg(test)]
+mod correlation_feature_tests;
