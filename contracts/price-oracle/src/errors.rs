@@ -128,19 +128,23 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
-    /// Direct price submissions are rejected while BFT aggregation is enabled because
-    /// commit-reveal is required for source consensus.
-    CommitRevealRequired = 57,
-    /// The requested optimistic proposal does not exist.
-    ProposalNotFound = 58,
-    /// The optimistic proposal is already disputed and cannot be disputed again.
-    ProposalAlreadyDisputed = 59,
-    /// The optimistic proposal is already resolved and cannot be changed again.
-    ProposalAlreadyResolved = 60,
-    /// The bond amount is below the configured minimum.
-    BondTooSmall = 61,
-    /// The optimistic proposal has already expired and can no longer be disputed.
-    ProposalExpired = 62,
-    /// The optimistic proposal has not been disputed yet.
-    ProposalNotDisputed = 63,
+    /// The oracle source has been suspended due to progressive disqualification.
+    SourceSuspended = 54,
+    /// Demerit configuration thresholds are invalid.
+    InvalidDemeritThreshold = 55,
+    /// Invalid source governance config.
+    InvalidGovernanceConfig = 56,
+    /// The specified source proposal does not exist.
+    ProposalNotFound = 57,
+    /// Approver has already approved the proposal.
+    AlreadyApproved = 58,
+    /// The source proposal was already executed.
+    ProposalAlreadyExecuted = 59,
+    /// The source has not deposited the required bond.
+    InsufficientBond = 60,
+    /// The staking/fee token contract has not been configured.
+    StakeTokenNotConfigured = 61,
 }
+
+
+
