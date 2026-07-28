@@ -22,7 +22,7 @@ pub use types::{
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
 
-use crate::storage::read_registered_assets;
+use crate::storage::{enter_reentrancy_guard, exit_reentrancy_guard, read_registered_assets};
 
 #[contract]
 pub struct PriceOracleContract;
@@ -39,6 +39,7 @@ impl PriceOracleContract {
         decimals: u32,
         description: String,
     ) {
+        enter_reentrancy_guard(&env);
         admin::initialize(
             &env,
             admin,
@@ -47,162 +48,258 @@ impl PriceOracleContract {
             decimals,
             description,
         );
+        exit_reentrancy_guard(&env);
     }
 
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        enter_reentrancy_guard(&env);
         admin::upgrade(&env, new_wasm_hash);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
+        enter_reentrancy_guard(&env);
         admin::set_admin(&env, new_admin);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_admin_address(env: Env) -> Address {
-        admin::get_admin_address(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_admin_address(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_min_sources_required(env: Env, new_min: u32) {
+        enter_reentrancy_guard(&env);
         admin::set_min_sources_required(&env, new_min);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_min_sources_required(env: Env) -> u32 {
-        admin::get_min_sources_required(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_min_sources_required(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_max_history_length(env: Env, new_max: u32) {
+        enter_reentrancy_guard(&env);
         admin::set_max_history_length(&env, new_max);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_max_history_length(env: Env) -> u32 {
-        admin::get_max_history_length(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_max_history_length(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_resolution(env: Env, new_resolution: u32) {
+        enter_reentrancy_guard(&env);
         admin::set_resolution(&env, new_resolution);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_resolution(env: Env) -> u32 {
-        admin::get_resolution(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_resolution(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_decimals(env: Env, new_decimals: u32) {
+        enter_reentrancy_guard(&env);
         admin::set_decimals(&env, new_decimals);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_decimals(env: Env) -> u32 {
-        admin::get_decimals(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_decimals(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_description(env: Env, new_description: String) {
+        enter_reentrancy_guard(&env);
         admin::set_description(&env, new_description);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_description(env: Env) -> String {
-        admin::get_description(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_description(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_timestamp_threshold(env: Env, threshold: u64) {
+        enter_reentrancy_guard(&env);
         admin::set_timestamp_threshold(&env, threshold);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_timestamp_threshold(env: Env) -> u64 {
-        admin::get_timestamp_threshold(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_timestamp_threshold(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_max_price_deviation(env: Env, deviation_basis_points: u32) {
+        enter_reentrancy_guard(&env);
         admin::set_max_price_deviation(&env, deviation_basis_points);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_max_price_deviation(env: Env) -> u32 {
-        admin::get_max_price_deviation(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_max_price_deviation(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_heartbeat_interval(env: Env, interval: u64) {
+        enter_reentrancy_guard(&env);
         admin::set_heartbeat_interval(&env, interval);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_heartbeat_interval(env: Env) -> u64 {
-        admin::get_heartbeat_interval(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_heartbeat_interval(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Sources ---
 
     pub fn add_source(env: Env, source: Address, name: String) {
+        enter_reentrancy_guard(&env);
         sources::add_source(&env, source, name);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn remove_source(env: Env, source: Address) {
+        enter_reentrancy_guard(&env);
         sources::remove_source(&env, source);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn is_source(env: Env, source: Address) -> bool {
-        sources::is_source(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::is_source(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_oracle_sources(env: Env) -> OracleSources {
-        sources::get_oracle_sources(&env)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_oracle_sources(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn submit_heartbeat(env: Env, source: Address) {
+        enter_reentrancy_guard(&env);
         sources::submit_heartbeat(&env, source);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn is_source_inactive(env: Env, source: Address) -> bool {
-        sources::is_source_inactive(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::is_source_inactive(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_inactive_sources(env: Env) -> u32 {
-        sources::get_inactive_sources(&env)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_inactive_sources(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_source_last_heartbeat(env: Env, source: Address) -> u64 {
-        sources::get_source_last_heartbeat(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_source_last_heartbeat(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Assets ---
 
     pub fn register_asset(env: Env, asset: Address) {
+        enter_reentrancy_guard(&env);
         assets::register_asset(&env, asset);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn unregister_asset(env: Env, asset: Address) {
+        enter_reentrancy_guard(&env);
         assets::unregister_asset(&env, asset);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn is_asset_registered(env: Env, asset: Address) -> bool {
-        assets::is_asset_registered(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = assets::is_asset_registered(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Prices ---
 
     pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+        enter_reentrancy_guard(&env);
         prices::submit_price(&env, source, asset, price, timestamp);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_price(env: Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
-        prices::get_price(&env, asset, max_age)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_price(&env, asset, max_age);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_source_price(env: Env, asset: Address, source: Address) -> PriceEntry {
-        prices::get_source_price(&env, asset, source)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_source_price(&env, asset, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_all_prices(env: Env, asset: Address) -> Vec<PriceEntry> {
-        prices::get_all_prices(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_all_prices(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_latest_ledger(env: Env) -> u32 {
-        env.ledger().sequence()
+        enter_reentrancy_guard(&env);
+        let result = env.ledger().sequence();
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- History ---
 
     pub fn get_historical_price(env: Env, asset: Address, ledger: u32) -> PriceHistoryEntry {
-        history::get_historical_price(&env, asset, ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::get_historical_price(&env, asset, ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn has_historical_price(env: Env, asset: Address, ledger: u32) -> bool {
-        history::has_historical_price(&env, asset, ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::has_historical_price(&env, asset, ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_historical_prices(
@@ -211,61 +308,92 @@ impl PriceOracleContract {
         start_ledger: u32,
         end_ledger: u32,
     ) -> Vec<PriceHistoryEntry> {
-        history::get_historical_prices(&env, asset, start_ledger, end_ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::get_historical_prices(&env, asset, start_ledger, end_ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- SEP-40 Oracle Interface ---
 
     pub fn decimals(env: Env) -> u32 {
-        Self::get_decimals(env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_decimals(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn base(env: Env) -> Asset {
-        Asset::Other(Symbol::new(&env, "USD"))
+        enter_reentrancy_guard(&env);
+        let result = Asset::Other(Symbol::new(&env, "USD"));
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn assets(env: Env) -> Vec<Asset> {
+        enter_reentrancy_guard(&env);
         let registered = read_registered_assets(&env);
         let mut result: Vec<Asset> = Vec::new(&env);
         for i in 0..registered.len() {
             result.push_back(Asset::Stellar(registered.get_unchecked(i)));
         }
+        exit_reentrancy_guard(&env);
         result
     }
 
     pub fn resolution(env: Env) -> u32 {
-        admin::get_resolution(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_resolution(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
-        prices::lastprice(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = prices::lastprice(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
-        prices::price(&env, asset, timestamp)
+        enter_reentrancy_guard(&env);
+        let result = prices::price(&env, asset, timestamp);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
-        prices::prices(&env, asset, records)
+        enter_reentrancy_guard(&env);
+        let result = prices::prices(&env, asset, records);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Pause ---
 
     pub fn pause(env: Env) {
+        enter_reentrancy_guard(&env);
         pause::pause(&env);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn unpause(env: Env) {
+        enter_reentrancy_guard(&env);
         pause::unpause(&env);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn is_paused(env: Env) -> bool {
-        pause::is_paused(&env)
+        enter_reentrancy_guard(&env);
+        let result = pause::is_paused(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Timelock ---
 
     pub fn propose_operation(env: Env, op_type: u32, data: soroban_sdk::Bytes) -> u32 {
+        enter_reentrancy_guard(&env);
         let op_enum = match op_type {
             0 => types::OperationType::Upgrade,
             1 => types::OperationType::SetAdmin,
@@ -277,23 +405,34 @@ impl PriceOracleContract {
             7 => types::OperationType::SetTimestampThreshold,
             _ => panic!("Invalid operation type"),
         };
-        timelock::propose_operation(&env, op_enum, &data)
+        let result = timelock::propose_operation(&env, op_enum, &data);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn execute_operation(env: Env, op_id: u32) {
+        enter_reentrancy_guard(&env);
         timelock::execute_operation(&env, op_id);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn cancel_operation(env: Env, op_id: u32) {
+        enter_reentrancy_guard(&env);
         timelock::cancel_operation(&env, op_id);
+        exit_reentrancy_guard(&env);
     }
 
     pub fn get_timelock_duration(env: Env) -> u32 {
-        timelock::get_timelock_duration(&env)
+        enter_reentrancy_guard(&env);
+        let result = timelock::get_timelock_duration(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_timelock_duration(env: Env, duration: u32) {
+        enter_reentrancy_guard(&env);
         timelock::set_timelock_duration(&env, duration);
+        exit_reentrancy_guard(&env);
     }
 }
 

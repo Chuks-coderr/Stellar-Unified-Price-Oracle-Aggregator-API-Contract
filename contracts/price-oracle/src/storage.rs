@@ -204,3 +204,27 @@ pub fn mark_source_active(env: &Env, source: &Address) {
     let key = DataKey::InactiveSource(source.clone());
     env.storage().persistent().remove(&key);
 }
+
+/// Enter the reentrancy guard. Panics with `ErrorCode::Reentrancy` if a
+/// reentrant call is detected (i.e. the guard flag is already set).
+///
+/// Uses temporary storage (TTL = 1 ledger) so the flag is automatically
+/// cleared at the end of the transaction even if execution is interrupted.
+pub fn enter_reentrancy_guard(env: &Env) {
+    let key = DataKey::ReentrancyGuard;
+    let locked: bool = env.storage().temporary().get(&key).unwrap_or(false);
+    if locked {
+        panic_with_error!(env, ErrorCode::Reentrancy);
+    }
+    env.storage().temporary().set(&key, &true);
+    // TTL of 1 ledger is sufficient — the flag only needs to survive the
+    // current transaction. If somehow the transaction spans more than one
+    // ledger (impossible today) the entry will simply expire and unlock.
+    env.storage().temporary().extend_ttl(&key, 1, 1);
+}
+
+/// Exit the reentrancy guard, clearing the lock.
+pub fn exit_reentrancy_guard(env: &Env) {
+    let key = DataKey::ReentrancyGuard;
+    env.storage().temporary().remove(&key);
+}

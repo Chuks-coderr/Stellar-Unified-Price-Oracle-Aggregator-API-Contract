@@ -1103,3 +1103,118 @@ fn test_removed_source_is_no_longer_source() {
     client.remove_source(&source);
     assert!(!client.is_source(&source));
 }
+
+// ---- Reentrancy Guard Tests ----
+
+/// Helper that directly manipulates the reentrancy guard flag via storage
+/// to simulate a "locked" state as a cross-contract call would leave it.
+fn set_reentrancy_locked(e: &Env, contract_id: &Address) {
+    use crate::types::DataKey;
+    e.as_contract(contract_id, || {
+        e.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+}
+
+#[test]
+fn test_reentrancy_guard_allows_normal_call() {
+    // A normal (non-reentrant) call should succeed without errors.
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    // Simply calling a guarded endpoint should work fine.
+    assert!(client.get_min_sources_required() >= 1);
+}
+
+#[test]
+fn test_reentrancy_guard_flag_cleared_after_call() {
+    // After a successful call the guard flag must be cleared so the next
+    // call can proceed.
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+
+    // First call
+    client.get_min_sources_required();
+    // Second call — would panic with Reentrancy error if flag were not cleared.
+    client.get_max_history_length();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_reentrancy_guard_blocks_reentrant_call() {
+    // Simulate a reentrant call by pre-setting the guard flag in temporary
+    // storage before invoking a guarded endpoint.
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+
+    // Artificially lock the guard (mimics a mid-execution reentrant invocation).
+    set_reentrancy_locked(&e, &client.address);
+
+    // This should panic with Error(Contract, #16) — Reentrancy.
+    client.get_min_sources_required();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_reentrancy_guard_blocks_submit_price_when_locked() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    set_reentrancy_locked(&e, &client.address);
+
+    // submit_price is a state-changing endpoint — must also be blocked.
+    client.submit_price(&source, &asset, &100i128, &1000u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_reentrancy_guard_blocks_register_asset_when_locked() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    let asset = Address::generate(&e);
+
+    set_reentrancy_locked(&e, &client.address);
+
+    client.register_asset(&asset);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_reentrancy_guard_blocks_add_source_when_locked() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    let source = Address::generate(&e);
+
+    set_reentrancy_locked(&e, &client.address);
+
+    client.add_source(&source, &String::from_str(&e, "Locked Source"));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_reentrancy_guard_blocks_pause_when_locked() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+
+    set_reentrancy_locked(&e, &client.address);
+
+    client.pause();
+}
+
+#[test]
+fn test_reentrancy_guard_unlocked_after_failed_inner_op() {
+    // Even after an operation that panics internally (like submitting to an
+    // unregistered asset), the guard should be cleared because the panic
+    // unwinds the whole transaction — the env is fresh in the next call.
+    let e = Env::default();
+    let (client, _admin, source, _asset) = setup_basic(&e);
+    let bad_asset = Address::generate(&e);
+
+    // This panics with AssetNotRegistered (#2), but the test env resets.
+    let result = client.try_submit_price(&source, &bad_asset, &100i128, &1000u64);
+    assert!(result.is_err());
+
+    // Guard must be clear — subsequent call must succeed.
+    assert!(client.get_min_sources_required() >= 1);
+}

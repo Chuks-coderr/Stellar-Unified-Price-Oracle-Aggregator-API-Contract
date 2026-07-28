@@ -34,6 +34,8 @@ pub enum DataKey {
     PendingOpCount,
     PendingOp(u32),
     TimelockDuration,
+    /// Used as a temporary-storage flag to prevent reentrant calls.
+    ReentrancyGuard,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -407,9 +407,9 @@ pub fn get_price_change(env: &Env, asset: Address, ledgers_back: u32) -> Option<
     let hist_key = DataKey::PriceHistory(asset.clone(), target_ledger);
     let historical_entry: Option<PriceHistoryEntry> = env.storage().temporary().get(&hist_key);
 
-    let old_price = match historical_entry {
-        Some(entry) => entry.price,
-        None => return None,
+    let old_price = {
+        let entry = historical_entry?;
+        entry.price
     };
 
     if old_price == 0 {
