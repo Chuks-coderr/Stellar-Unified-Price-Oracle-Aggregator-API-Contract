@@ -3,7 +3,7 @@
 use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String, Symbol, Vec};
 
 use crate::test_helpers::*;
-use crate::{Asset, PriceData, PriceEntry};
+use crate::{Asset, PriceData, PriceEntry, AssetMetadataUpdate};
 
 #[test]
 fn test_initialize() {

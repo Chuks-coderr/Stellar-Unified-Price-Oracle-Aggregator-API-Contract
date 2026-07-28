@@ -77,6 +77,10 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     for i in 0..asset_prices.len() {
         let (asset, price, timestamp) = asset_prices.get_unchecked(i);
 
+        if check_deviation_circuit_breaker(env, &source, &asset, price) {
+            return;
+        }
+
         let entry = PriceEntry {
             price,
             timestamp,
@@ -89,6 +93,9 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
         env.storage()
             .persistent()
             .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+        record_successful_submission(env, source.clone());
+
 
         // #70: track last submission ledger for compliance
         env.storage().persistent().set(
@@ -164,7 +171,15 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
-    let min_interval = get_min_submission_interval(env);
+    let min_interval = {
+        let key = DataKey::AssetMinSubmissionInterval(asset.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            get_min_submission_interval(env)
+        }
+    };
     let current_ledger_for_agg = env.ledger().sequence();
     let selected_count = selected_sources.len();
 
@@ -403,6 +418,10 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         panic_with_error!(env, ErrorCode::InvalidTimestamp);
     }
 
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
@@ -418,6 +437,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     env.storage()
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    record_successful_submission(env, source.clone());
+
 
     PriceSubmittedEvent {
         asset: asset.clone(),
@@ -1294,6 +1316,10 @@ pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: 
         panic_with_error!(env, ErrorCode::InvalidPrice);
     }
 
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
@@ -1309,6 +1335,8 @@ pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: 
     env.storage()
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    record_successful_submission(env, source.clone());
 
     PriceSubmittedEvent {
         asset: asset.clone(),
