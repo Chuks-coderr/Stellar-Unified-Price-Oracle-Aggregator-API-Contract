@@ -70,9 +70,7 @@ fn read_queue_head(env: &Env) -> u32 {
 }
 
 fn write_queue_head(env: &Env, head: u32) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::MsQueueHead, &head);
+    env.storage().persistent().set(&DataKey::MsQueueHead, &head);
 }
 
 /// Returns the tail of the ordered proposal queue.
@@ -84,9 +82,7 @@ fn read_queue_tail(env: &Env) -> u32 {
 }
 
 fn write_queue_tail(env: &Env, tail: u32) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::MsQueueTail, &tail);
+    env.storage().persistent().set(&DataKey::MsQueueTail, &tail);
 }
 
 /// Op counter (monotonically increasing).
@@ -143,7 +139,12 @@ pub fn get_required_approvals(env: &Env) -> u32 {
 /// state. The timelock clock does NOT start until the N-th approval.
 ///
 /// Returns the new operation ID.
-pub fn propose_ms_operation(env: &Env, proposer: Address, op_type: OperationType, data: Bytes) -> u32 {
+pub fn propose_ms_operation(
+    env: &Env,
+    proposer: Address,
+    op_type: OperationType,
+    data: Bytes,
+) -> u32 {
     proposer.require_auth();
 
     // Proposer must be a governor

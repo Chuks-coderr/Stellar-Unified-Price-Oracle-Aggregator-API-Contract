@@ -210,6 +210,10 @@ pub enum DataKey {
     CfgCommitWindow,
     /// Number of ledgers after the commit deadline during which sources may reveal.
     CfgRevealWindow,
+    /// Number of faulty sources the BFT aggregator is configured to tolerate.
+    CfgBftFaultTolerance,
+    /// Aggregation method used by the BFT path.
+    CfgBftAggregationMethod,
 
     // -------------------------------------------------------------------------
     // #188: Economic finality gadget
@@ -470,6 +474,18 @@ pub enum AggregationMethod {
     /// Arithmetic mean of all submitted prices.
     Mean = 1,
     /// Arithmetic mean after removing the top and bottom 10 % of values.
+    TrimmedMean = 2,
+}
+
+/// Aggregation modes available inside the BFT path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum BftAggregationMethod {
+    /// Use the median of the consensus set after removing outliers.
+    Median = 0,
+    /// Use the mean of the consensus set after removing outliers.
+    Mean = 1,
+    /// Use a trimmed mean of the consensus set after removing outliers.
     TrimmedMean = 2,
 }
 

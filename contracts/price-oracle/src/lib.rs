@@ -2345,6 +2345,26 @@ impl PriceOracleContract {
         prices::get_reveal_window(&env)
     }
 
+    /// Configures the BFT consensus guardrail for price aggregation.
+    ///
+    /// When `fault_tolerance > 0`, direct submissions are rejected and sources must
+    /// commit and reveal prices before an aggregate is accepted.
+    pub fn set_bft_parameters(env: Env, fault_tolerance: u32, method: u32) {
+        reentrancy::enter(&env);
+        prices::set_bft_parameters(&env, fault_tolerance, method);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the configured BFT fault tolerance.
+    pub fn get_bft_fault_tolerance(env: Env) -> u32 {
+        prices::get_bft_fault_tolerance(&env)
+    }
+
+    /// Returns the configured BFT aggregation method.
+    pub fn get_bft_aggregation_method(env: Env) -> u32 {
+        prices::get_bft_aggregation_method(&env)
+    }
+
     // =========================================================================
     // #188 — Economic Finality Gadget
     // =========================================================================
@@ -3037,6 +3057,9 @@ mod heartbeat_tests;
 
 #[cfg(test)]
 mod commit_reveal_tests;
+
+#[cfg(test)]
+mod bft_tests;
 
 #[cfg(test)]
 mod finality_tests;

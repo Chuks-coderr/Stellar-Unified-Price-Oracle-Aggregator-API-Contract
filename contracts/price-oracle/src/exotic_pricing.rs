@@ -161,7 +161,9 @@ fn compute_lp_token_price(
     let sqrt_product = isqrt_u128(product_u128);
 
     // 2 * sqrt / total_supply * SCALE (re-scale result)
-    let numerator = 2u128.saturating_mul(sqrt_product).saturating_mul(SCALE as u128);
+    let numerator = 2u128
+        .saturating_mul(sqrt_product)
+        .saturating_mul(SCALE as u128);
     let result = numerator / total_supply;
     result as i128
 }
@@ -231,8 +233,8 @@ fn compute_index_price(
 fn compute_option_price(
     env: &Env,
     underlying: &Address,
-    strike: u128,   // scaled by SCALE
-    expiry: u64,    // Unix timestamp of expiry
+    strike: u128, // scaled by SCALE
+    expiry: u64,  // Unix timestamp of expiry
     is_call: bool,
     depth: u32,
     visited: &mut Vec<Address>,
@@ -427,7 +429,7 @@ fn fixed_ln(x: i128) -> i128 {
 fn normal_cdf(d: i128) -> i128 {
     // A&S 26.2.17 coefficients × 10^9
     const P_RECIP_DENOM: i128 = 2_316_419; // p = 0.2316419 — coefficient denominator multiplier
-    // b coefficients × 10^9
+                                           // b coefficients × 10^9
     const B1: i128 = 319_381_530;
     const B2: i128 = -356_563_782;
     const B3: i128 = 1_781_477_937;
@@ -478,7 +480,7 @@ fn normal_cdf(d: i128) -> i128 {
         let step2 = B2 + step3.saturating_mul(t) / SCALE;
         let step1 = B1 + step2.saturating_mul(t) / SCALE;
         acc = step1.saturating_mul(t) / SCALE; // final poly, × BSCALE/SCALE
-        // Convert to SCALE: multiply by SCALE / BSCALE
+                                               // Convert to SCALE: multiply by SCALE / BSCALE
         acc = acc.saturating_mul(SCALE) / BSCALE;
         acc
     };
