@@ -103,20 +103,102 @@ fn heapify(prices: &mut soroban_sdk::Vec<i128>, n: u32, root: u32) {
     }
 }
 
+fn vec_swap(prices: &mut soroban_sdk::Vec<i128>, i: u32, j: u32) {
+    if i == j {
+        return;
+    }
+    let tmp = prices.get_unchecked(i);
+    prices.set(i, prices.get_unchecked(j));
+    prices.set(j, tmp);
+}
+
+fn median_of_five(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let mut i = left + 1;
+    while i <= right {
+        let mut j = i;
+        while j > left && prices.get_unchecked(j) < prices.get_unchecked(j - 1) {
+            vec_swap(prices, j, j - 1);
+            j -= 1;
+        }
+        i += 1;
+    }
+    left + (right - left) / 2
+}
+
+fn partition(
+    prices: &mut soroban_sdk::Vec<i128>,
+    left: u32,
+    right: u32,
+    pivot_index: u32,
+) -> u32 {
+    let pivot_value = prices.get_unchecked(pivot_index);
+    vec_swap(prices, pivot_index, right);
+    let mut store_index = left;
+    let mut i = left;
+    while i < right {
+        if prices.get_unchecked(i) < pivot_value {
+            vec_swap(prices, store_index, i);
+            store_index += 1;
+        }
+        i += 1;
+    }
+    vec_swap(prices, store_index, right);
+    store_index
+}
+
+fn select_pivot(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let n = right - left + 1;
+    if n <= 5 {
+        return median_of_five(prices, left, right);
+    }
+    let mut store = left;
+    let mut i = left;
+    while i <= right {
+        let group_end = if i + 4 <= right { i + 4 } else { right };
+        let median = median_of_five(prices, i, group_end);
+        vec_swap(prices, median, store);
+        store += 1;
+        i += 5;
+    }
+    let mid = left + ((store - left - 1) / 2);
+    select_kth(prices, left, store - 1, mid)
+}
+
+fn select_kth(
+    prices: &mut soroban_sdk::Vec<i128>,
+    mut left: u32,
+    mut right: u32,
+    k: u32,
+) -> i128 {
+    loop {
+        if left == right {
+            return prices.get_unchecked(left);
+        }
+        let pivot_index = select_pivot(prices, left, right);
+        let pivot_index = partition(prices, left, right, pivot_index);
+        if k == pivot_index {
+            return prices.get_unchecked(k);
+        } else if k < pivot_index {
+            right = pivot_index - 1;
+        } else {
+            left = pivot_index + 1;
+        }
+    }
+}
+
 pub fn compute_median(prices: &soroban_sdk::Vec<i128>) -> i128 {
     let n = prices.len();
     if n == 0 {
         return 0;
     }
-    let mut sorted = prices.clone();
-    sort_prices(&mut sorted);
+    let mut selected = prices.clone();
+    let mid = n / 2;
     if n.is_multiple_of(2) {
-        let mid = n / 2;
-        let a = sorted.get_unchecked(mid - 1);
-        let b = sorted.get_unchecked(mid);
-        a + (b - a) / 2
+        let lower = select_kth(&mut selected, 0, n - 1, mid - 1);
+        let upper = select_kth(&mut selected, 0, n - 1, mid);
+        lower + (upper - lower) / 2
     } else {
-        sorted.get_unchecked(n / 2)
+        select_kth(&mut selected, 0, n - 1, mid)
     }
 }
 
