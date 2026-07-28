@@ -52,6 +52,12 @@ pub enum ErrorCode {
     OperationNotFound = 14,
     /// The submitted price is below the asset's configured minimum price floor.
     PriceBelowMinimum = 15,
+    /// The submitted price falls outside the asset's configured price bounds.
+    PriceOutOfBounds = 54,
+    /// The asset is currently paused and cannot accept new submissions.
+    AssetPaused = 55,
+    /// The circuit breaker tripped for the asset and rejected the update.
+    CircuitBreakerTripped = 56,
 
     // ── 16–19: Rate-limit, subscription & migration ──────────────────────────
     /// Rate limit exceeded for an operation.
@@ -122,4 +128,23 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
+    /// The oracle source has been suspended due to progressive disqualification.
+    SourceSuspended = 54,
+    /// Demerit configuration thresholds are invalid.
+    InvalidDemeritThreshold = 55,
+    /// Invalid source governance config.
+    InvalidGovernanceConfig = 56,
+    /// The specified source proposal does not exist.
+    ProposalNotFound = 57,
+    /// Approver has already approved the proposal.
+    AlreadyApproved = 58,
+    /// The source proposal was already executed.
+    ProposalAlreadyExecuted = 59,
+    /// The source has not deposited the required bond.
+    InsufficientBond = 60,
+    /// The staking/fee token contract has not been configured.
+    StakeTokenNotConfigured = 61,
 }
+
+
+

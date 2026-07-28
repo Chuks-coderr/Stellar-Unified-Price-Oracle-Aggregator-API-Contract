@@ -96,6 +96,16 @@ pub enum DataKey {
     AssetMetadata(Address),
     /// Optional minimum accepted price (`i128`) for a registered asset.
     AssetMinPrice(Address),
+    /// Per-asset price bounds applied to new submissions.
+    AssetPriceBounds(Address),
+    /// Whether an asset has been explicitly paused by the admin.
+    AssetPauseFlag(Address),
+    /// Whether the circuit breaker has tripped for an asset.
+    AssetCircuitBreakerTripped(Address),
+    /// Sequence counter for circuit-breaker event log entries.
+    AssetCircuitBreakerLogCount(Address),
+    /// Append-only circuit-breaker event log entry.
+    AssetCircuitBreakerLog(Address, u32),
     /// Configurable maximum number of assets that can be registered.
     MaxAssets,
 
@@ -118,6 +128,16 @@ pub enum DataKey {
     PriceOverride(Address),
     /// Per-asset resolution override in seconds. When set, overrides the contract-wide resolution.
     AssetResolution(Address),
+    /// Number of optimistic price proposals created so far.
+    OptimisticProposalCount,
+    /// An optimistic price proposal keyed by proposal id.
+    OptimisticProposal(u32),
+    /// Configurable dispute window in ledgers for optimistic proposals.
+    CfgOptimisticDisputeWindow,
+    /// Minimum bond amount required to submit an optimistic proposal.
+    CfgOptimisticMinBond,
+    /// Bond balance tracked for an address after proposal/dispute settlement.
+    OptimisticBondBalance(Address),
     /// Cooldown (in ledgers) between trigger_aggregation calls per asset.
     AggregationCooldown,
     /// Ledger of the last trigger_aggregation call per asset.
@@ -200,6 +220,10 @@ pub enum DataKey {
     CfgCommitWindow,
     /// Number of ledgers after the commit deadline during which sources may reveal.
     CfgRevealWindow,
+    /// Number of faulty sources the BFT aggregator is configured to tolerate.
+    CfgBftFaultTolerance,
+    /// Aggregation method used by the BFT path.
+    CfgBftAggregationMethod,
 
     // -------------------------------------------------------------------------
     // #188: Economic finality gadget
@@ -234,6 +258,9 @@ pub enum DataKey {
     CorrelationBand(Address, Address),
     /// Ordered list of (base, quote) correlation pairs registered.
     CorrelationPairList,
+    /// Flag marking a (source, asset) price submission as correlation-violating.
+    /// Flagged submissions are excluded from aggregation.
+    CorrelationFlagged(Address, Address),
 
     // -------------------------------------------------------------------------
     // #173: Tiered Consumer Whitelisting
@@ -284,7 +311,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -305,6 +349,19 @@ pub struct PriceEntry {
     pub ledger_timestamp: u64,
 }
 
+/// Aggregated price bounds applied to an asset before a submission is accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriceBounds {
+    /// Minimum accepted price for the asset.
+    pub min_price: i128,
+    /// Maximum accepted price for the asset.
+    pub max_price: i128,
+    /// Maximum allowed percentage change (in basis points) between the previous aggregate
+    /// and the candidate aggregate in a single ledger.
+    pub max_change_bps_per_ledger: u32,
+}
+
 /// An aggregated price computed from multiple oracle sources for a specific asset.
 ///
 /// Stored under [`DataKey::Aggregate`] and updated on every [`PriceEntry`] submission
@@ -321,6 +378,25 @@ pub struct AggregatePrice {
     /// Decimal precision applied to `price`.
     pub decimals: u32,
     pub is_override: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CircuitBreakerEventEntry {
+    /// Address of the asset affected by the breaker trip.
+    pub asset: Address,
+    /// Previous aggregate price before the candidate update.
+    pub previous_price: i128,
+    /// Candidate aggregate price that would have been published.
+    pub candidate_price: i128,
+    /// Percentage change in basis points that triggered the breaker.
+    pub change_bps: u32,
+    /// Maximum allowed change in basis points per ledger.
+    pub max_change_bps: u32,
+    /// Ledger where the breaker tripped.
+    pub ledger: u32,
+    /// Unix timestamp of the breaker trip.
+    pub timestamp: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -409,6 +485,57 @@ pub enum AggregationMethod {
     Mean = 1,
     /// Arithmetic mean after removing the top and bottom 10 % of values.
     TrimmedMean = 2,
+}
+
+/// Aggregation modes available inside the BFT path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum BftAggregationMethod {
+    /// Use the median of the consensus set after removing outliers.
+    Median = 0,
+    /// Use the mean of the consensus set after removing outliers.
+    Mean = 1,
+    /// Use a trimmed mean of the consensus set after removing outliers.
+    TrimmedMean = 2,
+}
+
+/// TWAP aggregation variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum TwapMethod {
+    /// Standard arithmetic TWAP using time-weighted average.
+    Arithmetic = 0,
+    /// Geometric TWAP using a time-weighted geometric mean.
+    Geometric = 1,
+}
+
+/// Lifecycle state for an optimistic proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OptimisticProposalStatus {
+    Pending = 0,
+    Finalized = 1,
+    Disputed = 2,
+    Resolved = 3,
+}
+
+/// An optimistic price proposal that can be disputed before finalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OptimisticProposal {
+    pub id: u32,
+    pub asset: Address,
+    pub proposer: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub bond_amount: i128,
+    pub dispute_window: u32,
+    pub expires_at_ledger: u32,
+    pub status: u32,
+    pub disputed: bool,
+    pub resolved: bool,
+    pub resolution: u32,
+    pub disputer: Option<Address>,
 }
 
 /// SEP-40 compatible price data returned by the standard oracle interface methods.
@@ -503,7 +630,21 @@ pub struct AssetMetadata {
     /// Optional override for the number of decimals used by this asset's token contract.
     /// When `None`, the contract-wide decimal setting applies.
     pub decimals: Option<u32>,
+    /// Logo URI of the asset.
+    pub logo_uri: String,
 }
+
+/// Helper struct for batch asset metadata updates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetMetadataUpdate {
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -819,3 +960,85 @@ pub struct CrossReferenceResult {
     /// Contract address of the reference oracle that provided `ref_price`.
     pub ref_contract: Address,
 }
+
+// =============================================================================
+// #210 — Progressive Disqualification / Demerits System
+// =============================================================================
+
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+
+// =============================================================================
+// #207 — Multi-sig Source Registration Governance
+// =============================================================================
+
+/// Configuration for source registration multi-sig governance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
+    pub id: u32,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
+
+// =============================================================================
+// #208 — Source Geolocation & Decentralization Metrics
+// =============================================================================
+
+/// Geolocation and provider tags for an oracle source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+/// Decentralization and concentration report for registered sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
+}
+
+
+

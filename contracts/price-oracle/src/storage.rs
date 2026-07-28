@@ -15,10 +15,20 @@ pub fn check_source(env: &Env, addr: &Address) {
     if !is_source {
         panic_with_error!(env, ErrorCode::NotAuthorized);
     }
+
+    let required_bond = crate::sources::get_source_bond(env);
+    if required_bond > 0 {
+        let deposited = crate::sources::get_source_deposited_bond(env, addr.clone());
+        if deposited < required_bond {
+            panic_with_error!(env, ErrorCode::InsufficientBond);
+        }
+    }
+
     env.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
+
 
 pub fn check_registered_asset(env: &Env, asset: &Address) {
     // Prefer the O(1) membership index.
