@@ -198,6 +198,10 @@ pub fn submit_price_relayed(
 
     // Persist the price entry under the same storage key as a direct submission
     // so aggregation logic treats it identically.
+    if crate::prices::check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
     let entry = PriceEntry {
@@ -211,6 +215,9 @@ pub fn submit_price_relayed(
     env.storage()
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+    crate::prices::record_successful_submission(env, source.clone());
+
 
     // Emit the relayed-submission event before aggregation.
     PriceRelayedEvent {

@@ -234,6 +234,9 @@ pub enum DataKey {
     CorrelationBand(Address, Address),
     /// Ordered list of (base, quote) correlation pairs registered.
     CorrelationPairList,
+    /// Flag marking a (source, asset) price submission as correlation-violating.
+    /// Flagged submissions are excluded from aggregation.
+    CorrelationFlagged(Address, Address),
 
     // -------------------------------------------------------------------------
     // #173: Tiered Consumer Whitelisting
@@ -284,45 +287,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
-
-    // -------------------------------------------------------------------------
-    // #227: Per-asset decimal precision configuration
-    // -------------------------------------------------------------------------
-    /// Per-asset decimal precision override (u32). When set, overrides the contract-wide decimals.
-    AssetDecimals(Address),
-
-    // -------------------------------------------------------------------------
-    // #226: Cross-chain price verification
-    // -------------------------------------------------------------------------
-    /// Stores a price fetched from a reference oracle on another chain (i128).
-    CrossChainPrice(Address, Address),
-    /// Ledger sequence when the cross-chain price was last fetched (u32).
-    CrossChainPriceLedger(Address, Address),
-    /// Maximum allowed deviation (in basis points) between this oracle's price and cross-chain price.
-    CrossChainDeviationThreshold,
-    /// Flag indicating if cross-chain verification is enabled (bool).
-    CrossChainVerificationEnabled,
-
-    // -------------------------------------------------------------------------
-    // #238: Admin operation spending limits
-    // -------------------------------------------------------------------------
-    /// Daily limit for a specific operation type: `(operation_type) -> limit (u32)`.
-    AdminOpDailyLimit(u32),
-    /// Counter for operations of a type performed in the current day: `(operation_type, day) -> count (u32)`.
-    AdminOpDailyCount(u32, u32),
-    /// Epoch day of the last reset for an operation type counter (u32).
-    AdminOpLastDay(u32),
-
-    // -------------------------------------------------------------------------
-    // #225: Source submission deadline enforcement
-    // -------------------------------------------------------------------------
-    /// Current aggregation round configuration (AggregationRound).
-    CurrentAggregationRound,
-    /// Start ledger of the current aggregation round (u32).
-    AggregationRoundStart,
-    /// End ledger of the current aggregation round (u32).
-    AggregationRoundEnd,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -541,7 +523,21 @@ pub struct AssetMetadata {
     /// Optional override for the number of decimals used by this asset's token contract.
     /// When `None`, the contract-wide decimal setting applies.
     pub decimals: Option<u32>,
+    /// Logo URI of the asset.
+    pub logo_uri: String,
 }
+
+/// Helper struct for batch asset metadata updates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetMetadataUpdate {
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -859,93 +855,83 @@ pub struct CrossReferenceResult {
 }
 
 // =============================================================================
-// #227: Per-asset decimal precision configuration
+// #210 — Progressive Disqualification / Demerits System
 // =============================================================================
 
-/// Metadata for per-asset decimal precision override.
-/// 
-/// Stored under [`DataKey::AssetDecimals`] keyed by asset address.
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct AssetDecimalConfig {
-    /// Decimal precision specific to this asset.
-    pub decimals: u32,
-    /// Ledger sequence when this decimal config was set.
-    pub set_ledger: u32,
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
 }
 
 // =============================================================================
-// #226: Cross-chain price verification
+// #207 — Multi-sig Source Registration Governance
 // =============================================================================
 
-/// Cross-chain price reference entry for verification.
-///
-/// Stores prices fetched from external oracles on other chains.
+/// Configuration for source registration multi-sig governance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct CrossChainPriceEntry {
-    /// Price from the external oracle (scaled by its decimals).
-    pub price: i128,
-    /// Decimal precision of the external oracle's price.
-    pub decimals: u32,
-    /// Chain identifier where the price came from (e.g., "ethereum", "polygon").
-    pub chain_id: String,
-    /// Ledger sequence when this price was recorded.
-    pub ledger: u32,
-    /// Unix timestamp (seconds) of the price observation on the external chain.
-    pub timestamp: u64,
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
+    pub id: u32,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
 }
 
 // =============================================================================
-// #238: Admin operation spending limits
+// #208 — Source Geolocation & Decentralization Metrics
 // =============================================================================
 
-/// Operation type discriminants for spending limit enforcement.
+/// Geolocation and provider tags for an oracle source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum AdminOperationType {
-    /// Adding an oracle source.
-    AddSource = 0,
-    /// Removing an oracle source.
-    RemoveSource = 1,
-    /// Registering a new asset.
-    RegisterAsset = 2,
-    /// Unregistering an asset.
-    UnregisterAsset = 3,
-    /// Modifying decimals.
-    SetDecimals = 4,
-    /// Modifying resolution.
-    SetResolution = 5,
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
 }
 
-/// Per-operation daily limit configuration.
-///
-/// Stored under [`DataKey::AdminOpDailyLimit`] keyed by operation type.
+/// Decentralization and concentration report for registered sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct AdminOpLimit {
-    /// Maximum number of operations of this type allowed per day.
-    pub daily_limit: u32,
-    /// Ledger sequence when this limit was last set.
-    pub set_ledger: u32,
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
 }
 
-// =============================================================================
-// #225: Source submission deadline enforcement
-// =============================================================================
 
-/// Configuration for the current aggregation round.
-///
-/// Stored under [`DataKey::CurrentAggregationRound`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct AggregationRound {
-    /// Unique round identifier (typically ledger sequence when round started).
-    pub round_id: u32,
-    /// Ledger sequence marking the start of the submission window (inclusive).
-    pub start_ledger: u32,
-    /// Ledger sequence marking the end of the submission window (inclusive).
-    pub end_ledger: u32,
-    /// Ledger when this round configuration was created.
-    pub created_ledger: u32,
-}
+
