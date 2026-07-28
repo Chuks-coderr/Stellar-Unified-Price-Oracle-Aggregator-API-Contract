@@ -23,7 +23,7 @@ use crate::storage::{
 };
 use crate::types::{
     AggregatePrice, Asset, BftAggregationMethod, DataKey, ErrorCode, OracleSources, PriceData,
-    PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    PriceEntry, PriceHistoryEntry, PriceOverrideEntry, TwapMethod,
 };
 
 fn build_candidate_aggregate(
@@ -514,86 +514,89 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
             LEDGER_BUMP,
         );
 
-        if prev_aggregate.price != median_price || prev_aggregate.timestamp != latest_timestamp {
-            let history_entry = PriceHistoryEntry {
-                price: median_price,
-                timestamp: latest_timestamp,
-                ledger: current_ledger,
-                num_sources: contributing_sources,
-                is_interpolated: false,
-            };
-            env.storage().temporary().set(
-                &DataKey::PriceHistory(asset.clone(), current_ledger),
-                &history_entry,
-            );
+        let history_entry = PriceHistoryEntry {
+            price: median_price,
+            timestamp: latest_timestamp,
+            ledger: current_ledger,
+            num_sources: contributing_sources,
+            is_interpolated: false,
+        };
+        env.storage().temporary().set(
+            &DataKey::PriceHistory(asset.clone(), current_ledger),
+            &history_entry,
+        );
 
-            // Track ledger in history index for pruning.
-            let ledgers_key = DataKey::PriceHistoryLedgers(asset.clone());
-            let mut ledger_list: soroban_sdk::Vec<u32> = env
-                .storage()
-                .persistent()
-                .get(&ledgers_key)
-                .unwrap_or(soroban_sdk::Vec::new(env));
+        // Track ledger in history index for pruning. Avoid duplicate sequence entries
+        // if aggregation is run more than once in the same ledger.
+        let ledgers_key = DataKey::PriceHistoryLedgers(asset.clone());
+        let mut ledger_list: soroban_sdk::Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&ledgers_key)
+            .unwrap_or(soroban_sdk::Vec::new(env));
+        if ledger_list.len() == 0
+            || ledger_list.get_unchecked(ledger_list.len() - 1) != current_ledger
+        {
             ledger_list.push_back(current_ledger);
-
-            // Issue #92: check event budget before emitting prune events.
-            // Each prune loop iteration emits 1 event.
-
-            // Global history cap (existing MaxHistoryLength).
-            let max_history = get_max_history_length(env);
-            while ledger_list.len() > max_history {
-                // Issue #92: stop emitting prune events if we hit the cap.
-                if event_count >= max_events {
-                    EventLimitWarningEvent {
-                        asset: asset.clone(),
-                        event_count,
-                        max_events,
-                    }
-                    .publish(env);
-                    break;
-                }
-                let oldest_ledger = ledger_list.get_unchecked(0);
-                ledger_list.remove(0);
-                env.storage()
-                    .temporary()
-                    .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
-                HistoryPrunedEvent {
-                    asset: asset.clone(),
-                    pruned_ledger: oldest_ledger,
-                    remaining: ledger_list.len(),
-                }
-                .publish(env);
-                event_count += 1;
-            }
-
-            // Issue #94: per-asset history cap (MaxHistoryPerAsset, default 1000).
-            let max_per_asset = get_max_history_per_asset(env);
-            while ledger_list.len() > max_per_asset {
-                if event_count >= max_events {
-                    EventLimitWarningEvent {
-                        asset: asset.clone(),
-                        event_count,
-                        max_events,
-                    }
-                    .publish(env);
-                    break;
-                }
-                let oldest_ledger = ledger_list.get_unchecked(0);
-                ledger_list.remove(0);
-                env.storage()
-                    .temporary()
-                    .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
-                HistoryPerAssetPrunedEvent {
-                    asset: asset.clone(),
-                    pruned_ledger: oldest_ledger,
-                    remaining: ledger_list.len(),
-                }
-                .publish(env);
-                event_count += 1;
-            }
-
-            env.storage().persistent().set(&ledgers_key, &ledger_list);
         }
+
+        // Issue #92: check event budget before emitting prune events.
+        // Each prune loop iteration emits 1 event.
+
+        // Global history cap (existing MaxHistoryLength).
+        let max_history = get_max_history_length(env);
+        while ledger_list.len() > max_history {
+            // Issue #92: stop emitting prune events if we hit the cap.
+            if event_count >= max_events {
+                EventLimitWarningEvent {
+                    asset: asset.clone(),
+                    event_count,
+                    max_events,
+                }
+                .publish(env);
+                break;
+            }
+            let oldest_ledger = ledger_list.get_unchecked(0);
+            ledger_list.remove(0);
+            env.storage()
+                .temporary()
+                .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
+            HistoryPrunedEvent {
+                asset: asset.clone(),
+                pruned_ledger: oldest_ledger,
+                remaining: ledger_list.len(),
+            }
+            .publish(env);
+            event_count += 1;
+        }
+
+        // Issue #94: per-asset history cap (MaxHistoryPerAsset, default 1000).
+        let max_per_asset = get_max_history_per_asset(env);
+        while ledger_list.len() > max_per_asset {
+            if event_count >= max_events {
+                EventLimitWarningEvent {
+                    asset: asset.clone(),
+                    event_count,
+                    max_events,
+                }
+                .publish(env);
+                break;
+            }
+            let oldest_ledger = ledger_list.get_unchecked(0);
+            ledger_list.remove(0);
+            env.storage()
+                .temporary()
+                .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
+            HistoryPerAssetPrunedEvent {
+                asset: asset.clone(),
+                pruned_ledger: oldest_ledger,
+                remaining: ledger_list.len(),
+            }
+            .publish(env);
+            event_count += 1;
+        }
+
+        env.storage().persistent().set(&ledgers_key, &ledger_list);
 
         // Issue #92: only emit aggregation event if within budget.
         if event_count < max_events {
@@ -697,45 +700,151 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
 
-fn compute_twap_fallback(env: &Env, asset: &Address) -> Option<AggregatePrice> {
-    let current_ledger = env.ledger().sequence();
-    let max_history = get_max_history_length(env).max(5);
-    let decimals = get_decimals(env);
-    let mut total_weighted_price: i128 = 0;
-    let mut total_weight: u64 = 0;
-    let mut count: u32 = 0;
+fn compute_twap_window(
+    env: &Env,
+    asset: &Address,
+    start_ledger: u32,
+    current_ledger: u32,
+    method: TwapMethod,
+) -> Option<PriceData> {
+    let agg_key = DataKey::Aggregate(asset.clone());
+    let current_agg: AggregatePrice = env.storage().persistent().get(&agg_key)?;
+    let mut snapshots: Vec<(u32, i128)> = Vec::new(env);
+    snapshots.push_back((current_ledger, current_agg.price));
 
-    let start_ledger = current_ledger.saturating_sub(max_history);
     let mut ledger = current_ledger;
-    loop {
+    while ledger > 0 {
+        ledger -= 1;
         let hist_key = DataKey::PriceHistory(asset.clone(), ledger);
         if let Some(entry) = env
             .storage()
             .temporary()
             .get::<_, PriceHistoryEntry>(&hist_key)
         {
-            let weight = (ledger - start_ledger).max(1) as u64;
-            total_weighted_price =
-                total_weighted_price.saturating_add(entry.price.saturating_mul(weight as i128));
-            total_weight = total_weight.saturating_add(weight);
-            count += 1;
+            let last = snapshots.get_unchecked(snapshots.len() - 1);
+            if entry.ledger != last.0 {
+                snapshots.push_back((entry.ledger, entry.price));
+            }
+            if entry.ledger <= start_ledger {
+                break;
+            }
         }
-        if ledger == start_ledger {
-            break;
-        }
-        if ledger == 0 {
-            break;
-        }
-        ledger -= 1;
     }
 
-    if count == 0 || total_weight == 0 {
+    let mut total_weight: u64 = 0;
+    let mut weighted_price: i128 = 0;
+    let mut weighted_log2: i128 = 0;
+    let mut next_boundary = current_ledger.saturating_add(1);
+
+    for i in 0..snapshots.len() {
+        let (ledger, price) = snapshots.get_unchecked(i);
+        let segment_start = if *ledger < start_ledger {
+            start_ledger
+        } else {
+            *ledger
+        };
+        if next_boundary > segment_start {
+            let weight = next_boundary - segment_start;
+            total_weight = total_weight.saturating_add(weight);
+            weighted_price = weighted_price.saturating_add(price.saturating_mul(weight as i128));
+            if method == TwapMethod::Geometric {
+                weighted_log2 =
+                    weighted_log2.saturating_add(log2_fixed(price).saturating_mul(weight as i128));
+            }
+            next_boundary = segment_start;
+        }
+        if segment_start == start_ledger {
+            break;
+        }
+    }
+
+    if total_weight == 0 {
         return None;
     }
 
-    Some(AggregatePrice {
-        price: total_weighted_price / total_weight as i128,
+    let price = match method {
+        TwapMethod::Arithmetic => weighted_price / (total_weight as i128),
+        TwapMethod::Geometric => {
+            let avg_log2 = weighted_log2 / (total_weight as i128);
+            exp2_fixed(avg_log2)
+        }
+    };
+
+    Some(PriceData {
+        price,
         timestamp: env.ledger().timestamp(),
+        last_updated: current_ledger,
+    })
+}
+
+fn log2_fixed(value: i128) -> i128 {
+    let x = value as u128;
+    let bit_index = 127 - x.leading_zeros();
+    let exp = (bit_index as i128).saturating_sub(32);
+    let mut y = if exp >= 0 {
+        x >> (exp as u32)
+    } else {
+        x << ((-exp) as u32)
+    };
+
+    let mut frac: i128 = 0;
+    for i in 1..=32 {
+        y = ((y as u128).saturating_mul(y as u128) >> 32) as u128;
+        if y >= (2u128 << 32) {
+            y >>= 1;
+            frac |= 1 << (32 - i);
+        }
+    }
+
+    (exp << 32) | frac
+}
+
+fn exp2_frac(frac: u128) -> u128 {
+    const LN2: u128 = 2977044471u128; // ln(2) in Q32.32
+    let x = (frac.saturating_mul(LN2)) >> 32;
+    let x2 = (x.saturating_mul(x)) >> 32;
+    let x3 = (x2.saturating_mul(x)) >> 32;
+    let x4 = (x3.saturating_mul(x)) >> 32;
+    let x5 = (x4.saturating_mul(x)) >> 32;
+    let x6 = (x5.saturating_mul(x)) >> 32;
+
+    (1u128 << 32)
+        .saturating_add(x)
+        .saturating_add(x2 / 2)
+        .saturating_add(x3 / 6)
+        .saturating_add(x4 / 24)
+        .saturating_add(x5 / 120)
+        .saturating_add(x6 / 720)
+}
+
+fn exp2_fixed(log2: i128) -> i128 {
+    let int_part = log2 >> 32;
+    let frac = (log2 & 0xffffffff) as u128;
+    let base = exp2_frac(frac);
+    if int_part >= 0 {
+        if int_part >= 96 {
+            return i128::MAX;
+        }
+        (base << (int_part as u32)) as i128
+    } else {
+        (base >> ((-int_part) as u32)) as i128
+    }
+}
+
+fn compute_twap_fallback(env: &Env, asset: &Address) -> Option<AggregatePrice> {
+    let current_ledger = env.ledger().sequence();
+    let max_history = get_max_history_length(env).max(5);
+    let decimals = get_decimals(env);
+    let price_data = compute_twap_window(
+        env,
+        asset,
+        current_ledger.saturating_sub(max_history),
+        current_ledger,
+        TwapMethod::Arithmetic,
+    )?;
+    Some(AggregatePrice {
+        price: price_data.price,
+        timestamp: price_data.timestamp,
         num_sources: 0,
         decimals,
         is_override: false,
@@ -1039,6 +1148,28 @@ pub fn prices(env: &Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
         }
     }
     Some(result)
+}
+
+pub fn get_twap(
+    env: &Env,
+    asset: Asset,
+    window_ledgers: u32,
+    method: TwapMethod,
+) -> Option<PriceData> {
+    let addr = match asset {
+        Asset::Stellar(a) => a,
+        Asset::Other(_) => return None,
+    };
+    let reg_key = DataKey::AssetRegistered(addr.clone());
+    if !env.storage().persistent().get(&reg_key).unwrap_or(false) {
+        return None;
+    }
+    if window_ledgers == 0 || window_ledgers > get_max_history_length(env) {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    let current_ledger = env.ledger().sequence();
+    let start_ledger = current_ledger.saturating_sub(window_ledgers.saturating_sub(1));
+    compute_twap_window(env, &addr, start_ledger, current_ledger, method)
 }
 
 pub fn override_price(env: &Env, asset: Address, price: i128, reason: String, expiry_ledger: u32) {

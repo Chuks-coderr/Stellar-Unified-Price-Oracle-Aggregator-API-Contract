@@ -489,6 +489,16 @@ pub enum BftAggregationMethod {
     TrimmedMean = 2,
 }
 
+/// TWAP aggregation variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum TwapMethod {
+    /// Standard arithmetic TWAP using time-weighted average.
+    Arithmetic = 0,
+    /// Geometric TWAP using a time-weighted geometric mean.
+    Geometric = 1,
+}
+
 /// SEP-40 compatible price data returned by the standard oracle interface methods.
 ///
 /// Used as the return type of [`lastprice`], [`price`], and [`prices`].
