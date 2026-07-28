@@ -234,6 +234,9 @@ pub enum DataKey {
     CorrelationBand(Address, Address),
     /// Ordered list of (base, quote) correlation pairs registered.
     CorrelationPairList,
+    /// Flag marking a (source, asset) price submission as correlation-violating.
+    /// Flagged submissions are excluded from aggregation.
+    CorrelationFlagged(Address, Address),
 
     // -------------------------------------------------------------------------
     // #173: Tiered Consumer Whitelisting
@@ -284,45 +287,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
-
-    // -------------------------------------------------------------------------
-    // #235: Price Feed Verification Challenger
-    // -------------------------------------------------------------------------
-    /// Monotonically incrementing counter for challenge IDs.
-    ChallengeCount,
-    /// A pending price challenge stored by ID.
-    Challenge(u32),
-    /// Accumulated unclaimed rewards for a challenger address.
-    ChallengerRewards(Address),
-
-    // -------------------------------------------------------------------------
-    // #239: Admin Audit Log with Hash Chain
-    // -------------------------------------------------------------------------
-    /// Monotonically incrementing counter for audit entry IDs.
-    AuditEntryCount,
-    /// An immutable audit trail entry with hash chain.
-    AuditEntry(u32),
-    /// SHA-256 hash of the most recent audit entry (head of chain).
-    AuditLogHead,
-
-    // -------------------------------------------------------------------------
-    // #241: Admin Delegation with RBAC
-    // -------------------------------------------------------------------------
-    /// Bitmask of roles delegated to an address (keyed by address and role discriminant).
-    DelegatedRole(Address, u32),
-    /// Ordered list of addresses that have been granted a specific role.
-    RoleHolders(u32),
-
-    // -------------------------------------------------------------------------
-    // #240: Emergency Pause with Timelock Bypass
-    // -------------------------------------------------------------------------
-    /// Boolean flag indicating whether emergency pause is currently active.
-    EmergencyPauseActive,
-    /// Emergency pause details (reason, timeout, initiator).
-    EmergencyPauseEntry,
-    /// Human-readable reason for the current emergency pause.
-    EmergencyPauseReason,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -541,7 +523,21 @@ pub struct AssetMetadata {
     /// Optional override for the number of decimals used by this asset's token contract.
     /// When `None`, the contract-wide decimal setting applies.
     pub decimals: Option<u32>,
+    /// Logo URI of the asset.
+    pub logo_uri: String,
 }
+
+/// Helper struct for batch asset metadata updates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetMetadataUpdate {
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -859,102 +855,83 @@ pub struct CrossReferenceResult {
 }
 
 // =============================================================================
-// #235 — Price Feed Verification Challenger
+// #210 — Progressive Disqualification / Demerits System
 // =============================================================================
 
-/// A price challenge submitted by an observer.
-///
-/// Stored under [`DataKey::Challenge`] keyed by challenge ID.
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct Challenge {
-    /// Unique sequential identifier for this challenge.
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+
+// =============================================================================
+// #207 — Multi-sig Source Registration Governance
+// =============================================================================
+
+/// Configuration for source registration multi-sig governance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
     pub id: u32,
-    /// The asset whose price is being challenged.
-    pub asset: Address,
-    /// Address of the challenger.
-    pub challenger: Address,
-    /// The expected price claimed by the challenger.
-    pub expected_price: i128,
-    /// Arbitrary proof data supporting the challenge.
-    pub proof_data: Bytes,
-    /// Ledger when the challenge was submitted.
-    pub challenged_ledger: u32,
-    /// Whether the challenge has been resolved by the admin.
-    pub is_resolved: bool,
-    /// Whether the challenge was validated (true = valid, false = dismissed).
-    pub is_valid: bool,
-    /// Reward amount in stroops if valid.
-    pub reward_amount: i128,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
 }
 
 // =============================================================================
-// #239 — Admin Audit Log with Hash Chain
+// #208 — Source Geolocation & Decentralization Metrics
 // =============================================================================
 
-/// An immutable audit trail entry for admin actions.
-///
-/// Stored under [`DataKey::AuditEntry`] keyed by entry ID. Forms a hash chain
-/// with previous entries to detect tampering.
+/// Geolocation and provider tags for an oracle source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct AuditEntry {
-    /// Unique sequential identifier for this audit entry.
-    pub id: u32,
-    /// The admin action symbol (e.g., "pause", "setadm").
-    pub action: Symbol,
-    /// Address of the admin who performed the action.
-    pub admin: Address,
-    /// Unix timestamp when the action was performed.
-    pub timestamp: u64,
-    /// Associated data for the action.
-    pub data: Bytes,
-    /// SHA-256 hash of the previous audit entry (or empty for first entry).
-    pub previous_hash: Bytes,
-    /// SHA-256 hash of this entry (hash of previous_hash || action || admin || data || timestamp || id).
-    pub current_hash: Bytes,
-    /// Ledger sequence number when this entry was recorded.
-    pub ledger: u32,
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
 }
 
-// =============================================================================
-// #241 — Admin Delegation with Role-Based Access Control (RBAC)
-// =============================================================================
-
-/// Role that can be delegated from admin to other addresses.
-///
-/// Stored as u32 discriminant in [`DataKey::DelegatedRole`].
+/// Decentralization and concentration report for registered sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum Role {
-    /// Permission to add and remove oracle sources.
-    SourceManager = 0,
-    /// Permission to register and unregister assets.
-    AssetManager = 1,
-    /// Permission to submit prices and override prices.
-    PriceUpdater = 2,
-    /// Permission to modify configuration settings.
-    ConfigManager = 3,
-    /// Permission to upgrade contract and transfer admin.
-    UpgradeManager = 4,
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
 }
 
-// =============================================================================
-// #240 — Emergency Pause with Timelock Bypass
-// =============================================================================
 
-/// Emergency pause state, bypassing normal timelock delays.
-///
-/// Stored under [`DataKey::EmergencyPauseEntry`] when active.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct EmergencyPause {
-    /// Reason for the emergency pause (max 256 chars).
-    pub reason: String,
-    /// Ledger when the emergency pause was initiated.
-    pub initiated_ledger: u32,
-    /// Ledger at which automatic unpause will occur (unless extended).
-    pub auto_unpause_ledger: u32,
-    /// Address of the admin who initiated the emergency pause.
-    pub initiated_by: Address,
-}
+

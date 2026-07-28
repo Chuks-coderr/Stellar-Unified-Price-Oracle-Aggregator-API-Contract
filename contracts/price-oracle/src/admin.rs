@@ -363,6 +363,31 @@ pub fn get_max_price_deviation(env: &Env) -> u32 {
         .unwrap_or(DEFAULT_MAX_PRICE_DEVIATION)
 }
 
+pub fn set_circuit_breaker_threshold(env: &Env, threshold_bps: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if threshold_bps > 100000 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CircuitBreakerThreshold, &threshold_bps);
+}
+
+pub fn get_circuit_breaker_threshold(env: &Env) -> u32 {
+    let key = DataKey::CircuitBreakerThreshold;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(0)
+}
+
+
 pub fn set_heartbeat_interval(env: &Env, interval: u64) {
     let admin = get_admin(env);
     admin.require_auth();

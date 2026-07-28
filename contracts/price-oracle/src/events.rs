@@ -954,6 +954,21 @@ pub struct CorrelationViolationEvent {
     pub max_ratio: u128,
 }
 
+/// Emitted when a (source, asset) price is flagged and excluded from aggregation
+/// due to a correlation violation.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationPriceFlaggedEvent {
+    /// The asset whose submitted price was flagged.
+    #[topic]
+    pub asset: Address,
+    /// The source whose submission was flagged.
+    #[topic]
+    pub source: Address,
+    /// The price value that triggered the flag.
+    pub flagged_price: i128,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #173: Tiered Consumer Access Events
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1269,140 +1284,170 @@ pub struct MaxSourcesChangedEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #235: Price Feed Verification Challenger Events
+// #210: Progressive Disqualification Events
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Emitted when a price challenge is submitted.
+/// Emitted when a source accumulates enough demerits to trigger a warning.
 #[contractevent]
 #[derive(Clone)]
-pub struct ChallengePricedEvent {
-    /// Sequential challenge ID.
+pub struct SourceWarningEvent {
     #[topic]
-    pub challenge_id: u32,
-    /// Asset being challenged.
-    #[topic]
-    pub asset: Address,
-    /// Address that submitted the challenge.
-    #[topic]
-    pub challenger: Address,
-    /// Challenger's expected price.
-    pub expected_price: i128,
-    /// Ledger when challenge was submitted.
-    pub challenged_ledger: u32,
+    pub source: Address,
+    pub demerits: u32,
 }
 
-/// Emitted when a challenge is resolved.
+/// Emitted when a source accumulates enough demerits to be placed on probation.
 #[contractevent]
 #[derive(Clone)]
-pub struct ChallengeResolvedEvent {
-    /// Challenge ID being resolved.
+pub struct SourceProbationEvent {
     #[topic]
-    pub challenge_id: u32,
-    /// Asset that was challenged.
-    pub asset: Address,
-    /// Whether the challenge was valid.
-    pub is_valid: bool,
-    /// Reward amount if valid.
-    pub reward_amount: i128,
-    /// Admin who resolved the challenge.
-    pub resolved_by: Address,
+    pub source: Address,
+    pub demerits: u32,
 }
 
-/// Emitted when a challenger claims their rewards.
+/// Emitted when a source accumulates enough demerits to be disqualified.
 #[contractevent]
 #[derive(Clone)]
-pub struct RewardsClaimedEvent {
-    /// Challenger claiming rewards.
+pub struct SourceDisqualifiedEvent {
     #[topic]
-    pub claimer: Address,
-    /// Total amount claimed.
+    pub source: Address,
+    pub demerits: u32,
+    pub status_updated_ledger: u32,
+}
+
+/// Emitted when a source's demerits and disqualification status are reset by the admin.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDemeritsResetEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the global demerit configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct DemeritConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+
+/// Emitted when an invalid price submission is recorded against a source.
+#[contractevent]
+#[derive(Clone)]
+pub struct InvalidSubmissionRecordedEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #207: Multi-sig Source Governance Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when source governance config is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGovConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub threshold: u32,
+    pub approvers_count: u32,
+}
+
+/// Emitted when a new source proposal is proposed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalCreatedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub proposer: Address,
+    #[topic]
+    pub source: Address,
+    pub name: String,
+}
+
+/// Emitted when an approver approves a source proposal.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalApprovedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub approver: Address,
+}
+
+/// Emitted when a source proposal is executed (threshold met).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalExecutedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub source: Address,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #208: Source Geolocation Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when geolocation metadata for a source is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGeoUpdatedEvent {
+    #[topic]
+    pub source: Address,
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #209: Source Heartbeat Liveness Bond Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when the required source bond amount is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
     pub amount: i128,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// #239: Admin Audit Log Events
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Emitted when an admin action is appended to the audit log.
+/// Emitted when a source deposits its liveness bond.
 #[contractevent]
 #[derive(Clone)]
-pub struct AdminAuditEntryAppendedEvent {
-    /// Audit entry ID.
-    pub entry_id: u32,
-    /// Action symbol.
-    pub action: Symbol,
-    /// Admin who performed the action.
-    pub admin: Address,
-    /// Unix timestamp of the action.
-    pub timestamp: u64,
-    /// Ledger sequence number.
-    pub ledger: u32,
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// #241: Role-Based Access Control (RBAC) Events
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Emitted when a role is delegated to an address.
-#[contractevent]
-#[derive(Clone)]
-pub struct RoleDelegatedEvent {
-    /// Address that received the role.
+pub struct SourceBondDepositedEvent {
     #[topic]
-    pub delegatee: Address,
-    /// Role discriminant (u32).
-    pub role: u32,
-    /// Admin who delegated the role.
-    pub delegator: Address,
+    pub source: Address,
+    pub amount: i128,
 }
 
-/// Emitted when a role is revoked from an address.
+/// Emitted when a source bond is forfeited.
 #[contractevent]
 #[derive(Clone)]
-pub struct RoleRevokedEvent {
-    /// Address that lost the role.
+pub struct SourceBondForfeitedEvent {
     #[topic]
-    pub delegatee: Address,
-    /// Role discriminant (u32).
-    pub role: u32,
-    /// Admin who revoked the role.
-    pub delegator: Address,
+    pub source: Address,
+    pub amount: i128,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// #240: Emergency Pause Events
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Emitted when emergency pause is activated.
+/// Emitted when a source bond is returned.
 #[contractevent]
 #[derive(Clone)]
-pub struct EmergencyPausedEvent {
-    /// Reason for the emergency pause.
-    pub reason: String,
-    /// Ledger at which automatic unpause will occur.
-    pub auto_unpause_ledger: u32,
-    /// Admin who initiated the emergency pause.
-    pub initiated_by: Address,
+pub struct SourceBondReturnedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
 }
 
-/// Emitted when emergency pause is cancelled.
-#[contractevent]
-#[derive(Clone)]
-pub struct EmergencyUnpausedEvent {
-    /// Reason for the emergency pause that was cancelled.
-    pub reason: String,
-    /// Admin who cancelled the emergency pause.
-    pub cancelled_by: Address,
-}
 
-/// Emitted when emergency pause timeout is extended.
-#[contractevent]
-#[derive(Clone)]
-pub struct EmergencyPauseExtendedEvent {
-    /// Reason for the emergency pause.
-    pub reason: String,
-    /// New ledger at which automatic unpause will occur.
-    pub new_unpause_ledger: u32,
-    /// Admin who extended the emergency pause.
-    pub extended_by: Address,
-}
+
+

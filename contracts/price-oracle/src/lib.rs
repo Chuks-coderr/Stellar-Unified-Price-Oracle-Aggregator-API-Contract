@@ -8,11 +8,15 @@
 
 mod admin;
 mod alerts;
+mod amm;
 mod assets;
 mod challenger;
 mod correlation;
+mod cross_chain_relay;
 mod cross_reference;
+mod deadline_rebate;
 mod errors;
+mod event_indexing;
 mod events;
 mod exotic_pricing;
 mod fee_market;
@@ -23,13 +27,19 @@ mod migration;
 mod multisig;
 mod pause;
 mod prices;
+mod rate_limiting;
 mod reentrancy;
 mod relayer;
+mod reputation;
+mod rotation;
 mod sources;
+mod state_channel;
 mod storage;
 mod subscription;
 mod timelock;
+mod ttl_batching;
 mod types;
+mod vdf_sampler;
 mod whitelisting;
 mod zk_verify;
 mod audit_log;
@@ -61,15 +71,20 @@ mod rbac_tests;
 mod emergency_pause_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, AuditEntry, BatchOperation, Challenge,
-    CrossReferenceResult, DataKey, EmergencyPause, ErrorCode, FinalityStatus, FinalizedPrice,
-    HealthReport, MigrationState, OracleSources, PendingBatch, PendingFinalityEntry, PriceCommit,
-    PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry, RelayerInfo, Role,
-    SourceHealthStatus, SubscriptionPlans,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
+    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
+    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
+    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal,
+    SourceGeoMetadata, DecentralizationReport,
 };
 
+
+
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec,
+    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol,
+    Vec,
 };
 
 use crate::storage::read_registered_assets;
@@ -841,6 +856,109 @@ impl PriceOracleContract {
     pub fn is_source_pending_removal(env: Env, source: Address) -> bool {
         sources::is_source_pending_removal(&env, source)
     }
+
+    // --- #210: Progressive Disqualification ---
+
+    pub fn set_demerit_config(env: Env, config: DemeritConfig) {
+        reentrancy::enter(&env);
+        sources::set_demerit_config(&env, config);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_demerit_config(env: Env) -> DemeritConfig {
+        sources::get_demerit_config(&env)
+    }
+
+    pub fn get_source_demerits(env: Env, source: Address) -> SourceDemeritState {
+        sources::get_source_demerits(&env, source)
+    }
+
+    pub fn reset_source_demerits(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::reset_source_demerits(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    // --- #207: Multi-sig Source Governance ---
+
+    pub fn set_source_governance(env: Env, approvers: Vec<Address>, threshold: u32) {
+        reentrancy::enter(&env);
+        sources::set_source_governance(&env, approvers, threshold);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_governance(env: Env) -> Option<SourceGovernance> {
+        sources::get_source_governance(&env)
+    }
+
+    pub fn propose_source(env: Env, proposer: Address, source: Address, name: String) -> u32 {
+        reentrancy::enter(&env);
+        let id = sources::propose_source(&env, proposer, source, name);
+        reentrancy::exit(&env);
+        id
+    }
+
+    pub fn approve_source(env: Env, approver: Address, proposal_id: u32) {
+        reentrancy::enter(&env);
+        sources::approve_source(&env, approver, proposal_id);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_proposal(env: Env, proposal_id: u32) -> SourceProposal {
+        sources::get_source_proposal(&env, proposal_id)
+    }
+
+    // --- #208: Source Geolocation & Decentralization Metrics ---
+
+    pub fn set_source_geo(env: Env, source: Address, metadata: SourceGeoMetadata) {
+        reentrancy::enter(&env);
+        sources::set_source_geo(&env, source, metadata);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_geo(env: Env, source: Address) -> Option<SourceGeoMetadata> {
+        sources::get_source_geo(&env, source)
+    }
+
+    pub fn get_decentralization_report(env: Env) -> DecentralizationReport {
+        sources::get_decentralization_report(&env)
+    }
+
+    // --- #209: Source Heartbeat Liveness Bond ---
+
+    pub fn set_source_bond(env: Env, amount: i128) {
+        reentrancy::enter(&env);
+        sources::set_source_bond(&env, amount);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_bond(env: Env) -> i128 {
+        sources::get_source_bond(&env)
+    }
+
+    pub fn deposit_source_bond(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::deposit_source_bond(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_deposited_bond(env: Env, source: Address) -> i128 {
+        sources::get_source_deposited_bond(&env, source)
+    }
+
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reentrancy::enter(&env);
+        crate::reputation::set_stake_token_contract(&env, token);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        crate::reputation::get_stake_token_contract(&env)
+    }
+
+
+
+
 
     // --- Assets ---
 
@@ -2320,131 +2438,297 @@ impl PriceOracleContract {
     }
 
     // =========================================================================
-    // #235 — Price Feed Verification Challenger
+    // #179 — State Channel for High-Frequency Price Updates
     // =========================================================================
 
-    /// Challenge an aggregate price with expected price and proof data.
-    pub fn challenge_price(env: Env, asset: Address, expected_price: i128, proof_data: Bytes) {
+    /// Opens a state channel for `source` with a locked `deposit`.
+    ///
+    /// The `source` must authorize this call. The deposit is transferred from
+    /// `source` to the contract using the SAC token at `token_contract`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ChannelAlreadyOpen`] — channel already exists and is open.
+    /// * [`ErrorCode::InvalidPrice`]       — deposit is ≤ 0.
+    pub fn sc_open_channel(env: Env, source: Address, deposit: i128, token_contract: Address) {
         reentrancy::enter(&env);
-        challenger::challenge_price(&env, asset, expected_price, proof_data);
+        state_channel::open_channel(&env, source, deposit, token_contract);
         reentrancy::exit(&env);
     }
 
-    /// Resolve a challenge as valid or invalid (admin only).
-    pub fn resolve_challenge(env: Env, challenge_id: u32, is_valid: bool) {
+    /// Submits a batch of signed price updates to an open state channel.
+    ///
+    /// All items must have strictly increasing nonces. The highest-nonce item
+    /// becomes the channel's new state.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`]  — no open channel for `source`.
+    /// * [`ErrorCode::NotAuthorized`]    — Ed25519 signature invalid.
+    /// * [`ErrorCode::InvalidTimestamp`] — nonces are not strictly increasing.
+    pub fn sc_submit_batch(
+        env: Env,
+        source: Address,
+        batch: Vec<BatchItem>,
+        signature: BytesN<64>,
+        source_pubkey: BytesN<32>,
+    ) {
         reentrancy::enter(&env);
-        challenger::resolve_challenge(&env, challenge_id, is_valid);
+        state_channel::submit_batch(&env, source, batch, signature, source_pubkey);
         reentrancy::exit(&env);
     }
 
-    /// Claim accumulated challenge rewards.
-    pub fn claim_rewards(env: Env) -> i128 {
+    /// Closes an open state channel and refunds the remaining deposit to `source`.
+    ///
+    /// The `source` must authorize this call.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`] — no open channel for `source`.
+    pub fn sc_close_channel(env: Env, source: Address) {
         reentrancy::enter(&env);
-        let result = challenger::claim_rewards(&env);
+        state_channel::close_channel(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    /// Disputes a state channel when the source has gone offline.
+    ///
+    /// May be called by anyone after `dispute_timeout` has elapsed. If the
+    /// presented batch has a higher nonce and a valid signature, the channel
+    /// state is updated.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`]  — no open channel for `source`.
+    /// * [`ErrorCode::TimelockNotReady`] — dispute_timeout not yet elapsed.
+    /// * [`ErrorCode::NotAuthorized`]    — Ed25519 signature invalid.
+    /// * [`ErrorCode::InvalidTimestamp`] — presented nonces do not advance state.
+    pub fn sc_dispute_channel(
+        env: Env,
+        source: Address,
+        last_known_batch: Vec<BatchItem>,
+        signature: BytesN<64>,
+        source_pubkey: BytesN<32>,
+    ) {
+        reentrancy::enter(&env);
+        state_channel::dispute_channel(&env, source, last_known_batch, signature, source_pubkey);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current state of a channel, or `None` if not found.
+    pub fn sc_get_channel(env: Env, source: Address) -> Option<StateChannel> {
+        state_channel::get_channel(&env, source)
+    }
+
+    // =========================================================================
+    // #180 — AMM Data Feeds
+    // =========================================================================
+
+    /// Initialises a constant-product AMM pool for `asset`. Admin-only.
+    ///
+    /// Seeds the pool with `initial_x` and `initial_y` reserves.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::PoolAlreadyExists`]    — pool already exists.
+    /// * [`ErrorCode::InvalidConfiguration`] — either initial reserve is ≤ 0.
+    pub fn amm_init(
+        env: Env,
+        asset: Symbol,
+        asset_x: Address,
+        asset_y: Address,
+        initial_x: i128,
+        initial_y: i128,
+    ) {
+        reentrancy::enter(&env);
+        amm::init_amm(&env, asset, asset_x, asset_y, initial_x, initial_y);
+        reentrancy::exit(&env);
+    }
+
+    /// Adds liquidity to an existing AMM pool.
+    ///
+    /// Transfers `amount_x` and `amount_y` from `caller` to the pool and
+    /// recomputes `k`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::PoolNotFound`] — pool does not exist.
+    /// * [`ErrorCode::InvalidPrice`] — either amount is ≤ 0.
+    pub fn amm_add_liquidity(
+        env: Env,
+        caller: Address,
+        asset: Symbol,
+        amount_x: i128,
+        amount_y: i128,
+    ) {
+        reentrancy::enter(&env);
+        amm::add_liquidity(&env, caller, asset, amount_x, amount_y);
+        reentrancy::exit(&env);
+    }
+
+    /// Executes a constant-product swap in the pool for `asset`.
+    ///
+    /// Returns the actual output amount received after the 0.3 % fee.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::PoolNotFound`]         — pool not found or disabled.
+    /// * [`ErrorCode::InvalidPrice`]         — `amount_in` ≤ 0.
+    /// * [`ErrorCode::SlippageExceeded`]     — output < `min_return`.
+    /// * [`ErrorCode::AmmPriceManipulation`] — post-swap price deviation too high.
+    pub fn amm_swap(
+        env: Env,
+        caller: Address,
+        asset: Symbol,
+        from_asset: Address,
+        to_asset: Address,
+        amount_in: i128,
+        min_return: i128,
+    ) -> i128 {
+        reentrancy::enter(&env);
+        let result = amm::swap(&env, caller, asset, from_asset, to_asset, amount_in, min_return);
         reentrancy::exit(&env);
         result
     }
 
-    /// Get challenge history for an asset.
-    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<Challenge> {
-        challenger::get_challenge_history(&env, asset, limit)
-    }
-
-    /// Get unclaimed rewards for a challenger.
-    pub fn get_challenger_rewards(env: Env, challenger: Address) -> i128 {
-        challenger::get_challenger_rewards(&env, challenger)
-    }
-
-    // =========================================================================
-    // #239 — Admin Audit Log with Hash Chain
-    // =========================================================================
-
-    /// Get admin audit log entries.
-    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<AuditEntry> {
-        audit_log::get_admin_audit_log(&env, from_id, limit)
-    }
-
-    /// Verify the integrity of the audit chain.
-    pub fn verify_audit_chain(env: Env) -> bool {
-        audit_log::verify_audit_chain(&env)
-    }
-
-    /// Get the total number of audit entries.
-    pub fn get_audit_log_count(env: Env) -> u32 {
-        audit_log::get_audit_log_count(&env)
-    }
-
-    /// Get the current audit log head hash.
-    pub fn get_audit_log_head(env: Env) -> Bytes {
-        audit_log::get_audit_log_head(&env)
-    }
-
-    // =========================================================================
-    // #241 — Admin Delegation with Role-Based Access Control (RBAC)
-    // =========================================================================
-
-    /// Delegate a role to an address (admin only).
-    pub fn delegate_role(env: Env, delegatee: Address, role: Role) {
+    /// Enables or disables an AMM pool. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::PoolNotFound`]  — pool does not exist.
+    pub fn amm_set_status(env: Env, asset: Symbol, enabled: bool) {
         reentrancy::enter(&env);
-        rbac::delegate_role(&env, delegatee, role);
+        amm::set_amm_status(&env, asset, enabled);
         reentrancy::exit(&env);
     }
 
-    /// Revoke a role from an address (admin only).
-    pub fn revoke_role(env: Env, delegatee: Address, role: Role) {
-        reentrancy::enter(&env);
-        rbac::revoke_role(&env, delegatee, role);
-        reentrancy::exit(&env);
+    /// Returns the current pool state, or `None` if not found.
+    pub fn amm_get_pool(env: Env, asset: Symbol) -> Option<AmmPool> {
+        amm::get_amm_pool(&env, asset)
     }
 
-    /// Check if an address has a specific role.
-    pub fn has_role(env: Env, caller: Address, role: Role) -> bool {
-        rbac::has_role(&env, &caller, role)
+    /// Sets the maximum allowed AMM-to-oracle price deviation (basis points). Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `bps > 100_000`.
+    pub fn amm_set_max_deviation_bps(env: Env, bps: u32) {
+        amm::set_amm_max_deviation_bps(&env, bps);
     }
 
-    /// Get all addresses that have a specific role.
-    pub fn get_role_holders(env: Env, role: Role) -> Vec<Address> {
-        rbac::get_role_holders(&env, role)
-    }
-
-    /// Get all roles held by an address.
-    pub fn get_address_roles(env: Env, holder: Address) -> Vec<u32> {
-        rbac::get_address_roles(&env, &holder)
+    /// Returns the current AMM max-deviation setting (basis points). Default: 500.
+    pub fn amm_get_max_deviation_bps(env: Env) -> u32 {
+        amm::get_amm_max_deviation_bps(&env)
     }
 
     // =========================================================================
-    // #240 — Emergency Pause with Timelock Bypass
+    // #181 — VDF Randomness for Source Sampling
     // =========================================================================
 
-    /// Trigger emergency pause (bypasses timelock, admin only).
-    pub fn emergency_pause(env: Env, reason: String, auto_unpause_ledgers: u32) {
-        reentrancy::enter(&env);
-        emergency_pause::emergency_pause(&env, reason, auto_unpause_ledgers);
-        reentrancy::exit(&env);
+    /// Sets the number of sources to select per VDF sampling round. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `n` is 0.
+    pub fn vdf_set_sampling_size(env: Env, n: u32) {
+        vdf_sampler::set_sampling_size(&env, n);
     }
 
-    /// Extend an active emergency pause (admin only).
-    pub fn extend_emergency_pause(env: Env, additional_ledgers: u32) {
-        reentrancy::enter(&env);
-        emergency_pause::extend_emergency_pause(&env, additional_ledgers);
-        reentrancy::exit(&env);
+    /// Returns the configured VDF sampling size. Default: 3.
+    pub fn vdf_get_sampling_size(env: Env) -> u32 {
+        vdf_sampler::get_sampling_size(&env)
     }
 
-    /// Cancel an active emergency pause (admin only).
-    pub fn cancel_emergency_pause(env: Env) {
-        reentrancy::enter(&env);
-        emergency_pause::cancel_emergency_pause(&env);
-        reentrancy::exit(&env);
+    /// Returns the current VDF seed derived from ledger sequence and timestamp.
+    ///
+    /// Off-chain VDF provers call this to obtain the input seed.
+    pub fn vdf_get_current_seed(env: Env) -> BytesN<32> {
+        vdf_sampler::get_current_seed(&env)
     }
 
-    /// Check if emergency pause is currently active.
-    pub fn is_emergency_pause_active(env: Env) -> bool {
-        emergency_pause::is_emergency_pause_active(&env)
+    /// Verifies a VDF proof and returns `true` if it passes the lightweight check.
+    ///
+    /// This exposes the verifier for off-chain testing purposes. The full
+    /// `sample_sources` call internally invokes this check.
+    pub fn vdf_verify_proof(
+        env: Env,
+        seed: BytesN<32>,
+        proof: Bytes,
+        iterations: u64,
+        output: BytesN<32>,
+    ) -> bool {
+        vdf_sampler::verify_vdf_proof(&env, seed, proof, iterations, output)
     }
 
-    /// Get emergency pause details if active.
-    pub fn get_emergency_pause(env: Env) -> Option<EmergencyPause> {
-        emergency_pause::get_emergency_pause(&env)
+    /// Samples `n` source addresses using VDF randomness.
+    ///
+    /// Verifies the proof against the current ledger seed. Falls back to all
+    /// registered sources if the proof is empty or invalid.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Address>` of selected source addresses.
+    pub fn vdf_sample_sources(
+        env: Env,
+        proof: Bytes,
+        output: BytesN<32>,
+        iterations: u64,
+    ) -> Vec<Address> {
+        vdf_sampler::sample_sources(&env, proof, output, iterations)
+    }
+
+    // =========================================================================
+    // #182 — Cross-Chain Price Relay
+    // =========================================================================
+
+    /// Emits a structured cross-chain price update event for `asset_symbol`.
+    ///
+    /// Should be called after a successful price aggregation. The event is
+    /// indexed under `(symbol!("price_upd"), asset_symbol)` for off-chain
+    /// relayers to pick up.
+    pub fn relay_emit_price_update(env: Env, asset_symbol: Symbol, payload: PriceEventPayload) {
+        cross_chain_relay::emit_price_update(&env, asset_symbol, payload);
+    }
+
+    /// Configures cross-chain relay settings (quorum threshold, Merkle path bits).
+    /// Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    pub fn relay_set_config(env: Env, config: CrossChainRelayConfig) {
+        cross_chain_relay::set_relay_config(&env, config);
+    }
+
+    /// Returns the current cross-chain relay configuration, or `None` if not set.
+    pub fn relay_get_config(env: Env) -> Option<CrossChainRelayConfig> {
+        cross_chain_relay::get_relay_config(&env)
+    }
+
+    /// Verifies SCP validator quorum signatures over a Stellar ledger header hash.
+    ///
+    /// Returns `true` when the required fraction of validators (per config) have
+    /// produced valid Ed25519 signatures.
+    pub fn relay_verify_validator_set(
+        env: Env,
+        header_hash: BytesN<32>,
+        validators: Vec<BytesN<32>>,
+        signatures: Vec<BytesN<64>>,
+    ) -> bool {
+        cross_chain_relay::verify_validator_set(&env, header_hash, validators, signatures)
+    }
+
+    /// Verifies a SHA-256 Merkle proof authenticating a price event in a Stellar ledger.
+    ///
+    /// Returns `true` if the proof resolves to `header_hash`.
+    pub fn relay_verify_event_proof(
+        env: Env,
+        header_hash: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+        event_data: PriceEventPayload,
+    ) -> bool {
+        cross_chain_relay::verify_event_proof(&env, header_hash, proof, event_data)
+    }
+
+    /// Checks internal consistency of a `StellarHeader` by verifying its hash.
+    ///
+    /// Returns `true` if `sha256(sequence || tx_set_hash || bucket_list_hash)`
+    /// matches `header.expected_hash`.
+    pub fn relay_verify_header(env: Env, header: StellarHeader) -> bool {
+        cross_chain_relay::verify_header_consistency(&env, &header)
     }
 }
 
@@ -2468,3 +2752,6 @@ mod commit_reveal_tests;
 
 #[cfg(test)]
 mod finality_tests;
+
+#[cfg(test)]
+mod correlation_feature_tests;
