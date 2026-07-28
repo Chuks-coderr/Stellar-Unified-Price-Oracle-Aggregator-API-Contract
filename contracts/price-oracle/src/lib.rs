@@ -49,13 +49,16 @@ mod prop_tests;
 mod string_boundary_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, AmmPool, Asset, BatchItem, BatchOperation,
-    CrossChainRelayConfig, CrossReferenceResult, DataKey, ErrorCode, FinalityStatus,
-    FinalizedPrice, HealthReport, MigrationState, OracleSources, PendingBatch,
-    PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceEventPayload,
-    PriceHistoryEntry, PriceOverrideEntry, RelayerInfo, SourceHealthStatus, StateChannel,
-    StellarHeader, SubscriptionPlans,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
+    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
+    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
+    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal,
+    SourceGeoMetadata, DecentralizationReport,
 };
+
+
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol,
@@ -831,6 +834,109 @@ impl PriceOracleContract {
     pub fn is_source_pending_removal(env: Env, source: Address) -> bool {
         sources::is_source_pending_removal(&env, source)
     }
+
+    // --- #210: Progressive Disqualification ---
+
+    pub fn set_demerit_config(env: Env, config: DemeritConfig) {
+        reentrancy::enter(&env);
+        sources::set_demerit_config(&env, config);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_demerit_config(env: Env) -> DemeritConfig {
+        sources::get_demerit_config(&env)
+    }
+
+    pub fn get_source_demerits(env: Env, source: Address) -> SourceDemeritState {
+        sources::get_source_demerits(&env, source)
+    }
+
+    pub fn reset_source_demerits(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::reset_source_demerits(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    // --- #207: Multi-sig Source Governance ---
+
+    pub fn set_source_governance(env: Env, approvers: Vec<Address>, threshold: u32) {
+        reentrancy::enter(&env);
+        sources::set_source_governance(&env, approvers, threshold);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_governance(env: Env) -> Option<SourceGovernance> {
+        sources::get_source_governance(&env)
+    }
+
+    pub fn propose_source(env: Env, proposer: Address, source: Address, name: String) -> u32 {
+        reentrancy::enter(&env);
+        let id = sources::propose_source(&env, proposer, source, name);
+        reentrancy::exit(&env);
+        id
+    }
+
+    pub fn approve_source(env: Env, approver: Address, proposal_id: u32) {
+        reentrancy::enter(&env);
+        sources::approve_source(&env, approver, proposal_id);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_proposal(env: Env, proposal_id: u32) -> SourceProposal {
+        sources::get_source_proposal(&env, proposal_id)
+    }
+
+    // --- #208: Source Geolocation & Decentralization Metrics ---
+
+    pub fn set_source_geo(env: Env, source: Address, metadata: SourceGeoMetadata) {
+        reentrancy::enter(&env);
+        sources::set_source_geo(&env, source, metadata);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_geo(env: Env, source: Address) -> Option<SourceGeoMetadata> {
+        sources::get_source_geo(&env, source)
+    }
+
+    pub fn get_decentralization_report(env: Env) -> DecentralizationReport {
+        sources::get_decentralization_report(&env)
+    }
+
+    // --- #209: Source Heartbeat Liveness Bond ---
+
+    pub fn set_source_bond(env: Env, amount: i128) {
+        reentrancy::enter(&env);
+        sources::set_source_bond(&env, amount);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_bond(env: Env) -> i128 {
+        sources::get_source_bond(&env)
+    }
+
+    pub fn deposit_source_bond(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::deposit_source_bond(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_deposited_bond(env: Env, source: Address) -> i128 {
+        sources::get_source_deposited_bond(&env, source)
+    }
+
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reentrancy::enter(&env);
+        crate::reputation::set_stake_token_contract(&env, token);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        crate::reputation::get_stake_token_contract(&env)
+    }
+
+
+
+
 
     // --- Assets ---
 

@@ -44,7 +44,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     check_source(env, &source);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
-        panic_with_error!(env, ErrorCode::NotAuthorized);
+        panic_with_error!(env, ErrorCode::SourceSuspended);
     }
 
     let decimals = get_decimals(env);
@@ -379,7 +379,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     check_registered_asset(env, &asset);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
-        panic_with_error!(env, ErrorCode::NotAuthorized);
+        panic_with_error!(env, ErrorCode::SourceSuspended);
     }
 
     if price <= 0 {

@@ -1268,155 +1268,171 @@ pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
 
-// =============================================================================
-// #177 — Exotic Asset Pricing Engine
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// #210: Progressive Disqualification Events
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Emitted when an exotic asset's pricing configuration is set or updated.
+/// Emitted when a source accumulates enough demerits to trigger a warning.
 #[contractevent]
 #[derive(Clone)]
-pub struct ExoticAssetConfigSetEvent {
-    #[topic]
-    pub asset: Address,
-}
-
-// =============================================================================
-// #176 — Priority Submission Fee Market
-// =============================================================================
-
-/// Emitted when the minimum priority fee is changed.
-#[contractevent]
-#[derive(Clone)]
-pub struct FmMinFeeChangedEvent {
-    pub value: u128,
-}
-
-/// Emitted when the fee distribution ratio is changed.
-#[contractevent]
-#[derive(Clone)]
-pub struct FmFeeRatioChangedEvent {
-    pub value: u32,
-}
-
-/// Emitted when a submission is enqueued in the fee market.
-#[contractevent]
-#[derive(Clone)]
-pub struct FmSubmissionEnqueuedEvent {
+pub struct SourceWarningEvent {
     #[topic]
     pub source: Address,
-    pub priority_fee: u128,
-    pub queue_depth: u32,
+    pub demerits: u32,
 }
 
-/// Emitted when a submission is processed from the fee market queue.
+/// Emitted when a source accumulates enough demerits to be placed on probation.
 #[contractevent]
 #[derive(Clone)]
-pub struct FmSubmissionProcessedEvent {
+pub struct SourceProbationEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+}
+
+/// Emitted when a source accumulates enough demerits to be disqualified.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDisqualifiedEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+    pub status_updated_ledger: u32,
+}
+
+/// Emitted when a source's demerits and disqualification status are reset by the admin.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDemeritsResetEvent {
     #[topic]
     pub source: Address,
     #[topic]
-    pub asset: Address,
-    pub price: i128,
-    pub priority_fee: u128,
-    pub source_share: u128,
-    pub treasury_share: u128,
+    pub admin: Address,
 }
 
-// =============================================================================
-// #178 — N-of-M Multi-Sig Governance
-// =============================================================================
-
-/// Emitted when the governor set or required-approvals threshold is updated.
+/// Emitted when the global demerit configuration is changed.
 #[contractevent]
 #[derive(Clone)]
-pub struct MsGovernorsUpdatedEvent {
-    pub governor_count: u32,
-    pub required_approvals: u32,
-}
-
-/// Emitted when a governor proposes a new multi-sig operation.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationProposedEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
+pub struct DemeritConfigChangedEvent {
     #[topic]
-    pub proposed_by: Address,
-    pub required_approvals: u32,
-    pub proposed_ledger: u32,
+    pub admin: Address,
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
 }
 
-/// Emitted when the N-th approval is received and the timelock clock starts.
+/// Emitted when an invalid price submission is recorded against a source.
 #[contractevent]
 #[derive(Clone)]
-pub struct MsQuorumReachedEvent {
-    pub operation_id: u32,
-    pub approvals: u32,
-    pub required: u32,
-    pub timelock_start_ledger: u32,
-}
-
-/// Emitted each time a governor approves an operation.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationApprovedEvent {
-    pub operation_id: u32,
-    #[topic]
-    pub governor: Address,
-    pub total_approvals: u32,
-    pub required_approvals: u32,
-}
-
-/// Emitted when a governor retracts their approval.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationRetractedEvent {
-    pub operation_id: u32,
-    #[topic]
-    pub governor: Address,
-    pub total_approvals: u32,
-}
-
-/// Emitted when a multi-sig operation is executed after quorum + timelock.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationExecutedEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
-    #[topic]
-    pub executed_by: Address,
-}
-
-/// Emitted when a pending multi-sig operation is cancelled.
-#[contractevent]
-#[derive(Clone)]
-pub struct MsOperationCancelledEvent {
-    pub operation_id: u32,
-    pub op_type: u32,
-    #[topic]
-    pub cancelled_by: Address,
-}
-
-// =============================================================================
-// #175 — ZK Proof Verification
-// =============================================================================
-
-/// Emitted when the Groth16 verifying key is set or updated.
-#[contractevent]
-#[derive(Clone)]
-pub struct ZkVerifyingKeySetEvent {
-    pub set_at_ledger: u32,
-}
-
-/// Emitted when a ZK-verified price is successfully submitted.
-#[contractevent]
-#[derive(Clone)]
-pub struct ZkPriceSubmittedEvent {
+pub struct InvalidSubmissionRecordedEvent {
     #[topic]
     pub source: Address,
-    #[topic]
-    pub asset: Address,
-    pub price: i128,
-    pub timestamp: u64,
-    pub verified_at_ledger: u32,
+    pub demerits: u32,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #207: Multi-sig Source Governance Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when source governance config is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGovConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub threshold: u32,
+    pub approvers_count: u32,
+}
+
+/// Emitted when a new source proposal is proposed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalCreatedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub proposer: Address,
+    #[topic]
+    pub source: Address,
+    pub name: String,
+}
+
+/// Emitted when an approver approves a source proposal.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalApprovedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub approver: Address,
+}
+
+/// Emitted when a source proposal is executed (threshold met).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalExecutedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub source: Address,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #208: Source Geolocation Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when geolocation metadata for a source is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGeoUpdatedEvent {
+    #[topic]
+    pub source: Address,
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #209: Source Heartbeat Liveness Bond Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when the required source bond amount is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source deposits its liveness bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondDepositedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source bond is forfeited.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondForfeitedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source bond is returned.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondReturnedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+
+
+

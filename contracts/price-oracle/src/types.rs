@@ -284,79 +284,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
-
-    // -------------------------------------------------------------------------
-    // #177: Exotic asset pricing
-    // -------------------------------------------------------------------------
-    /// AssetPricingConfig keyed by asset address.
-    ExoticAssetConfig(Address),
-
-    // -------------------------------------------------------------------------
-    // #176: Fee market
-    // -------------------------------------------------------------------------
-    /// Priority queue of pending fee-market submissions.
-    FmPendingQueue,
-    /// Accumulated fee pool (u128).
-    FmFeePool,
-    /// Per-source accumulated fee balance (u128).
-    FmSourceFeeBalance(Address),
-    /// Treasury accumulated fee balance (u128).
-    FmTreasuryBalance,
-    /// Minimum priority fee required to enqueue (u128).
-    FmMinPriorityFee,
-    /// Fee split ratio — percentage going to sources (u32, 0-100).
-    FmFeeDistributionRatio,
-    /// Treasury address for fee disbursement.
-    FmTreasury,
-
-    // -------------------------------------------------------------------------
-    // #178: Multi-sig governance
-    // -------------------------------------------------------------------------
-    /// List of registered governance governors.
-    MsGovernors,
-    /// Number of approvals required for quorum (u32).
-    MsRequiredApprovals,
-    /// A MultiSigOperation keyed by its ID.
-    MsOp(u32),
-    /// Head pointer of the ordered operation queue (u32, 0 = empty).
-    MsQueueHead,
-    /// Tail pointer of the ordered operation queue (u32, 0 = empty).
-    MsQueueTail,
-    /// Monotonically increasing operation ID counter (u32).
-    MsOpCount,
-
-    // -------------------------------------------------------------------------
-    // #175: ZK proof verification
-    // -------------------------------------------------------------------------
-    /// Stored Groth16 verifying key.
-    ZkVerifyingKey,
-
-    // -------------------------------------------------------------------------
-    // #179: State Channels
-    // -------------------------------------------------------------------------
-    /// Active StateChannel for an oracle source.
-    StateChannel(Address),
-
-    // -------------------------------------------------------------------------
-    // #180: AMM Data Feeds
-    // -------------------------------------------------------------------------
-    /// AmmPool for a given asset symbol.
-    AmmPool(Symbol),
-    /// Maximum allowed AMM-to-oracle price deviation in basis points.
-    AmmMaxDeviationBps,
-
-    // -------------------------------------------------------------------------
-    // #181: VDF Source Sampling
-    // -------------------------------------------------------------------------
-    /// Number of sources to select per VDF sampling round (u32).
-    VdfSamplingSize,
-
-    // -------------------------------------------------------------------------
-    // #182: Cross-Chain Relay
-    // -------------------------------------------------------------------------
-    /// CrossChainRelayConfig storing quorum threshold and Merkle path bits.
-    CrossChainRelayConfig,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -893,263 +838,83 @@ pub struct CrossReferenceResult {
 }
 
 // =============================================================================
-// #179 — State Channels for High-Frequency Price Updates
+// #210 — Progressive Disqualification / Demerits System
 // =============================================================================
 
-/// A single price update item within a state-channel batch.
-///
-/// Items must be strictly ordered by `nonce` within a batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct BatchItem {
-    /// Price value (unsigned, scaled by 10^decimals).
-    pub price: u128,
-    /// Unix timestamp (seconds) of this price observation.
-    pub timestamp: u64,
-    /// Strictly increasing nonce to prevent replay attacks.
-    pub nonce: u64,
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
 }
 
-/// An open state channel between an oracle source and the contract.
-///
-/// Stored under [`DataKey::StateChannel`] keyed by `source`.
+/// State tracking demerits and progressive disqualification status for a source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct StateChannel {
-    /// Address of the oracle source that owns this channel.
-    pub source: Address,
-    /// Deposited amount locked in the contract (native token or SAC token, in stroops).
-    pub deposit: i128,
-    /// Highest nonce accepted from the source so far (starts at 0).
-    pub nonce: u64,
-    /// Price from the batch item with the highest accepted nonce.
-    pub last_price: u128,
-    /// Timestamp from the batch item with the highest accepted nonce.
-    pub last_timestamp: u64,
-    /// Unix timestamp after which a dispute may be filed if the source is offline.
-    pub dispute_timeout: u64,
-    /// `true` once the channel has been closed and the deposit refunded.
-    pub is_closed: bool,
-    /// Contract address of the SAC token used for the deposit.
-    pub token_contract: Address,
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
 }
 
 // =============================================================================
-// #180 — AMM Data Feeds
+// #207 — Multi-sig Source Registration Governance
 // =============================================================================
 
-/// Constant-product AMM pool state.
-///
-/// Stored under [`DataKey::AmmPool`] keyed by `asset` symbol.
+/// Configuration for source registration multi-sig governance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct AmmPool {
-    /// Contract address of token X.
-    pub asset_x: Address,
-    /// Contract address of token Y.
-    pub asset_y: Address,
-    /// Current reserve of token X (must be positive).
-    pub reserve_x: i128,
-    /// Current reserve of token Y (must be positive).
-    pub reserve_y: i128,
-    /// Invariant `k = reserve_x * reserve_y` (u128 to avoid overflow).
-    pub k: u128,
-    /// Whether this pool is currently accepting swaps.
-    pub enabled: bool,
-    /// Swap fee in basis points (default 30 = 0.3 %).
-    pub fee_bps: u32,
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
 }
 
-// =============================================================================
-// #182 — Cross-Chain Price Relay
-// =============================================================================
-
-/// Payload included with each cross-chain price update event.
-///
-/// Published under topic `(symbol!("price_upd"), asset_symbol)`.
+/// A proposal to register a new source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct PriceEventPayload {
-    /// Aggregated price value (scaled by 10^decimals).
-    pub price: i128,
-    /// Unix timestamp (seconds) of the price observation.
-    pub timestamp: u64,
-    /// Ledger sequence number when the aggregate was recorded.
-    pub ledger_sequence: u32,
-}
-
-/// Stellar ledger header fields required for light-client verification.
-///
-/// A target-chain light client uses this struct to verify Stellar consensus
-/// signatures and authenticate Merkle proofs of price events.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct StellarHeader {
-    /// Ledger sequence number.
-    pub ledger_sequence: u32,
-    /// SHA-256 hash of the transaction set for this ledger.
-    pub tx_set_hash: BytesN<32>,
-    /// SHA-256 hash of the bucket list (account state) at this ledger.
-    pub bucket_list_hash: BytesN<32>,
-    /// Expected SHA-256 hash of the full header (for consistency checks).
-    pub expected_hash: BytesN<32>,
-    /// SCP envelope signatures from the validator quorum.
-    pub scp_signatures: Vec<BytesN<64>>,
-}
-
-/// Configuration for the cross-chain relay module.
-///
-/// Stored under [`DataKey::CrossChainRelayConfig`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct CrossChainRelayConfig {
-    /// Minimum percentage of validators that must have signed for quorum (0–100).
-    /// Default: 67 (i.e., 2/3 + 1 of the validator set).
-    pub quorum_threshold_pct: u32,
-    /// Bitmask encoding the Merkle path direction at each level.
-    /// Bit `i` = 0 → current node is left child at level `i`.
-    /// Bit `i` = 1 → current node is right child at level `i`.
-    pub merkle_path_bits: u32,
-}
-
-// =============================================================================
-// #177 — Exotic Asset Pricing Engine
-// =============================================================================
-
-/// Discriminant for exotic asset pricing strategies.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub enum AssetType {
-    /// Price sourced directly from the standard oracle aggregate.
-    Direct,
-    /// LP token price: 2*sqrt(reserve0*reserve1)/total_supply.
-    /// Fields: (reserve0_asset, reserve1_asset, total_supply_scaled).
-    LPToken(Address, Address, u128),
-    /// Weighted index/basket: sum(price_i * weight_i) / sum(weight_i).
-    /// Fields: (component_addresses, weights_u32).
-    Index(Vec<Address>, Vec<u32>),
-    /// Black-Scholes option (integer approximation).
-    /// Fields: (underlying_asset, strike_price_scaled, expiry_timestamp, is_call).
-    Option(Address, u128, u64, bool),
-}
-
-/// Pricing configuration for an exotic asset.
-///
-/// Stored under [`DataKey::ExoticAssetConfig`] keyed by asset address.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct AssetPricingConfig {
-    /// Asset address this config applies to.
-    pub asset: Address,
-    /// Pricing strategy and parameters.
-    pub asset_type: AssetType,
-    /// Implied volatility in basis points (e.g. 2000 = 20%), used for options.
-    pub volatility_bps: u32,
-}
-
-// =============================================================================
-// #176 — Priority Submission Fee Market
-// =============================================================================
-
-/// A single queued price submission with its attached priority fee.
-///
-/// Stored as elements of [`PendingFeeSubmissions`] under [`DataKey::FmPendingQueue`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct FeeMarketSubmission {
-    /// Oracle source that submitted this entry.
-    pub source: Address,
-    /// Asset being priced.
-    pub asset: Asset,
-    /// Price value (unsigned, scaled by 10^decimals).
-    pub price: u128,
-    /// Unix timestamp of the observation.
-    pub timestamp: u64,
-    /// Priority fee attached to this submission (higher = processed first).
-    pub priority_fee: u128,
-    /// Ledger at which this was enqueued.
-    pub submitted_ledger: u32,
-}
-
-/// The full priority queue of pending fee-market submissions.
-///
-/// Stored under [`DataKey::FmPendingQueue`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct PendingFeeSubmissions {
-    /// Submissions sorted by priority_fee DESC, timestamp ASC.
-    pub submissions: Vec<FeeMarketSubmission>,
-}
-
-// =============================================================================
-// #178 — N-of-M Multi-Sig Governance
-// =============================================================================
-
-/// A governance operation pending multi-sig approval and timelock.
-///
-/// Stored under [`DataKey::MsOp`] keyed by operation ID.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct MultiSigOperation {
-    /// Unique sequential ID.
+pub struct SourceProposal {
     pub id: u32,
-    /// Kind of administrative operation.
-    pub op_type: OperationType,
-    /// Governor who proposed this operation.
-    pub proposed_by: Address,
-    /// Ledger at which this was proposed.
-    pub proposed_ledger: u32,
-    /// Encoded operation payload.
-    pub data: Bytes,
-    /// Governors who have approved so far.
+    pub source: Address,
+    pub name: String,
     pub approvals: Vec<Address>,
-    /// Number of approvals needed to start the timelock.
-    pub required_approvals: u32,
-    /// Ledger at which the N-th approval was received (0 = timelock not started).
-    pub timelock_start_ledger: u32,
-    /// Next operation ID in the ordered execution queue (0 = tail).
-    pub next_op_id: u32,
+    pub executed: bool,
 }
 
 // =============================================================================
-// #175 — Groth16 ZK Proof Verification
+// #208 — Source Geolocation & Decentralization Metrics
 // =============================================================================
 
-/// A Groth16 proof over BN254 (alt_bn128).
-///
-/// - `a`: G1 point, 64 bytes (32-byte x || 32-byte y, big-endian).
-/// - `b`: G2 point, 128 bytes.
-/// - `c`: G1 point, 64 bytes.
-/// - `fs_check`: 32-byte Fiat-Shamir verification tag.
+/// Geolocation and provider tags for an oracle source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct Groth16Proof {
-    pub a: Bytes,
-    pub b: Bytes,
-    pub c: Bytes,
-    pub fs_check: BytesN<32>,
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
 }
 
-/// Groth16 verifying key for BN254.
-///
-/// - `ic_bytes`: Flat array of G1 points (64 bytes each): IC[0] || IC[1] || …
-/// - `ic_len`:   Number of IC points (= number of public inputs + 1).
-/// - `pairing_precomp`: 32-byte SHA-256 commitment to the fixed pairing inputs
-///   (alpha, beta, gamma, delta); used in the Fiat-Shamir check.
+/// Decentralization and concentration report for registered sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct Groth16VerifyingKey {
-    pub ic_bytes: Bytes,
-    pub ic_len: u32,
-    pub pairing_precomp: Bytes,
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
 }
 
-/// A price attestation recovered from a verified ZK proof's public signals.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct ZkPriceAttestation {
-    pub asset: Address,
-    pub price: i128,
-    pub timestamp: u64,
-    pub verified_at_ledger: u32,
-}
+
+
