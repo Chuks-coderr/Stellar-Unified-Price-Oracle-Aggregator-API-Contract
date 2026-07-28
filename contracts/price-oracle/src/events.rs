@@ -31,6 +31,61 @@ pub struct PriceSubmittedEvent {
     pub timestamp: u64,
 }
 
+/// Emitted when a new optimistic price proposal is created.
+///
+/// Topics: `asset`, `proposer`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalCreatedEvent {
+    /// Address of the asset for which the proposal was made.
+    #[topic]
+    pub asset: Address,
+    /// Address of the proposer.
+    #[topic]
+    pub proposer: Address,
+    /// Monotonic proposal id assigned by the contract.
+    pub proposal_id: u32,
+    /// Proposed price value.
+    pub price: i128,
+    /// Proposed timestamp.
+    pub timestamp: u64,
+    /// Bond amount posted for the proposal.
+    pub bond_amount: i128,
+    /// Ledger at which the proposal becomes final if not disputed.
+    pub expires_at_ledger: u32,
+}
+
+/// Emitted when an optimistic price proposal is disputed.
+///
+/// Topics: `proposal_id`, `disputer`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalDisputedEvent {
+    /// Proposal id being disputed.
+    #[topic]
+    pub proposal_id: u32,
+    /// Address of the disputer.
+    #[topic]
+    pub disputer: Address,
+    /// Bond amount posted by the disputer.
+    pub bond_amount: i128,
+}
+
+/// Emitted when an optimistic price proposal is resolved.
+///
+/// Topics: `proposal_id`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalResolvedEvent {
+    /// Proposal id being resolved.
+    #[topic]
+    pub proposal_id: u32,
+    /// Whether the proposal was accepted by the admin.
+    pub approved: bool,
+    /// Whether the proposal was finalized into an aggregate price.
+    pub finalized: bool,
+}
+
 /// Emitted when the aggregate price for an asset changes.
 ///
 /// Topics: `asset`

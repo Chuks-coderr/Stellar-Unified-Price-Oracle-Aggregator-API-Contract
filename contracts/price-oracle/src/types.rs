@@ -128,6 +128,16 @@ pub enum DataKey {
     PriceOverride(Address),
     /// Per-asset resolution override in seconds. When set, overrides the contract-wide resolution.
     AssetResolution(Address),
+    /// Number of optimistic price proposals created so far.
+    OptimisticProposalCount,
+    /// An optimistic price proposal keyed by proposal id.
+    OptimisticProposal(u32),
+    /// Configurable dispute window in ledgers for optimistic proposals.
+    CfgOptimisticDisputeWindow,
+    /// Minimum bond amount required to submit an optimistic proposal.
+    CfgOptimisticMinBond,
+    /// Bond balance tracked for an address after proposal/dispute settlement.
+    OptimisticBondBalance(Address),
     /// Cooldown (in ledgers) between trigger_aggregation calls per asset.
     AggregationCooldown,
     /// Ledger of the last trigger_aggregation call per asset.
@@ -497,6 +507,35 @@ pub enum TwapMethod {
     Arithmetic = 0,
     /// Geometric TWAP using a time-weighted geometric mean.
     Geometric = 1,
+}
+
+/// Lifecycle state for an optimistic proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OptimisticProposalStatus {
+    Pending = 0,
+    Finalized = 1,
+    Disputed = 2,
+    Resolved = 3,
+}
+
+/// An optimistic price proposal that can be disputed before finalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OptimisticProposal {
+    pub id: u32,
+    pub asset: Address,
+    pub proposer: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub bond_amount: i128,
+    pub dispute_window: u32,
+    pub expires_at_ledger: u32,
+    pub status: u32,
+    pub disputed: bool,
+    pub resolved: bool,
+    pub resolution: u32,
+    pub disputer: Option<Address>,
 }
 
 /// SEP-40 compatible price data returned by the standard oracle interface methods.

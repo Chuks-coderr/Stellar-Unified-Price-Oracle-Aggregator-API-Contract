@@ -22,6 +22,8 @@ const DEFAULT_MAX_ASSETS: u32 = 100;
 const DEFAULT_DECIMALS: u32 = 18;
 pub const DEFAULT_RESOLUTION: u32 = 0;
 pub const DEFAULT_TIMESTAMP_THRESHOLD: u64 = 300; // 5 minutes
+const DEFAULT_OPTIMISTIC_DISPUTE_WINDOW: u32 = 120;
+const DEFAULT_OPTIMISTIC_MIN_BOND: i128 = 100_000_000;
 const MAX_DESCRIPTION_LENGTH: u32 = 256;
 pub const DEFAULT_MAX_PRICE_DEVIATION: u32 = 500; // 5% in basis points
 pub const DEFAULT_HEARTBEAT_INTERVAL: u64 = 3600; // 1 hour
@@ -78,6 +80,13 @@ pub fn initialize(
     env.storage()
         .persistent()
         .set(&DataKey::CfgDescription, &description);
+    env.storage().persistent().set(
+        &DataKey::CfgOptimisticDisputeWindow,
+        &DEFAULT_OPTIMISTIC_DISPUTE_WINDOW,
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgOptimisticMinBond, &DEFAULT_OPTIMISTIC_MIN_BOND);
     env.storage().persistent().set(
         &DataKey::SrcRegistry,
         &OracleSources {
