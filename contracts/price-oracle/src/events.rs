@@ -237,6 +237,43 @@ pub struct PriceAggregatedEvent {
     pub timestamp: u64,
 }
 
+/// Emitted when an asset's circuit breaker trips and the update is rejected.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct CircuitBreakerTrippedEvent {
+    /// Address of the asset that triggered the breaker.
+    #[topic]
+    pub asset: Address,
+    /// Previous aggregate price before the rejected update.
+    pub previous_price: i128,
+    /// Candidate aggregate price that would have been published.
+    pub candidate_price: i128,
+    /// Change amount in basis points that exceeded the configured limit.
+    pub change_bps: u32,
+    /// Maximum allowed change in basis points for a single ledger.
+    pub max_change_bps: u32,
+    /// Ledger at which the breaker tripped.
+    pub ledger: u32,
+    /// Unix timestamp of the breaker trip.
+    pub timestamp: u64,
+}
+
+/// Emitted when the circuit breaker is manually reset by the admin.
+///
+/// Topics: `asset`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct CircuitBreakerResetEvent {
+    /// Address of the asset whose breaker was reset.
+    #[topic]
+    pub asset: Address,
+    /// Admin who reset the breaker.
+    #[topic]
+    pub admin: Address,
+}
+
 /// Emitted when the oldest history entry for an asset is pruned to enforce `max_history_length`.
 ///
 /// Topics: `asset`

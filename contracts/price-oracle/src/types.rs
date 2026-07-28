@@ -96,6 +96,16 @@ pub enum DataKey {
     AssetMetadata(Address),
     /// Optional minimum accepted price (`i128`) for a registered asset.
     AssetMinPrice(Address),
+    /// Per-asset price bounds applied to new submissions.
+    AssetPriceBounds(Address),
+    /// Whether an asset has been explicitly paused by the admin.
+    AssetPauseFlag(Address),
+    /// Whether the circuit breaker has tripped for an asset.
+    AssetCircuitBreakerTripped(Address),
+    /// Sequence counter for circuit-breaker event log entries.
+    AssetCircuitBreakerLogCount(Address),
+    /// Append-only circuit-breaker event log entry.
+    AssetCircuitBreakerLog(Address, u32),
     /// Configurable maximum number of assets that can be registered.
     MaxAssets,
 
@@ -325,6 +335,19 @@ pub struct PriceEntry {
     pub ledger_timestamp: u64,
 }
 
+/// Aggregated price bounds applied to an asset before a submission is accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriceBounds {
+    /// Minimum accepted price for the asset.
+    pub min_price: i128,
+    /// Maximum accepted price for the asset.
+    pub max_price: i128,
+    /// Maximum allowed percentage change (in basis points) between the previous aggregate
+    /// and the candidate aggregate in a single ledger.
+    pub max_change_bps_per_ledger: u32,
+}
+
 /// An aggregated price computed from multiple oracle sources for a specific asset.
 ///
 /// Stored under [`DataKey::Aggregate`] and updated on every [`PriceEntry`] submission
@@ -341,6 +364,25 @@ pub struct AggregatePrice {
     /// Decimal precision applied to `price`.
     pub decimals: u32,
     pub is_override: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CircuitBreakerEventEntry {
+    /// Address of the asset affected by the breaker trip.
+    pub asset: Address,
+    /// Previous aggregate price before the candidate update.
+    pub previous_price: i128,
+    /// Candidate aggregate price that would have been published.
+    pub candidate_price: i128,
+    /// Percentage change in basis points that triggered the breaker.
+    pub change_bps: u32,
+    /// Maximum allowed change in basis points per ledger.
+    pub max_change_bps: u32,
+    /// Ledger where the breaker tripped.
+    pub ledger: u32,
+    /// Unix timestamp of the breaker trip.
+    pub timestamp: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -50,6 +50,9 @@ mod rbac;
 mod emergency_pause;
 
 #[cfg(test)]
+mod circuit_breaker_tests;
+
+#[cfg(test)]
 mod cross_ref_tests;
 
 #[cfg(test)]
@@ -1036,6 +1039,42 @@ impl PriceOracleContract {
     /// `true` if registered; `false` otherwise.
     pub fn is_asset_registered(env: Env, asset: Address) -> bool {
         assets::is_asset_registered(&env, asset)
+    }
+
+    pub fn set_price_bounds(
+        env: Env,
+        asset: Address,
+        min_price: i128,
+        max_price: i128,
+        max_change_bps_per_ledger: u32,
+    ) {
+        reentrancy::enter(&env);
+        assets::set_price_bounds(&env, asset, min_price, max_price, max_change_bps_per_ledger);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_price_bounds(env: Env, asset: Address) -> PriceBounds {
+        assets::get_price_bounds(&env, asset)
+    }
+
+    pub fn pause_asset(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        assets::pause_asset(&env, asset);
+        reentrancy::exit(&env);
+    }
+
+    pub fn unpause_asset(env: Env, asset: Address) {
+        reentrancy::enter(&env);
+        assets::unpause_asset(&env, asset);
+        reentrancy::exit(&env);
+    }
+
+    pub fn is_asset_paused(env: Env, asset: Address) -> bool {
+        assets::is_asset_paused(&env, &asset)
+    }
+
+    pub fn is_circuit_breaker_tripped(env: Env, asset: Address) -> bool {
+        assets::is_circuit_breaker_tripped(&env, &asset)
     }
 
     // --- Prices ---

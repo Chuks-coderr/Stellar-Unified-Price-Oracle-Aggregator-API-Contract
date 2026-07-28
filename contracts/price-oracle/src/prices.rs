@@ -6,6 +6,9 @@ use crate::admin::{
     get_max_history_per_asset, get_min_sources_required, get_min_submission_interval,
     get_timestamp_threshold,
 };
+use crate::assets::{
+    get_price_bounds, is_asset_paused, is_circuit_breaker_tripped, trip_circuit_breaker,
+};
 use crate::events::{
     AggregationTriggeredEvent, EventLimitWarningEvent, HistoryPerAssetPrunedEvent,
     HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent, PriceOverrideRemovedEvent,
@@ -22,6 +25,146 @@ use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
     PriceHistoryEntry, PriceOverrideEntry,
 };
+
+fn build_candidate_aggregate(
+    env: &Env,
+    asset: &Address,
+    source: &Address,
+    price: i128,
+    timestamp: u64,
+    decimals: u32,
+) -> Option<AggregatePrice> {
+    let min_required = get_min_sources_required(env);
+    let oracle_sources: OracleSources = read_oracle_sources(env);
+    let total_sources = oracle_sources.sources.len();
+
+    let max_agg = get_max_aggregation_sources(env);
+    let selected_sources: Vec<Address> = if max_agg > 0 && total_sources > max_agg {
+        let hash_bytes = env.ledger().sequence().to_le_bytes();
+        let seed = u32::from_le_bytes(hash_bytes);
+        let mut selected: Vec<Address> = Vec::new(env);
+        let mut kept: u32 = 0;
+        for i in 0..total_sources {
+            let remaining = total_sources - i;
+            let needed = max_agg - kept;
+            let h = seed
+                .wrapping_mul(1664525u32)
+                .wrapping_add(i)
+                .wrapping_add(1013904223u32);
+            if needed >= remaining || (h % remaining) < needed {
+                selected.push_back(oracle_sources.sources.get_unchecked(i));
+                kept += 1;
+                if kept >= max_agg {
+                    break;
+                }
+            }
+        }
+        selected
+    } else {
+        oracle_sources.sources.clone()
+    };
+
+    let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut latest_timestamp: u64 = 0;
+    let mut contributing_sources: u32 = 0;
+
+    let selected_count = selected_sources.len();
+    for i in 0..selected_count {
+        let src = selected_sources.get_unchecked(i);
+        if src == *source {
+            if timestamp > latest_timestamp {
+                latest_timestamp = timestamp;
+            }
+            valid_prices.push_back(price);
+            contributing_sources += 1;
+            continue;
+        }
+
+        let sub_key = DataKey::Submission(asset.clone(), src.clone());
+        if let Some(entry_data) = env.storage().persistent().get::<_, PriceEntry>(&sub_key) {
+            if entry_data.timestamp > latest_timestamp {
+                latest_timestamp = entry_data.timestamp;
+            }
+            valid_prices.push_back(entry_data.price);
+            contributing_sources += 1;
+        }
+    }
+
+    if contributing_sources >= min_required && !valid_prices.is_empty() {
+        let method = get_aggregation_method(env);
+        let aggregated_price = match method {
+            0 => compute_median(&valid_prices),
+            1 => compute_mean(&valid_prices),
+            2 => compute_trimmed_mean(&valid_prices, 10),
+            _ => compute_median(&valid_prices),
+        };
+        Some(AggregatePrice {
+            price: aggregated_price,
+            timestamp: latest_timestamp,
+            num_sources: contributing_sources,
+            decimals,
+            is_override: false,
+        })
+    } else {
+        None
+    }
+}
+
+fn validate_price_submission(
+    env: &Env,
+    asset: &Address,
+    source: &Address,
+    price: i128,
+    timestamp: u64,
+    decimals: u32,
+) {
+    let bounds = get_price_bounds(env, asset.clone());
+    if price < bounds.min_price || price > bounds.max_price {
+        panic_with_error!(env, ErrorCode::PriceOutOfBounds);
+    }
+
+    if is_asset_paused(env, asset) || is_circuit_breaker_tripped(env, asset) {
+        panic_with_error!(env, ErrorCode::AssetPaused);
+    }
+
+    if bounds.max_change_bps_per_ledger > 0 {
+        let prev_aggregate: AggregatePrice = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Aggregate(asset.clone()))
+            .unwrap_or(AggregatePrice {
+                price: 0,
+                timestamp: 0,
+                num_sources: 0,
+                decimals,
+                is_override: false,
+            });
+
+        if prev_aggregate.price > 0 {
+            if let Some(candidate) =
+                build_candidate_aggregate(env, asset, source, price, timestamp, decimals)
+            {
+                let diff = if candidate.price > prev_aggregate.price {
+                    candidate.price - prev_aggregate.price
+                } else {
+                    prev_aggregate.price - candidate.price
+                };
+                let change_bps = diff.saturating_mul(10_000i128) / prev_aggregate.price;
+                if change_bps > bounds.max_change_bps_per_ledger as i128 {
+                    trip_circuit_breaker(
+                        env,
+                        asset.clone(),
+                        prev_aggregate.price,
+                        candidate.price,
+                        change_bps,
+                        bounds.max_change_bps_per_ledger,
+                    );
+                    panic_with_error!(env, ErrorCode::CircuitBreakerTripped);
+                }
+            }
+        }
+    }
+}
 
 /// Submits prices for multiple assets in a single atomic transaction.
 ///
@@ -62,10 +205,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
             panic_with_error!(env, ErrorCode::InvalidPrice);
         }
 
-        let min_price = crate::assets::get_min_price(env, asset.clone());
-        if price < min_price {
-            panic_with_error!(env, ErrorCode::PriceBelowMinimum);
-        }
+        validate_price_submission(env, asset, &source, price, timestamp, decimals);
 
         if timestamp > ledger_time.saturating_add(threshold) {
             crate::sources::record_invalid_submission(env, source.clone());
@@ -406,12 +546,8 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         panic_with_error!(env, ErrorCode::InvalidPrice);
     }
 
-    let min_price = crate::assets::get_min_price(env, asset.clone());
-    if price < min_price {
-        panic_with_error!(env, ErrorCode::PriceBelowMinimum);
-    }
-
     let ledger_time = env.ledger().timestamp();
+    validate_price_submission(env, &asset, &source, price, timestamp, get_decimals(env));
     let threshold = get_timestamp_threshold(env);
     if timestamp > ledger_time.saturating_add(threshold) {
         crate::sources::record_invalid_submission(env, source.clone());
@@ -453,6 +589,51 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     crate::correlation::validate_correlation(env, &asset, price, &source);
 
     aggregate_asset(env, &asset, current_ledger, decimals);
+}
+
+fn compute_twap_fallback(env: &Env, asset: &Address) -> Option<AggregatePrice> {
+    let current_ledger = env.ledger().sequence();
+    let max_history = get_max_history_length(env).max(5);
+    let decimals = get_decimals(env);
+    let mut total_weighted_price: i128 = 0;
+    let mut total_weight: u64 = 0;
+    let mut count: u32 = 0;
+
+    let start_ledger = current_ledger.saturating_sub(max_history);
+    let mut ledger = current_ledger;
+    loop {
+        let hist_key = DataKey::PriceHistory(asset.clone(), ledger);
+        if let Some(entry) = env
+            .storage()
+            .temporary()
+            .get::<_, PriceHistoryEntry>(&hist_key)
+        {
+            let weight = (ledger - start_ledger).max(1) as u64;
+            total_weighted_price =
+                total_weighted_price.saturating_add(entry.price.saturating_mul(weight as i128));
+            total_weight = total_weight.saturating_add(weight);
+            count += 1;
+        }
+        if ledger == start_ledger {
+            break;
+        }
+        if ledger == 0 {
+            break;
+        }
+        ledger -= 1;
+    }
+
+    if count == 0 || total_weight == 0 {
+        return None;
+    }
+
+    Some(AggregatePrice {
+        price: total_weighted_price / total_weight as i128,
+        timestamp: env.ledger().timestamp(),
+        num_sources: 0,
+        decimals,
+        is_override: false,
+    })
 }
 
 pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
@@ -502,6 +683,13 @@ pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePri
             .publish(env);
             env.storage().persistent().remove(&override_key);
         }
+    }
+
+    if is_circuit_breaker_tripped(env, &asset) {
+        return compute_twap_fallback(env, &asset).or_else(|| {
+            let key = DataKey::Aggregate(asset.clone());
+            env.storage().persistent().get(&key)
+        });
     }
 
     let key = DataKey::Aggregate(asset.clone());
@@ -1308,7 +1496,13 @@ fn _compute_commit_hash(
 ///
 /// Skips `source.require_auth()` and pause check — callers are responsible
 /// for performing those checks before invoking this function.
-pub fn submit_price_internal(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+pub fn submit_price_internal(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    price: i128,
+    timestamp: u64,
+) {
     check_source(env, &source);
     check_registered_asset(env, &asset);
 
