@@ -8,9 +8,10 @@
 
 mod admin;
 mod alerts;
-mod analytics;
+mod amm;
 mod assets;
 mod correlation;
+mod cross_chain_relay;
 mod cross_reference;
 mod errors;
 mod events;
@@ -28,11 +29,13 @@ mod relayer;
 mod reputation;
 mod rotation;
 mod sources;
+mod state_channel;
 mod storage;
 mod subscription;
 mod timelock;
 mod ttl_batching;
 mod types;
+mod vdf_sampler;
 mod whitelisting;
 mod zk_verify;
 
@@ -53,10 +56,16 @@ pub use types::{
     ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal,
+    SourceGeoMetadata, DecentralizationReport,
 };
 
+
+
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, Address, Env, Map, String, Symbol, Vec,
+    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol,
+    Vec,
 };
 
 use crate::storage::read_registered_assets;
@@ -828,6 +837,109 @@ impl PriceOracleContract {
     pub fn is_source_pending_removal(env: Env, source: Address) -> bool {
         sources::is_source_pending_removal(&env, source)
     }
+
+    // --- #210: Progressive Disqualification ---
+
+    pub fn set_demerit_config(env: Env, config: DemeritConfig) {
+        reentrancy::enter(&env);
+        sources::set_demerit_config(&env, config);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_demerit_config(env: Env) -> DemeritConfig {
+        sources::get_demerit_config(&env)
+    }
+
+    pub fn get_source_demerits(env: Env, source: Address) -> SourceDemeritState {
+        sources::get_source_demerits(&env, source)
+    }
+
+    pub fn reset_source_demerits(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::reset_source_demerits(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    // --- #207: Multi-sig Source Governance ---
+
+    pub fn set_source_governance(env: Env, approvers: Vec<Address>, threshold: u32) {
+        reentrancy::enter(&env);
+        sources::set_source_governance(&env, approvers, threshold);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_governance(env: Env) -> Option<SourceGovernance> {
+        sources::get_source_governance(&env)
+    }
+
+    pub fn propose_source(env: Env, proposer: Address, source: Address, name: String) -> u32 {
+        reentrancy::enter(&env);
+        let id = sources::propose_source(&env, proposer, source, name);
+        reentrancy::exit(&env);
+        id
+    }
+
+    pub fn approve_source(env: Env, approver: Address, proposal_id: u32) {
+        reentrancy::enter(&env);
+        sources::approve_source(&env, approver, proposal_id);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_proposal(env: Env, proposal_id: u32) -> SourceProposal {
+        sources::get_source_proposal(&env, proposal_id)
+    }
+
+    // --- #208: Source Geolocation & Decentralization Metrics ---
+
+    pub fn set_source_geo(env: Env, source: Address, metadata: SourceGeoMetadata) {
+        reentrancy::enter(&env);
+        sources::set_source_geo(&env, source, metadata);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_geo(env: Env, source: Address) -> Option<SourceGeoMetadata> {
+        sources::get_source_geo(&env, source)
+    }
+
+    pub fn get_decentralization_report(env: Env) -> DecentralizationReport {
+        sources::get_decentralization_report(&env)
+    }
+
+    // --- #209: Source Heartbeat Liveness Bond ---
+
+    pub fn set_source_bond(env: Env, amount: i128) {
+        reentrancy::enter(&env);
+        sources::set_source_bond(&env, amount);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_bond(env: Env) -> i128 {
+        sources::get_source_bond(&env)
+    }
+
+    pub fn deposit_source_bond(env: Env, source: Address) {
+        reentrancy::enter(&env);
+        sources::deposit_source_bond(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_deposited_bond(env: Env, source: Address) -> i128 {
+        sources::get_source_deposited_bond(&env, source)
+    }
+
+    pub fn set_stake_token_contract(env: Env, token: Address) {
+        reentrancy::enter(&env);
+        crate::reputation::set_stake_token_contract(&env, token);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
+        crate::reputation::get_stake_token_contract(&env)
+    }
+
+
+
+
 
     // --- Assets ---
 
@@ -2306,204 +2418,298 @@ impl PriceOracleContract {
         reentrancy::exit(&env);
     }
 
-    // --- #205: Source Staking & Slashing ---
+    // =========================================================================
+    // #179 — State Channel for High-Frequency Price Updates
+    // =========================================================================
 
-    /// Stakes `amount` of oracle tokens from `source` into contract custody.
+    /// Opens a state channel for `source` with a locked `deposit`.
     ///
-    /// The source must authorize this call.
+    /// The `source` must authorize this call. The deposit is transferred from
+    /// `source` to the contract using the SAC token at `token_contract`.
     ///
-    /// # Arguments
-    /// * `env` - The Soroban execution environment.
-    /// * `source` - Source address staking the tokens (must authorize).
-    /// * `amount` - Amount in stroops to stake (must be > 0).
-    /// * `token_contract` - Address of the XLM/oracle token contract.
-    pub fn stake(env: Env, source: Address, amount: i128, token_contract: Address) {
+    /// # Errors
+    /// * [`ErrorCode::ChannelAlreadyOpen`] — channel already exists and is open.
+    /// * [`ErrorCode::InvalidPrice`]       — deposit is ≤ 0.
+    pub fn sc_open_channel(env: Env, source: Address, deposit: i128, token_contract: Address) {
         reentrancy::enter(&env);
-        reputation::stake_source(&env, source, amount, token_contract);
+        state_channel::open_channel(&env, source, deposit, token_contract);
         reentrancy::exit(&env);
     }
 
-    /// Returns the current locked stake for a source (in stroops). Returns 0 if no stake.
-    pub fn get_stake(env: Env, source: Address) -> i128 {
-        reputation::get_stake(&env, source)
-    }
-
-    /// Returns the staked tokens to a source when deregistered (admin-only).
+    /// Submits a batch of signed price updates to an open state channel.
     ///
-    /// Called by remove_source in sources.rs. Transfers any remaining stake back.
-    pub fn unstake(env: Env, source: Address) {
-        reentrancy::enter(&env);
-        let admin = storage::get_admin(&env);
-        admin.require_auth();
-        reputation::unstake_source(&env, source);
-        reentrancy::exit(&env);
-    }
-
-    /// Slashes a configurable percentage of `source`'s locked stake (admin-only).
+    /// All items must have strictly increasing nonces. The highest-nonce item
+    /// becomes the channel's new state.
     ///
-    /// Slashed funds are added to the contract's internal treasury balance.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban execution environment.
-    /// * `source` - Source to slash.
-    /// * `force` - If `true`, skip the reputation threshold check (admin override).
-    pub fn slash_source(env: Env, source: Address, force: bool) {
-        reentrancy::enter(&env);
-        reputation::slash_source(&env, source, force);
-        reentrancy::exit(&env);
-    }
-
-    /// Sweeps all slashed treasury funds to `recipient` (admin-only).
-    pub fn sweep_treasury(env: Env, recipient: Address) {
-        reentrancy::enter(&env);
-        reputation::sweep_treasury(&env, recipient);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns current treasury balance (sum of all slashed amounts).
-    pub fn get_treasury_balance(env: Env) -> i128 {
-        reputation::get_treasury_balance(&env)
-    }
-
-    /// Sets the address of the stake/fee token contract (admin-only).
-    pub fn set_stake_token_contract(env: Env, token: Address) {
-        reentrancy::enter(&env);
-        reputation::set_stake_token_contract(&env, token);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the configured stake token contract address, if set.
-    pub fn get_stake_token_contract(env: Env) -> Option<Address> {
-        reputation::get_stake_token_contract(&env)
-    }
-
-    /// Sets the reputation decay factor (0–100, admin-only).
-    pub fn set_reputation_decay_factor(env: Env, factor: u32) {
-        reentrancy::enter(&env);
-        reputation::set_decay_factor(&env, factor);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the current reputation decay factor.
-    pub fn get_reputation_decay_factor(env: Env) -> u32 {
-        reputation::get_decay_factor(&env)
-    }
-
-    /// Sets the slash percentage (0–100, admin-only).
-    pub fn set_slash_percent(env: Env, percent: u32) {
-        reentrancy::enter(&env);
-        reputation::set_slash_percent(&env, percent);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the current slash percentage.
-    pub fn get_slash_percent(env: Env) -> u32 {
-        reputation::get_slash_percent(&env)
-    }
-
-    /// Sets the reputation threshold below which a source becomes slash-eligible (admin-only).
-    pub fn set_slash_reputation_threshold(env: Env, threshold: u32) {
-        reentrancy::enter(&env);
-        reputation::set_slash_threshold(&env, threshold);
-        reentrancy::exit(&env);
-    }
-
-    /// Returns the current slash reputation threshold.
-    pub fn get_slash_reputation_threshold(env: Env) -> u32 {
-        reputation::get_slash_threshold(&env)
-    }
-
-    // --- #204: Source Performance Analytics ---
-
-    /// Returns analytics for a source over the last `num_rounds` submissions.
-    ///
-    /// Contains accuracy, timeliness, uptime, reputation, and trajectory.
-    pub fn get_source_analytics(env: Env, source: Address, num_rounds: u32) -> types::SourceAnalytics {
-        analytics::get_source_analytics(&env, source, num_rounds)
-    }
-
-    // --- #203: Storage Lease Extension Batching ---
-
-    /// Batch-extends TTL for all storage related to an asset.
-    ///
-    /// Reduces TTL management transaction volume for operators with many assets.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban execution environment.
-    /// * `asset` - Asset address to extend TTL for.
-    /// * `num_entries` - Maximum number of storage entries to extend per call.
-    ///
-    /// # Returns
-    /// Number of entries actually extended.
-    pub fn extend_asset_ttl(env: Env, asset: Address, num_entries: u32) -> u32 {
-        reentrancy::enter(&env);
-        let result = ttl_batching::extend_asset_ttl(&env, asset, num_entries);
-        reentrancy::exit(&env);
-        result
-    }
-
-    // --- #206: Source Rotation Schedule ---
-
-    /// Sets the rotation schedule for an asset's oracle sources (admin-only).
-    ///
-    /// Designates which sources should be active and when rotation should occur.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban execution environment.
-    /// * `asset` - Asset address to configure rotation for.
-    /// * `sources` - Initial set of active sources for this asset.
-    /// * `rotation_interval` - Ledgers between rotations (must be > 0).
-    /// * `overlap_period` - Ledgers where old and new sets coexist.
-    pub fn set_source_rotation_schedule(
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`]  — no open channel for `source`.
+    /// * [`ErrorCode::NotAuthorized`]    — Ed25519 signature invalid.
+    /// * [`ErrorCode::InvalidTimestamp`] — nonces are not strictly increasing.
+    pub fn sc_submit_batch(
         env: Env,
-        asset: Address,
-        sources: Vec<Address>,
-        rotation_interval: u32,
-        overlap_period: u32,
+        source: Address,
+        batch: Vec<BatchItem>,
+        signature: BytesN<64>,
+        source_pubkey: BytesN<32>,
     ) {
         reentrancy::enter(&env);
-        rotation::set_source_schedule(&env, asset, sources, rotation_interval, overlap_period);
+        state_channel::submit_batch(&env, source, batch, signature, source_pubkey);
         reentrancy::exit(&env);
     }
 
-    /// Performs immediate rotation for an asset if scheduled.
+    /// Closes an open state channel and refunds the remaining deposit to `source`.
     ///
-    /// Checks if rotation should occur based on ledger time. If the
-    /// next_rotation_ledger has been reached, swaps active and standby sets.
+    /// The `source` must authorize this call.
     ///
-    /// # Arguments
-    /// * `env` - The Soroban execution environment.
-    /// * `asset` - Asset to rotate sources for.
-    ///
-    /// # Returns
-    /// `true` if rotation occurred, `false` if no rotation was needed.
-    pub fn attempt_source_rotation(env: Env, asset: Address) -> bool {
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`] — no open channel for `source`.
+    pub fn sc_close_channel(env: Env, source: Address) {
         reentrancy::enter(&env);
-        let result = rotation::attempt_rotation(&env, &asset);
+        state_channel::close_channel(&env, source);
+        reentrancy::exit(&env);
+    }
+
+    /// Disputes a state channel when the source has gone offline.
+    ///
+    /// May be called by anyone after `dispute_timeout` has elapsed. If the
+    /// presented batch has a higher nonce and a valid signature, the channel
+    /// state is updated.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::ChannelNotFound`]  — no open channel for `source`.
+    /// * [`ErrorCode::TimelockNotReady`] — dispute_timeout not yet elapsed.
+    /// * [`ErrorCode::NotAuthorized`]    — Ed25519 signature invalid.
+    /// * [`ErrorCode::InvalidTimestamp`] — presented nonces do not advance state.
+    pub fn sc_dispute_channel(
+        env: Env,
+        source: Address,
+        last_known_batch: Vec<BatchItem>,
+        signature: BytesN<64>,
+        source_pubkey: BytesN<32>,
+    ) {
+        reentrancy::enter(&env);
+        state_channel::dispute_channel(&env, source, last_known_batch, signature, source_pubkey);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the current state of a channel, or `None` if not found.
+    pub fn sc_get_channel(env: Env, source: Address) -> Option<StateChannel> {
+        state_channel::get_channel(&env, source)
+    }
+
+    // =========================================================================
+    // #180 — AMM Data Feeds
+    // =========================================================================
+
+    /// Initialises a constant-product AMM pool for `asset`. Admin-only.
+    ///
+    /// Seeds the pool with `initial_x` and `initial_y` reserves.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::PoolAlreadyExists`]    — pool already exists.
+    /// * [`ErrorCode::InvalidConfiguration`] — either initial reserve is ≤ 0.
+    pub fn amm_init(
+        env: Env,
+        asset: Symbol,
+        asset_x: Address,
+        asset_y: Address,
+        initial_x: i128,
+        initial_y: i128,
+    ) {
+        reentrancy::enter(&env);
+        amm::init_amm(&env, asset, asset_x, asset_y, initial_x, initial_y);
+        reentrancy::exit(&env);
+    }
+
+    /// Adds liquidity to an existing AMM pool.
+    ///
+    /// Transfers `amount_x` and `amount_y` from `caller` to the pool and
+    /// recomputes `k`.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::PoolNotFound`] — pool does not exist.
+    /// * [`ErrorCode::InvalidPrice`] — either amount is ≤ 0.
+    pub fn amm_add_liquidity(
+        env: Env,
+        caller: Address,
+        asset: Symbol,
+        amount_x: i128,
+        amount_y: i128,
+    ) {
+        reentrancy::enter(&env);
+        amm::add_liquidity(&env, caller, asset, amount_x, amount_y);
+        reentrancy::exit(&env);
+    }
+
+    /// Executes a constant-product swap in the pool for `asset`.
+    ///
+    /// Returns the actual output amount received after the 0.3 % fee.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::PoolNotFound`]         — pool not found or disabled.
+    /// * [`ErrorCode::InvalidPrice`]         — `amount_in` ≤ 0.
+    /// * [`ErrorCode::SlippageExceeded`]     — output < `min_return`.
+    /// * [`ErrorCode::AmmPriceManipulation`] — post-swap price deviation too high.
+    pub fn amm_swap(
+        env: Env,
+        caller: Address,
+        asset: Symbol,
+        from_asset: Address,
+        to_asset: Address,
+        amount_in: i128,
+        min_return: i128,
+    ) -> i128 {
+        reentrancy::enter(&env);
+        let result = amm::swap(&env, caller, asset, from_asset, to_asset, amount_in, min_return);
         reentrancy::exit(&env);
         result
     }
 
-    /// Returns the currently active source set for an asset.
-    pub fn get_active_sources(env: Env, asset: Address) -> Vec<Address> {
-        rotation::get_active_sources(&env, &asset)
-    }
-
-    /// Returns the standby source set for an asset.
-    pub fn get_standby_sources(env: Env, asset: Address) -> Vec<Address> {
-        rotation::get_standby_sources(&env, &asset)
-    }
-
-    /// Returns the rotation schedule for an asset.
-    pub fn get_rotation_schedule(env: Env, asset: Address) -> Option<types::SourceRotationSchedule> {
-        rotation::get_rotation_schedule(&env, &asset)
-    }
-
-    /// Disables rotation for an asset (admin-only).
-    pub fn disable_rotation(env: Env, asset: Address) {
+    /// Enables or disables an AMM pool. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::PoolNotFound`]  — pool does not exist.
+    pub fn amm_set_status(env: Env, asset: Symbol, enabled: bool) {
         reentrancy::enter(&env);
-        rotation::disable_rotation(&env, &asset);
+        amm::set_amm_status(&env, asset, enabled);
         reentrancy::exit(&env);
+    }
+
+    /// Returns the current pool state, or `None` if not found.
+    pub fn amm_get_pool(env: Env, asset: Symbol) -> Option<AmmPool> {
+        amm::get_amm_pool(&env, asset)
+    }
+
+    /// Sets the maximum allowed AMM-to-oracle price deviation (basis points). Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `bps > 100_000`.
+    pub fn amm_set_max_deviation_bps(env: Env, bps: u32) {
+        amm::set_amm_max_deviation_bps(&env, bps);
+    }
+
+    /// Returns the current AMM max-deviation setting (basis points). Default: 500.
+    pub fn amm_get_max_deviation_bps(env: Env) -> u32 {
+        amm::get_amm_max_deviation_bps(&env)
+    }
+
+    // =========================================================================
+    // #181 — VDF Randomness for Source Sampling
+    // =========================================================================
+
+    /// Sets the number of sources to select per VDF sampling round. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `n` is 0.
+    pub fn vdf_set_sampling_size(env: Env, n: u32) {
+        vdf_sampler::set_sampling_size(&env, n);
+    }
+
+    /// Returns the configured VDF sampling size. Default: 3.
+    pub fn vdf_get_sampling_size(env: Env) -> u32 {
+        vdf_sampler::get_sampling_size(&env)
+    }
+
+    /// Returns the current VDF seed derived from ledger sequence and timestamp.
+    ///
+    /// Off-chain VDF provers call this to obtain the input seed.
+    pub fn vdf_get_current_seed(env: Env) -> BytesN<32> {
+        vdf_sampler::get_current_seed(&env)
+    }
+
+    /// Verifies a VDF proof and returns `true` if it passes the lightweight check.
+    ///
+    /// This exposes the verifier for off-chain testing purposes. The full
+    /// `sample_sources` call internally invokes this check.
+    pub fn vdf_verify_proof(
+        env: Env,
+        seed: BytesN<32>,
+        proof: Bytes,
+        iterations: u64,
+        output: BytesN<32>,
+    ) -> bool {
+        vdf_sampler::verify_vdf_proof(&env, seed, proof, iterations, output)
+    }
+
+    /// Samples `n` source addresses using VDF randomness.
+    ///
+    /// Verifies the proof against the current ledger seed. Falls back to all
+    /// registered sources if the proof is empty or invalid.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Address>` of selected source addresses.
+    pub fn vdf_sample_sources(
+        env: Env,
+        proof: Bytes,
+        output: BytesN<32>,
+        iterations: u64,
+    ) -> Vec<Address> {
+        vdf_sampler::sample_sources(&env, proof, output, iterations)
+    }
+
+    // =========================================================================
+    // #182 — Cross-Chain Price Relay
+    // =========================================================================
+
+    /// Emits a structured cross-chain price update event for `asset_symbol`.
+    ///
+    /// Should be called after a successful price aggregation. The event is
+    /// indexed under `(symbol!("price_upd"), asset_symbol)` for off-chain
+    /// relayers to pick up.
+    pub fn relay_emit_price_update(env: Env, asset_symbol: Symbol, payload: PriceEventPayload) {
+        cross_chain_relay::emit_price_update(&env, asset_symbol, payload);
+    }
+
+    /// Configures cross-chain relay settings (quorum threshold, Merkle path bits).
+    /// Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    pub fn relay_set_config(env: Env, config: CrossChainRelayConfig) {
+        cross_chain_relay::set_relay_config(&env, config);
+    }
+
+    /// Returns the current cross-chain relay configuration, or `None` if not set.
+    pub fn relay_get_config(env: Env) -> Option<CrossChainRelayConfig> {
+        cross_chain_relay::get_relay_config(&env)
+    }
+
+    /// Verifies SCP validator quorum signatures over a Stellar ledger header hash.
+    ///
+    /// Returns `true` when the required fraction of validators (per config) have
+    /// produced valid Ed25519 signatures.
+    pub fn relay_verify_validator_set(
+        env: Env,
+        header_hash: BytesN<32>,
+        validators: Vec<BytesN<32>>,
+        signatures: Vec<BytesN<64>>,
+    ) -> bool {
+        cross_chain_relay::verify_validator_set(&env, header_hash, validators, signatures)
+    }
+
+    /// Verifies a SHA-256 Merkle proof authenticating a price event in a Stellar ledger.
+    ///
+    /// Returns `true` if the proof resolves to `header_hash`.
+    pub fn relay_verify_event_proof(
+        env: Env,
+        header_hash: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+        event_data: PriceEventPayload,
+    ) -> bool {
+        cross_chain_relay::verify_event_proof(&env, header_hash, proof, event_data)
+    }
+
+    /// Checks internal consistency of a `StellarHeader` by verifying its hash.
+    ///
+    /// Returns `true` if `sha256(sequence || tx_set_hash || bucket_list_hash)`
+    /// matches `header.expected_hash`.
+    pub fn relay_verify_header(env: Env, header: StellarHeader) -> bool {
+        cross_chain_relay::verify_header_consistency(&env, &header)
     }
 }
 
@@ -2527,3 +2733,6 @@ mod commit_reveal_tests;
 
 #[cfg(test)]
 mod finality_tests;
+
+#[cfg(test)]
+mod correlation_feature_tests;

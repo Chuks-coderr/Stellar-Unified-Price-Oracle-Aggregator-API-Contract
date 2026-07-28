@@ -2185,3 +2185,257 @@ fn test_get_migration_state_none_before_migration() {
     let (client, _) = setup_contract(&e);
     assert!(client.get_migration_state().is_none());
 }
+
+#[test]
+fn test_demerits_lifecycle() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Source1");
+    let asset = register_test_asset(&e, &client);
+
+    // Initial state check
+    let initial_state = client.get_source_demerits(&source);
+    assert_eq!(initial_state.demerits, 0);
+    assert_eq!(initial_state.status, crate::DisqualificationStatus::Active);
+
+    // Verify default config
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 2);
+    assert_eq!(config.probation_threshold, 5);
+    assert_eq!(config.disqualified_threshold, 10);
+    assert_eq!(config.cooldown_ledgers, 100);
+
+    // Set custom config
+    let custom_config = crate::DemeritConfig {
+        warning_threshold: 1,
+        probation_threshold: 2,
+        disqualified_threshold: 3,
+        cooldown_ledgers: 10,
+    };
+    client.set_demerit_config(&custom_config);
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 1);
+    assert_eq!(config.disqualified_threshold, 3);
+
+    // Test invalid config (warning_threshold > probation_threshold)
+    let invalid_config = crate::DemeritConfig {
+        warning_threshold: 3,
+        probation_threshold: 2,
+        disqualified_threshold: 4,
+        cooldown_ledgers: 10,
+    };
+    let res = client.try_set_demerit_config(&invalid_config);
+    assert!(res.is_err());
+
+    // Submit invalid price (<= 0) to trigger demerit
+    ledger_default(&e, 1, 100);
+    let res = client.try_submit_price(&source, &asset, &-1i128, &100u64);
+    assert!(res.is_err());
+
+    // State should now be Warning (demerits = 1 >= warning_threshold=1)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+    assert_eq!(state.status, crate::DisqualificationStatus::Warning);
+
+    // Trigger another invalid price (timestamp too far in the future)
+    let res = client.try_submit_price(&source, &asset, &100i128, &20000u64);
+    assert!(res.is_err());
+
+    // State should now be Probation (demerits = 2 >= probation_threshold=2)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 2);
+    assert_eq!(state.status, crate::DisqualificationStatus::Probation);
+
+    // Trigger disqualification
+    let res = client.try_submit_price(&source, &asset, &0i128, &100u64);
+    assert!(res.is_err());
+
+    // State should now be Disqualified
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 3);
+    assert_eq!(state.status, crate::DisqualificationStatus::Disqualified);
+    assert_eq!(state.status_updated_ledger, 1);
+
+    // Submit valid price now should fail because source is suspended/disqualified
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Let 10 ledgers pass (cooldown period of 10)
+    ledger_default(&e, 11, 200);
+
+    // Query demerits again, it should have auto-reset because cooldown elapsed
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
+
+    // Now valid submission should succeed
+    client.submit_price(&source, &asset, &100i128, &200u64);
+
+    // Induce demerit again and test admin reset
+    let res = client.try_submit_price(&source, &asset, &0i128, &200u64);
+    assert!(res.is_err());
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+
+    client.reset_source_demerits(&source);
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
+}
+
+#[test]
+fn test_multi_sig_source_governance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let app1 = Address::generate(&e);
+    let app2 = Address::generate(&e);
+    let app3 = Address::generate(&e);
+    let mut approvers = Vec::new(&e);
+    approvers.push_back(app1.clone());
+    approvers.push_back(app2.clone());
+    approvers.push_back(app3.clone());
+
+    // Initially governance is None
+    assert!(client.get_source_governance().is_none());
+
+    // Set governance configuration: 2-of-3 multi-sig
+    client.set_source_governance(&approvers, &2u32);
+    let gov = client.get_source_governance().unwrap();
+    assert_eq!(gov.threshold, 2u32);
+    assert_eq!(gov.approvers.len(), 3u32);
+
+    // Direct add_source should fail now because multi-sig governance is active
+    let source = Address::generate(&e);
+    let name = String::from_str(&e, "TestGovSource");
+    let res = client.try_add_source(&source, &name);
+    assert!(res.is_err());
+
+    // Propose a source from non-approver should fail
+    let non_approver = Address::generate(&e);
+    let res = client.try_propose_source(&non_approver, &source, &name);
+    assert!(res.is_err());
+
+    // Propose from app1 (approver)
+    let proposal_id = client.propose_source(&app1, &source, &name);
+    assert_eq!(proposal_id, 1u32);
+
+    // Check proposal state
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.id, 1u32);
+    assert_eq!(prop.source, source);
+    assert_eq!(prop.approvals.len(), 0u32);
+    assert_eq!(prop.executed, false);
+
+    // Approve from app1
+    client.approve_source(&app1, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.approvals.len(), 1u32);
+    assert_eq!(prop.executed, false);
+
+    // Duplicate approval should fail
+    let res = client.try_approve_source(&app1, &proposal_id);
+    assert!(res.is_err());
+
+    // Approve from app2 (this should meet the threshold 2 and execute)
+    client.approve_source(&app2, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.executed, true);
+    assert_eq!(prop.approvals.len(), 2u32);
+
+    // Source should now be successfully registered
+    assert!(client.is_source(&source));
+
+    // Try to approve already executed proposal should fail
+    let res = client.try_approve_source(&app3, &proposal_id);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_source_geolocation_metrics() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let src1 = register_test_source(&e, &client, "Source1");
+    let src2 = register_test_source(&e, &client, "Source2");
+
+    let geo1 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "US"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "US"),
+    };
+    let geo2 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "EU"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "DE"),
+    };
+
+    // Initially both should return None
+    assert!(client.get_source_geo(&src1).is_none());
+    assert!(client.get_source_geo(&src2).is_none());
+
+    // Set geo metadata
+    client.set_source_geo(&src1, &geo1);
+    client.set_source_geo(&src2, &geo2);
+
+    // Verify geo metadata retrieval
+    let retrieved1 = client.get_source_geo(&src1).unwrap();
+    assert_eq!(retrieved1.region, String::from_str(&e, "US"));
+    assert_eq!(retrieved1.provider, String::from_str(&e, "AWS"));
+    assert_eq!(retrieved1.jurisdiction, String::from_str(&e, "US"));
+
+    // Verify decentralization report
+    let report = client.get_decentralization_report();
+    // 2 sources. Region counts: US: 1, EU: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.region_hhi, 5000u32);
+    // Provider counts: AWS: 2. HHI = (2^2) * 10000 / 4 = 10000.
+    assert_eq!(report.provider_hhi, 10000u32);
+    // Jurisdiction counts: US: 1, DE: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.jurisdiction_hhi, 5000u32);
+    // Average HHI = (5000 + 10000 + 5000) / 3 = 6666.
+    // Overall score = 10000 - 6666 = 3334.
+    assert_eq!(report.overall_score, 3334u32);
+}
+
+#[test]
+fn test_source_heartbeat_liveness_bond() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let source = register_test_source(&e, &client, "Source1");
+    let asset = register_test_asset(&e, &client);
+
+    let token = Address::generate(&e);
+    client.set_stake_token_contract(&token);
+    assert_eq!(client.get_stake_token_contract().unwrap(), token);
+
+    // Initial config check
+    assert_eq!(client.get_source_bond(), 0i128);
+
+    // Set bond to 1000
+    client.set_source_bond(&1000i128);
+    assert_eq!(client.get_source_bond(), 1000i128);
+
+    // Submission should fail now because source has not paid the bond
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Deposit bond
+    client.deposit_source_bond(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 1000i128);
+
+    // Submission should now succeed
+    client.submit_price(&source, &asset, &100i128, &100u64);
+
+    // Deregistration should return the bond
+    client.remove_source(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 0i128);
+}
+
+
+
+

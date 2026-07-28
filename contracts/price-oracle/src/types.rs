@@ -234,6 +234,9 @@ pub enum DataKey {
     CorrelationBand(Address, Address),
     /// Ordered list of (base, quote) correlation pairs registered.
     CorrelationPairList,
+    /// Flag marking a (source, asset) price submission as correlation-violating.
+    /// Flagged submissions are excluded from aggregation.
+    CorrelationFlagged(Address, Address),
 
     // -------------------------------------------------------------------------
     // #173: Tiered Consumer Whitelisting
@@ -284,35 +287,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
-
-    // -------------------------------------------------------------------------
-    // #203: Storage Lease Extension Batching
-    // -------------------------------------------------------------------------
-    /// Last ledger on which TTL was extended for an asset.
-    AssetLastTtlExtended(Address),
-
-    // -------------------------------------------------------------------------
-    // #204: Source Performance Analytics
-    // -------------------------------------------------------------------------
-    /// Performance analytics for a source (SourceAnalytics).
-    SourceAnalytics(Address),
-    /// Number of submissions from a source (for accuracy calculation).
-    SourceSubmissionCount(Address),
-    /// Sum of accuracy scores for a source (for average calculation).
-    SourceAccuracySum(Address),
-
-    // -------------------------------------------------------------------------
-    // #206: Source Rotation Schedule
-    // -------------------------------------------------------------------------
-    /// Rotation schedule for an asset (SourceRotationSchedule).
-    AssetRotationSchedule(Address),
-    /// Currently active source set for an asset (Vec<Address>).
-    AssetActiveSourceSet(Address),
-    /// Standby source set for rotation (Vec<Address>).
-    AssetStandbySourceSet(Address),
-    /// Ledger at which the next rotation should occur.
-    AssetNextRotationLedger(Address),
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -849,43 +841,83 @@ pub struct CrossReferenceResult {
 }
 
 // =============================================================================
-// #204 — Source Performance Analytics
+// #210 — Progressive Disqualification / Demerits System
 // =============================================================================
 
-/// Performance analytics for an oracle source.
-///
-/// Stored under [`DataKey::SourceAnalytics`] keyed by source address.
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct SourceAnalytics {
-    /// Accuracy percentage (0–100) based on price deviation.
-    pub accuracy: u32,
-    /// Timeliness percentage (0–100) based on submission interval.
-    pub timeliness: u32,
-    /// Uptime percentage (0–100) based on active vs total submissions.
-    pub uptime: u32,
-    /// Current reputation score (0–100).
-    pub reputation: u32,
-    /// Reputation trajectory: positive = improving, negative = degrading.
-    pub reputation_trajectory: i32,
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
 }
 
 // =============================================================================
-// #206 — Source Rotation Schedule
+// #207 — Multi-sig Source Registration Governance
 // =============================================================================
 
-/// Rotation schedule for automated source cycling per asset.
-///
-/// Stored under [`DataKey::AssetRotationSchedule`] keyed by asset address.
+/// Configuration for source registration multi-sig governance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct SourceRotationSchedule {
-    /// Interval (in ledgers) between rotations.
-    pub rotation_interval: u32,
-    /// Ledger at which the next rotation should occur.
-    pub next_rotation_ledger: u32,
-    /// Overlap period (in ledgers) where old and new sets coexist.
-    pub overlap_period: u32,
-    /// Whether this rotation schedule is enabled.
-    pub enabled: bool,
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
 }
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
+    pub id: u32,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
+
+// =============================================================================
+// #208 — Source Geolocation & Decentralization Metrics
+// =============================================================================
+
+/// Geolocation and provider tags for an oracle source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+/// Decentralization and concentration report for registered sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
+}
+
+
+
