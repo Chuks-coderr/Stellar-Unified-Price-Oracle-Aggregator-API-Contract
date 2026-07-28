@@ -122,4 +122,10 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
+
+    // ── 54–59: New features (#225–#238) ──────────────────────────────────────
+    /// Admin operation daily limit has been exceeded.
+    OperationLimitExceeded = 54,
+    /// Submission is outside the current aggregation round window.
+    OutOfSubmissionWindow = 55,
 }

@@ -7,9 +7,11 @@
 #![allow(dead_code)]
 
 mod admin;
+mod admin_op_limits;
 mod alerts;
 mod assets;
 mod correlation;
+mod cross_chain_verify;
 mod cross_reference;
 mod errors;
 mod events;
@@ -21,11 +23,13 @@ mod history;
 mod migration;
 mod multisig;
 mod pause;
+mod per_asset_decimals;
 mod prices;
 mod reentrancy;
 mod relayer;
 mod sources;
 mod storage;
+mod submission_deadline;
 mod subscription;
 mod timelock;
 mod types;
@@ -1736,6 +1740,252 @@ impl PriceOracleContract {
     /// Threshold in basis points. Defaults to `500` (5 %).
     pub fn get_cross_ref_deviation_bps(env: Env) -> u32 {
         cross_reference::get_cross_ref_deviation_bps(&env)
+    }
+
+    // -------------------------------------------------------------------------
+    // #227: Per-asset decimal precision configuration
+    // -------------------------------------------------------------------------
+
+    /// Sets the decimal precision for a specific asset.
+    ///
+    /// Allows overriding the contract-wide decimals for individual assets.
+    /// For example: BTC=8, USDC=6, governance tokens=18.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Contract address of the asset to configure.
+    /// * `decimals` - Decimal precision for this asset (0-18).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — if the asset is not registered.
+    /// * [`ErrorCode::InvalidConfiguration`] — if `decimals > 18`.
+    pub fn set_asset_decimals(env: Env, asset: Address, decimals: u32) {
+        per_asset_decimals::set_asset_decimals(&env, asset, decimals);
+    }
+
+    /// Gets the effective decimal precision for an asset.
+    ///
+    /// Returns the asset-specific setting if configured, otherwise returns
+    /// the contract-wide decimals setting.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Contract address of the asset.
+    ///
+    /// # Returns
+    ///
+    /// Decimal precision for the asset.
+    pub fn get_asset_decimals(env: Env, asset: Address) -> u32 {
+        per_asset_decimals::get_asset_decimals(&env, &asset)
+    }
+
+    /// Clears the per-asset decimal override, reverting to contract-wide decimals.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Contract address of the asset.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    pub fn clear_asset_decimals(env: Env, asset: Address) {
+        per_asset_decimals::clear_asset_decimals(&env, asset);
+    }
+
+    // -------------------------------------------------------------------------
+    // #226: Cross-chain price verification
+    // -------------------------------------------------------------------------
+
+    /// Enables or disables cross-chain price verification globally.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `enabled` - `true` to enable verification, `false` to disable.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    pub fn set_cross_chain_verification_enabled(env: Env, enabled: bool) {
+        cross_chain_verify::set_cross_chain_verification_enabled(&env, enabled);
+    }
+
+    /// Checks if cross-chain price verification is currently enabled.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    ///
+    /// # Returns
+    ///
+    /// `true` if verification is enabled, `false` otherwise.
+    pub fn is_cross_chain_verification_enabled(env: Env) -> bool {
+        cross_chain_verify::is_cross_chain_verification_enabled(&env)
+    }
+
+    /// Sets the maximum allowed deviation between this chain and cross-chain prices.
+    ///
+    /// Expressed in basis points (100 bps = 1%). Maximum allowed is < 10000 (100%).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `threshold_bps` - Deviation threshold in basis points.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — if `threshold_bps >= 10000`.
+    pub fn set_cross_chain_deviation_threshold(env: Env, threshold_bps: u32) {
+        cross_chain_verify::set_cross_chain_deviation_threshold(&env, threshold_bps);
+    }
+
+    /// Gets the current cross-chain deviation threshold in basis points.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    ///
+    /// # Returns
+    ///
+    /// Deviation threshold in basis points.
+    pub fn get_cross_chain_deviation_threshold(env: Env) -> u32 {
+        cross_chain_verify::get_cross_chain_deviation_threshold(&env)
+    }
+
+    /// Submits a cross-chain price observation for verification.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `asset` - Asset address.
+    /// * `oracle_chain` - Address of the oracle on the other chain.
+    /// * `price` - Price from the external oracle.
+    /// * `decimals` - Decimal precision of the external price.
+    /// * `chain_id` - Identifier of the source chain (e.g., "ethereum").
+    /// * `timestamp` - Unix timestamp of the price observation.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — if the asset is not registered.
+    /// * [`ErrorCode::InvalidPrice`] — if the price is <= 0.
+    pub fn submit_cross_chain_price(
+        env: Env,
+        asset: Address,
+        oracle_chain: Address,
+        price: i128,
+        decimals: u32,
+        chain_id: String,
+        timestamp: u64,
+    ) {
+        cross_chain_verify::submit_cross_chain_price(
+            &env, asset, oracle_chain, price, decimals, chain_id, timestamp,
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // #238: Admin operation spending limits
+    // -------------------------------------------------------------------------
+
+    /// Sets the daily limit for a specific admin operation type.
+    ///
+    /// Helps defend against compromised admin keys by limiting damage.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `op_type` - Operation type discriminant (0=AddSource, 1=RemoveSource, etc.).
+    /// * `daily_limit` - Maximum operations per day of this type (must be > 0).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — if `daily_limit == 0`.
+    pub fn set_admin_op_daily_limit(env: Env, op_type: u32, daily_limit: u32) {
+        admin_op_limits::set_admin_op_daily_limit(&env, op_type, daily_limit);
+    }
+
+    /// Gets the daily limit for a specific admin operation type.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `op_type` - Operation type discriminant.
+    ///
+    /// # Returns
+    ///
+    /// Daily limit for the operation type.
+    pub fn get_admin_op_daily_limit(env: Env, op_type: u32) -> u32 {
+        admin_op_limits::get_admin_op_daily_limit(&env, op_type)
+    }
+
+    /// Gets the count of operations performed today for a given operation type.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `op_type` - Operation type discriminant.
+    ///
+    /// # Returns
+    ///
+    /// Number of operations of this type performed today.
+    pub fn get_admin_op_daily_count(env: Env, op_type: u32) -> u32 {
+        admin_op_limits::get_admin_op_daily_count(&env, op_type)
+    }
+
+    // -------------------------------------------------------------------------
+    // #225: Source submission deadline enforcement
+    // -------------------------------------------------------------------------
+
+    /// Starts a new aggregation round with a submission deadline window.
+    ///
+    /// Submissions outside the [start_ledger, end_ledger] window will be excluded.
+    /// This prevents last-millisecond price manipulation.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `start_ledger` - First ledger of the submission window (inclusive).
+    /// * `end_ledger` - Last ledger of the submission window (inclusive).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — if `end_ledger <= start_ledger`.
+    pub fn start_aggregation_round(env: Env, start_ledger: u32, end_ledger: u32) {
+        submission_deadline::start_aggregation_round(&env, start_ledger, end_ledger);
+    }
+
+    /// Gets the current aggregation round configuration, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    ///
+    /// # Returns
+    ///
+    /// The current [`AggregationRound`] configuration, or `None` if no round is active.
+    pub fn get_current_aggregation_round(env: Env) -> Option<crate::types::AggregationRound> {
+        submission_deadline::get_current_round(&env)
+    }
+
+    /// Clears the current aggregation round, allowing submissions from any ledger.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    pub fn clear_aggregation_round(env: Env) {
+        submission_deadline::clear_current_round(&env);
     }
 
     // =========================================================================
