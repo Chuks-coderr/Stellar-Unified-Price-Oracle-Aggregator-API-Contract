@@ -1543,3 +1543,336 @@ pub struct SourceBondReturnedEvent {
 
 
 
+
+// =============================================================================
+// Missing events for feature modules
+// =============================================================================
+
+/// Emitted when asset metadata is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct AssetMetadataUpdatedEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub admin: Address,
+}
+
+/// Circuit breaker event entry (used as a struct in some older modules).
+/// NOTE: This is a struct, not an event, kept here for backward compatibility.
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct CircuitBreakerEventEntry {
+    pub asset: Address,
+    pub previous_price: i128,
+    pub candidate_price: i128,
+    pub change_bps: u32,
+    pub max_change_bps: u32,
+    pub ledger: u32,
+    pub timestamp: u64,
+}
+
+/// Emitted when a price is submitted with a deadline (#202).
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceSubmittedWithDeadlineEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub source: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub deadline_ledger: u32,
+}
+
+/// Emitted when a submission rebate is distributed (#202).
+#[contractevent]
+#[derive(Clone)]
+pub struct RebateDistributedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub amount: i128,
+}
+
+/// Emitted when an exotic asset pricing config is set (#177).
+#[contractevent]
+#[derive(Clone)]
+pub struct ExoticAssetConfigSetEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the fee market minimum priority fee is changed (#176).
+#[contractevent]
+#[derive(Clone)]
+pub struct FmMinPriorityFeeChangedEvent {
+    pub value: u128,
+}
+
+/// Emitted when the fee distribution ratio is changed (#176).
+#[contractevent]
+#[derive(Clone)]
+pub struct FmFeeDistributionRatioChangedEvent {
+    pub ratio_bps: u32,
+}
+
+/// Emitted when a fee market submission is enqueued (#176).
+#[contractevent]
+#[derive(Clone)]
+pub struct FmSubmissionEnqueuedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub priority_fee: u128,
+    pub queue_position: u32,
+}
+
+/// Emitted when a fee market submission is processed (#176).
+#[contractevent]
+#[derive(Clone)]
+pub struct FmSubmissionProcessedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+    pub price: i128,
+}
+
+/// Emitted when multi-sig governors list is updated (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsGovernorsUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub governor_count: u32,
+    pub required_approvals: u32,
+}
+
+/// Emitted when a multi-sig operation is proposed (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationProposedEvent {
+    pub op_id: u32,
+    pub op_type: u32,
+    #[topic]
+    pub proposed_by: Address,
+    pub proposed_ledger: u32,
+}
+
+/// Emitted when multi-sig quorum is reached (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsQuorumReachedEvent {
+    pub op_id: u32,
+    pub approval_count: u32,
+}
+
+/// Emitted when a governor approves a multi-sig operation (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationApprovedEvent {
+    pub op_id: u32,
+    #[topic]
+    pub approver: Address,
+}
+
+/// Emitted when a multi-sig operation is retracted before execution (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationRetractedEvent {
+    pub op_id: u32,
+    #[topic]
+    pub retracted_by: Address,
+}
+
+/// Emitted when a multi-sig operation is executed (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationExecutedEvent {
+    pub op_id: u32,
+    pub op_type: u32,
+    #[topic]
+    pub executed_by: Address,
+}
+
+/// Emitted when a multi-sig operation is cancelled (#178).
+#[contractevent]
+#[derive(Clone)]
+pub struct MsOperationCancelledEvent {
+    pub op_id: u32,
+    #[topic]
+    pub cancelled_by: Address,
+}
+
+/// Emitted when a source fee credit is recorded.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceFeeCreditedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+    pub total_balance: i128,
+}
+
+/// Emitted when a source withdraws accumulated fees.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceFeesWithdrawnEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a ZK verifying key is set (#175).
+#[contractevent]
+#[derive(Clone)]
+pub struct ZkVerifyingKeySetEvent {
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when a ZK-verified price is submitted (#175).
+#[contractevent]
+#[derive(Clone)]
+pub struct ZkPriceSubmittedEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub source: Address,
+    pub price: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when a challenge is submitted (#235).
+#[contractevent]
+#[derive(Clone)]
+pub struct ChallengePricedEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub challenger: Address,
+    pub challenge_id: u32,
+    pub expected_price: i128,
+}
+
+/// Emitted when a challenge is resolved (#235).
+#[contractevent]
+#[derive(Clone)]
+pub struct ChallengeResolvedEvent {
+    pub challenge_id: u32,
+    pub valid: bool,
+    pub reward: i128,
+}
+
+/// Emitted when challenger rewards are claimed (#235).
+#[contractevent]
+#[derive(Clone)]
+pub struct RewardsClaimedEvent {
+    #[topic]
+    pub challenger: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source rotation schedule is set (#206).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceRotationScheduleSetEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub admin: Address,
+    pub rotation_interval: u32,
+}
+
+/// Emitted when sources are rotated for an asset (#206).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourcesRotatedEvent {
+    #[topic]
+    pub asset: Address,
+    pub rotated_at_ledger: u32,
+}
+
+/// Emitted when an admin audit entry is appended (#239).
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminAuditEntryAppendedEvent {
+    #[topic]
+    pub admin: Address,
+    pub entry_id: u32,
+}
+
+/// Emitted when a role is delegated (#241).
+#[contractevent]
+#[derive(Clone)]
+pub struct RoleDelegatedEvent {
+    #[topic]
+    pub delegator: Address,
+    #[topic]
+    pub delegatee: Address,
+    pub role: u32,
+}
+
+/// Emitted when a role is revoked (#241).
+#[contractevent]
+#[derive(Clone)]
+pub struct RoleRevokedEvent {
+    #[topic]
+    pub revoker: Address,
+    #[topic]
+    pub holder: Address,
+    pub role: u32,
+}
+
+/// Emitted when an emergency pause is triggered (#240).
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyPausedEvent {
+    #[topic]
+    pub admin: Address,
+    pub auto_unpause_ledger: u32,
+}
+
+/// Emitted when an emergency pause is lifted (#240).
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyUnpausedEvent {
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when an emergency pause duration is extended (#240).
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyPauseExtendedEvent {
+    #[topic]
+    pub admin: Address,
+    pub new_unpause_ledger: u32,
+}
+
+/// Emitted when an asset TTL extension is performed (#203).
+#[contractevent]
+#[derive(Clone)]
+pub struct AssetTtlExtendedEvent {
+    #[topic]
+    pub asset: Address,
+    pub num_extended: u32,
+    pub current_ledger: u32,
+}
+
+/// Emitted when the rate limit tier is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct RateLimitTierChangedEvent {
+    pub tier: u32,
+    pub limit: u32,
+}
+
+// Emitted when an invalid submission is recorded against a source (re-export from events).
+// Already defined elsewhere, but needed here as well.
+// Note: InvalidSubmissionRecordedEvent is already defined above; this is the canonical copy.

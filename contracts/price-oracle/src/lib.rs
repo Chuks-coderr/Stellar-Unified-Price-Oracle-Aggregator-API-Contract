@@ -14,6 +14,7 @@ mod assets;
 mod challenger;
 mod correlation;
 mod cross_chain_relay;
+mod cross_chain_verify;
 mod cross_reference;
 mod deadline_rebate;
 mod errors;
@@ -200,6 +201,114 @@ impl PriceOracleContract {
     /// The `Address` of the current admin.
     pub fn get_admin_address(env: Env) -> Address {
         admin::get_admin_address(&env)
+    }
+
+    pub fn has_role(env: Env, caller: Address, role: crate::types::Role) -> bool {
+        rbac::has_role(&env, &caller, role)
+    }
+
+    pub fn delegate_role(env: Env, delegatee: Address, role: crate::types::Role) {
+        rbac::delegate_role(&env, delegatee, role);
+    }
+
+    pub fn revoke_role(env: Env, delegatee: Address, role: crate::types::Role) {
+        rbac::revoke_role(&env, delegatee, role);
+    }
+
+    pub fn get_role_holders(env: Env, role: crate::types::Role) -> Vec<Address> {
+        rbac::get_role_holders(&env, role)
+    }
+
+    pub fn get_roles_for_holder(env: Env, holder: Address) -> Vec<crate::types::Role> {
+        rbac::get_roles_for_holder(&env, &holder)
+    }
+
+    pub fn emergency_pause(env: Env, reason: String, auto_unpause_ledgers: u32) {
+        emergency_pause::emergency_pause(&env, reason, auto_unpause_ledgers);
+    }
+
+    pub fn extend_emergency_pause(env: Env, additional_ledgers: u32) {
+        emergency_pause::extend_emergency_pause(&env, additional_ledgers);
+    }
+
+    pub fn cancel_emergency_pause(env: Env) {
+        emergency_pause::cancel_emergency_pause(&env);
+    }
+
+    pub fn is_emergency_pause_active(env: Env) -> bool {
+        emergency_pause::is_emergency_pause_active(&env)
+    }
+
+    pub fn get_emergency_pause(env: Env) -> Option<crate::types::EmergencyPause> {
+        emergency_pause::get_emergency_pause(&env)
+    }
+
+    pub fn set_correlation_pair(
+        env: Env,
+        base_asset: Address,
+        quote_asset: Address,
+        min_ratio: u128,
+        max_ratio: u128,
+        enabled: bool,
+    ) {
+        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+    }
+
+    pub fn is_correlation_flagged(env: Env, source: Address, asset: Address) -> bool {
+        correlation::is_correlation_flagged(&env, &source, &asset)
+    }
+
+    pub fn clear_correlation_flag(env: Env, source: Address, asset: Address) {
+        correlation::clear_correlation_flag(&env, source, asset);
+    }
+
+    pub fn challenge_price(env: Env, asset: Address, expected_price: i128, proof_data: Bytes) {
+        challenger::challenge_price(&env, asset, expected_price, proof_data);
+    }
+
+    pub fn resolve_challenge(env: Env, challenge_id: u32, is_valid: bool) {
+        challenger::resolve_challenge(&env, challenge_id, is_valid);
+    }
+
+    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<crate::types::Challenge> {
+        challenger::get_challenge_history(&env, asset, limit)
+    }
+
+    pub fn get_challenger_rewards(env: Env, challenger: Address) -> i128 {
+        challenger::get_challenger_rewards(&env, challenger)
+    }
+
+    pub fn get_audit_log_count(env: Env) -> u32 {
+        audit_log::get_audit_log_count(&env)
+    }
+
+    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<crate::types::AuditEntry> {
+        audit_log::get_admin_audit_log(&env, from_id, limit)
+    }
+
+    pub fn get_audit_log_head(env: Env) -> Bytes {
+        audit_log::get_audit_log_head(&env)
+    }
+
+    pub fn verify_audit_chain(env: Env) -> bool {
+        audit_log::verify_audit_chain(&env)
+    }
+
+    pub fn simulate_aggregation(
+        env: Env,
+        asset: Address,
+        hypothetical_prices: Vec<(Address, i128)>,
+    ) -> Option<i128> {
+        prices::simulate_aggregation(&env, asset, hypothetical_prices)
+    }
+
+    pub fn submit_price_merkle(
+        env: Env,
+        source: Address,
+        root: BytesN<32>,
+        proofs: Vec<prices::MerkleProof>,
+    ) {
+        prices::submit_price_merkle(&env, source, root, proofs);
     }
 
     /// Updates the minimum number of oracle sources required before a price is aggregated.
@@ -1440,11 +1549,19 @@ impl PriceOracleContract {
     /// Supports arithmetic and geometric TWAP computation.
     pub fn get_twap(
         env: Env,
-        asset: Asset,
+        asset: Address,
         window_ledgers: u32,
         method: TwapMethod,
     ) -> Option<PriceData> {
-        prices::get_twap(&env, asset, window_ledgers, method)
+        prices::get_twap(&env, Asset::Stellar(asset), window_ledgers, method)
+    }
+
+    pub fn claim_rewards(env: Env) -> i128 {
+        challenger::claim_rewards(&env)
+    }
+
+    pub fn get_address_roles(env: Env, holder: Address) -> Vec<u32> {
+        rbac::get_address_roles(&env, &holder)
     }
 
     /// Returns the price for an asset at or before the given Unix timestamp (SEP-40 `price`).

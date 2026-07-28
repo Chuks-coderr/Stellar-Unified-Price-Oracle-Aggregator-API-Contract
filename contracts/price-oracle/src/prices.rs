@@ -371,8 +371,96 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     // Trigger aggregation for each submitted asset.
     for i in 0..asset_prices.len() {
         let (asset, _, _) = asset_prices.get_unchecked(i);
+        if !maybe_aggregate_after_submission(env, &asset, current_ledger) {
+            continue;
+        }
         aggregate_asset(env, &asset, current_ledger, decimals);
     }
+}
+
+fn count_contributing_sources(env: &Env, asset: &Address, current_ledger: u32) -> u32 {
+    let min_interval = {
+        let key = DataKey::AssetMinSubmissionInterval(asset.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            get_min_submission_interval(env)
+        }
+    };
+
+    let oracle_sources: OracleSources = read_oracle_sources(env);
+    let total_sources = oracle_sources.sources.len();
+    let max_agg = get_max_aggregation_sources(env);
+    let selected_sources: Vec<Address> = if max_agg > 0 && total_sources > max_agg {
+        let hash_bytes = env.ledger().sequence().to_le_bytes();
+        let seed = u32::from_le_bytes(hash_bytes);
+        let mut selected: Vec<Address> = Vec::new(env);
+        let mut kept: u32 = 0;
+        for i in 0..total_sources {
+            let remaining = total_sources - i;
+            let needed = max_agg - kept;
+            let h = seed
+                .wrapping_mul(1664525u32)
+                .wrapping_add(i)
+                .wrapping_add(1013904223u32);
+            if needed >= remaining || (h % remaining) < needed {
+                selected.push_back(oracle_sources.sources.get_unchecked(i));
+                kept += 1;
+                if kept >= max_agg {
+                    break;
+                }
+            }
+        }
+        selected
+    } else {
+        oracle_sources.sources.clone()
+    };
+
+    let mut contributing_sources: u32 = 0;
+    let selected_count = selected_sources.len();
+    for i in 0..selected_count {
+        let src = selected_sources.get_unchecked(i);
+
+        if min_interval > 0 {
+            let last_sub_key = DataKey::LastSubmissionLedger(src.clone(), asset.clone());
+            let last_sub: Option<u32> = env.storage().persistent().get(&last_sub_key);
+            if let Some(last) = last_sub {
+                if current_ledger.saturating_sub(last) > min_interval {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        if crate::correlation::is_correlation_flagged(env, &src, asset) {
+            continue;
+        }
+
+        let sub_key = DataKey::Submission(asset.clone(), src.clone());
+        if env.storage().persistent().has(&sub_key) {
+            contributing_sources += 1;
+        }
+    }
+
+    contributing_sources
+}
+
+fn maybe_aggregate_after_submission(env: &Env, asset: &Address, current_ledger: u32) -> bool {
+    let min_required = get_min_sources_required(env);
+    let contributing_sources = count_contributing_sources(env, asset, current_ledger);
+    if contributing_sources >= min_required {
+        return true;
+    }
+
+    SourcesInsufficientEvent {
+        asset: asset.clone(),
+        current_source_count: contributing_sources,
+        min_sources_required: min_required,
+    }
+    .publish(env);
+    false
 }
 
 /// Internal helper: re-aggregate all sources for a single asset and write history.
@@ -697,6 +785,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     // Cross-asset correlation check: flags (source, asset) if ratio is out of band.
     crate::correlation::validate_correlation(env, &asset, price, &source);
 
+    if !maybe_aggregate_after_submission(env, &asset, current_ledger) {
+        return;
+    }
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
 
@@ -1691,6 +1782,9 @@ fn _do_reveal(
     }
     .publish(env);
 
+    if !maybe_aggregate_after_submission(env, asset, current_ledger) {
+        return;
+    }
     aggregate_asset(env, asset, current_ledger, decimals);
 }
 
@@ -1772,6 +1866,9 @@ pub fn submit_price_internal(
     }
     .publish(env);
 
+    if !maybe_aggregate_after_submission(env, &asset, current_ledger) {
+        return;
+    }
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
 
