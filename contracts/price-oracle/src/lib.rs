@@ -20,6 +20,7 @@ mod health;
 mod history;
 mod migration;
 mod multisig;
+mod optimistic;
 mod pause;
 mod prices;
 mod reentrancy;
@@ -48,14 +49,17 @@ mod prop_tests;
 mod twap_tests;
 
 #[cfg(test)]
+mod optimistic_oracle_tests;
+
+#[cfg(test)]
 mod string_boundary_tests;
 
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, BftAggregationMethod,
     CrossReferenceResult, DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport,
-    MigrationState, OracleSources, PendingBatch, PendingFinalityEntry, PriceBounds, PriceCommit,
-    PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry, RelayerInfo, SourceHealthStatus,
-    SubscriptionPlans, TwapMethod,
+    MigrationState, OptimisticProposal, OracleSources, PendingBatch, PendingFinalityEntry,
+    PriceBounds, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
+    RelayerInfo, SourceHealthStatus, SubscriptionPlans, TwapMethod,
 };
 
 use soroban_sdk::{
@@ -941,6 +945,37 @@ impl PriceOracleContract {
 
     pub fn is_circuit_breaker_tripped(env: Env, asset: Address) -> bool {
         assets::is_circuit_breaker_tripped(&env, &asset)
+    }
+
+    // --- Optimistic Oracle ---
+
+    pub fn propose_price(
+        env: Env,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        bond_amount: i128,
+    ) -> u32 {
+        reentrancy::enter(&env);
+        let result = optimistic::propose_price(&env, asset, price, timestamp, bond_amount);
+        reentrancy::exit(&env);
+        result
+    }
+
+    pub fn dispute_proposal(env: Env, proposal_id: u32) {
+        reentrancy::enter(&env);
+        optimistic::dispute_proposal(&env, proposal_id);
+        reentrancy::exit(&env);
+    }
+
+    pub fn resolve_dispute(env: Env, proposal_id: u32, resolution: bool) {
+        reentrancy::enter(&env);
+        optimistic::resolve_dispute(&env, proposal_id, resolution);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<OptimisticProposal> {
+        optimistic::get_proposal(&env, proposal_id)
     }
 
     // --- Prices ---

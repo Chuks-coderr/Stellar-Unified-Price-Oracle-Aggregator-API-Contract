@@ -131,4 +131,16 @@ pub enum ErrorCode {
     /// Direct price submissions are rejected while BFT aggregation is enabled because
     /// commit-reveal is required for source consensus.
     CommitRevealRequired = 57,
+    /// The requested optimistic proposal does not exist.
+    ProposalNotFound = 58,
+    /// The optimistic proposal is already disputed and cannot be disputed again.
+    ProposalAlreadyDisputed = 59,
+    /// The optimistic proposal is already resolved and cannot be changed again.
+    ProposalAlreadyResolved = 60,
+    /// The bond amount is below the configured minimum.
+    BondTooSmall = 61,
+    /// The optimistic proposal has already expired and can no longer be disputed.
+    ProposalExpired = 62,
+    /// The optimistic proposal has not been disputed yet.
+    ProposalNotDisputed = 63,
 }
