@@ -52,6 +52,12 @@ pub enum ErrorCode {
     OperationNotFound = 14,
     /// The submitted price is below the asset's configured minimum price floor.
     PriceBelowMinimum = 15,
+    /// The submitted price falls outside the asset's configured price bounds.
+    PriceOutOfBounds = 54,
+    /// The asset is currently paused and cannot accept new submissions.
+    AssetPaused = 55,
+    /// The circuit breaker tripped for the asset and rejected the update.
+    CircuitBreakerTripped = 56,
 
     // ── 16–19: Rate-limit, subscription & migration ──────────────────────────
     /// Rate limit exceeded for an operation.
