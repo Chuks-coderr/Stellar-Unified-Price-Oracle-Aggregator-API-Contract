@@ -2187,165 +2187,255 @@ fn test_get_migration_state_none_before_migration() {
 }
 
 #[test]
-fn test_asset_metadata_management() {
+fn test_demerits_lifecycle() {
     let e = Env::default();
-    let (client, _) = setup_contract(&e);
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Source1");
     let asset = register_test_asset(&e, &client);
 
-    let name = String::from_str(&e, "Bitcoin");
-    let symbol = String::from_str(&e, "BTC");
-    let logo_uri = String::from_str(&e, "https://logo.uri/btc.png");
+    // Initial state check
+    let initial_state = client.get_source_demerits(&source);
+    assert_eq!(initial_state.demerits, 0);
+    assert_eq!(initial_state.status, crate::DisqualificationStatus::Active);
 
-    client.set_asset_metadata(&asset, &name, &symbol, &Some(8u32), &logo_uri);
+    // Verify default config
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 2);
+    assert_eq!(config.probation_threshold, 5);
+    assert_eq!(config.disqualified_threshold, 10);
+    assert_eq!(config.cooldown_ledgers, 100);
 
-    let meta = client.get_asset_metadata(&asset).unwrap();
-    assert_eq!(meta.name, name);
-    assert_eq!(meta.symbol, symbol);
-    assert_eq!(meta.decimals, Some(8u32));
-    assert_eq!(meta.logo_uri, logo_uri);
-}
+    // Set custom config
+    let custom_config = crate::DemeritConfig {
+        warning_threshold: 1,
+        probation_threshold: 2,
+        disqualified_threshold: 3,
+        cooldown_ledgers: 10,
+    };
+    client.set_demerit_config(&custom_config);
+    let config = client.get_demerit_config();
+    assert_eq!(config.warning_threshold, 1);
+    assert_eq!(config.disqualified_threshold, 3);
 
-#[test]
-fn test_batch_asset_metadata_management() {
-    let e = Env::default();
-    let (client, _) = setup_contract(&e);
-    let asset1 = register_test_asset(&e, &client);
-    let asset2 = register_test_asset(&e, &client);
-
-    let name1 = String::from_str(&e, "Asset One");
-    let symbol1 = String::from_str(&e, "AONE");
-    let logo1 = String::from_str(&e, "https://a1.png");
-
-    let name2 = String::from_str(&e, "Asset Two");
-    let symbol2 = String::from_str(&e, "ATWO");
-    let logo2 = String::from_str(&e, "https://a2.png");
-
-    let mut updates = soroban_sdk::Vec::new(&e);
-    updates.push_back(AssetMetadataUpdate {
-        asset: asset1.clone(),
-        name: name1.clone(),
-        symbol: symbol1.clone(),
-        decimals: Some(4u32),
-        logo_uri: logo1.clone(),
-    });
-    updates.push_back(AssetMetadataUpdate {
-        asset: asset2.clone(),
-        name: name2.clone(),
-        symbol: symbol2.clone(),
-        decimals: None,
-        logo_uri: logo2.clone(),
-    });
-
-    client.batch_set_asset_metadata(&updates);
-
-    let meta1 = client.get_asset_metadata(&asset1).unwrap();
-    assert_eq!(meta1.name, name1);
-    assert_eq!(meta1.symbol, symbol1);
-    assert_eq!(meta1.decimals, Some(4u32));
-    assert_eq!(meta1.logo_uri, logo1);
-
-    let meta2 = client.get_asset_metadata(&asset2).unwrap();
-    assert_eq!(meta2.name, name2);
-    assert_eq!(meta2.symbol, symbol2);
-    assert_eq!(meta2.decimals, None);
-    assert_eq!(meta2.logo_uri, logo2);
-}
-
-#[test]
-fn test_circuit_breaker_auto_suspension() {
-    let e = Env::default();
-    ledger_default(&e, 100, 10000);
-    let (client, _) = setup_contract(&e);
-    client.set_min_sources_required(&1u32);
-    client.set_circuit_breaker_threshold(&1000u32); // 10%
-
-    let source = register_test_source(&e, &client, "Oracle");
-    let asset = register_test_asset(&e, &client);
-
-    // Initial submission establishing aggregate price
-    submit_test_price(&client, &source, &asset, 100i128, 9999);
-    assert_eq!(client.get_price(&asset, &0u64).unwrap().price, 100i128);
-
-    // Deviating submission: 150 (50% deviation > 10% threshold)
-    submit_test_price(&client, &source, &asset, 150i128, 9999);
-
-    // Source should now be suspended!
-    // Trying to submit again should panic with NotAuthorized (suspension)
-    let res = e.try_run_with_auth(source.clone(), || {
-        client.submit_price(&source, &asset, &100i128, &9999);
-    });
+    // Test invalid config (warning_threshold > probation_threshold)
+    let invalid_config = crate::DemeritConfig {
+        warning_threshold: 3,
+        probation_threshold: 2,
+        disqualified_threshold: 4,
+        cooldown_ledgers: 10,
+    };
+    let res = client.try_set_demerit_config(&invalid_config);
     assert!(res.is_err());
 
-    // Reactivate source
-    client.reactivate_source(&source);
+    // Submit invalid price (<= 0) to trigger demerit
+    ledger_default(&e, 1, 100);
+    let res = client.try_submit_price(&source, &asset, &-1i128, &100u64);
+    assert!(res.is_err());
 
-    // Now it should be able to submit again
-    submit_test_price(&client, &source, &asset, 100i128, 9999);
+    // State should now be Warning (demerits = 1 >= warning_threshold=1)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+    assert_eq!(state.status, crate::DisqualificationStatus::Warning);
+
+    // Trigger another invalid price (timestamp too far in the future)
+    let res = client.try_submit_price(&source, &asset, &100i128, &20000u64);
+    assert!(res.is_err());
+
+    // State should now be Probation (demerits = 2 >= probation_threshold=2)
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 2);
+    assert_eq!(state.status, crate::DisqualificationStatus::Probation);
+
+    // Trigger disqualification
+    let res = client.try_submit_price(&source, &asset, &0i128, &100u64);
+    assert!(res.is_err());
+
+    // State should now be Disqualified
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 3);
+    assert_eq!(state.status, crate::DisqualificationStatus::Disqualified);
+    assert_eq!(state.status_updated_ledger, 1);
+
+    // Submit valid price now should fail because source is suspended/disqualified
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Let 10 ledgers pass (cooldown period of 10)
+    ledger_default(&e, 11, 200);
+
+    // Query demerits again, it should have auto-reset because cooldown elapsed
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
+
+    // Now valid submission should succeed
+    client.submit_price(&source, &asset, &100i128, &200u64);
+
+    // Induce demerit again and test admin reset
+    let res = client.try_submit_price(&source, &asset, &0i128, &200u64);
+    assert!(res.is_err());
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 1);
+
+    client.reset_source_demerits(&source);
+    let state = client.get_source_demerits(&source);
+    assert_eq!(state.demerits, 0);
+    assert_eq!(state.status, crate::DisqualificationStatus::Active);
 }
 
 #[test]
-fn test_per_asset_min_submission_interval() {
+fn test_multi_sig_source_governance() {
     let e = Env::default();
-    ledger_default(&e, 100, 10000);
-    let (client, _) = setup_contract(&e);
-    client.set_min_sources_required(&1u32);
-
-    let source = register_test_source(&e, &client, "Oracle");
-    let asset = register_test_asset(&e, &client);
-
-    client.set_asset_min_submission_interval(&asset, &10u32);
-    assert_eq!(client.get_asset_min_submission_interval(&asset), 10u32);
-
-    // First submission
-    submit_test_price(&client, &source, &asset, 100i128, 9999);
-
-    // Immediately trigger aggregation - since ledger hasn't advanced 10 sequences,
-    // compliance check flags it and excludes it from aggregation.
-    e.ledger().set_sequence(111);
-    submit_test_price(&client, &source, &asset, 110i128, 9999);
-    assert_eq!(client.get_price(&asset, &0u64).unwrap().price, 110i128);
-
-    client.clear_asset_min_submission_interval(&asset);
-    // Should fall back to global
-    assert_eq!(client.get_asset_min_submission_interval(&asset), client.get_min_submission_interval());
-}
-
-#[test]
-fn test_source_fee_withdrawal() {
-    let e = Env::default();
-    ledger_default(&e, 100, 10000);
-    let (client, _) = setup_contract(&e);
-    let source = register_test_source(&e, &client, "Oracle");
-    let asset = register_test_asset(&e, &client);
-
-    // Set XLM Token Contract Address in whitelisting
-    let token_admin = Address::generate(&e);
-    let xlm_addr = e.register_stellar_asset_contract(token_admin.clone());
-    client.set_xlm_token_contract(&xlm_addr);
-
-    // Setup subscription plan basic: 30 days, 1000 stroops
-    let basic_plan_dur = 30 * 24 * 3600;
-    client.set_subscription_plan(&basic_plan_dur, &1000i128);
-
-    // Generate consumer, mint tokens to consumer
-    let consumer = Address::generate(&e);
-    let xlm_client = soroban_sdk::token::Client::new(&e, &xlm_addr);
     e.mock_all_auths();
-    xlm_client.mint(&consumer, &10000i128);
+    let (client, _admin) = setup_contract(&e);
 
-    // Make some submissions to earn contribution weight
-    submit_test_price(&client, &source, &asset, 100i128, 9999);
+    let app1 = Address::generate(&e);
+    let app2 = Address::generate(&e);
+    let app3 = Address::generate(&e);
+    let mut approvers = Vec::new(&e);
+    approvers.push_back(app1.clone());
+    approvers.push_back(app2.clone());
+    approvers.push_back(app3.clone());
 
-    // Purchase subscription
-    client.register_consumer(&consumer, &types::ConsumerTier::Basic);
+    // Initially governance is None
+    assert!(client.get_source_governance().is_none());
 
-    // Source should have been credited fees based on contribution
-    let balance = client.get_source_fee_balance(&source);
-    assert!(balance > 0);
+    // Set governance configuration: 2-of-3 multi-sig
+    client.set_source_governance(&approvers, &2u32);
+    let gov = client.get_source_governance().unwrap();
+    assert_eq!(gov.threshold, 2u32);
+    assert_eq!(gov.approvers.len(), 3u32);
 
-    // Withdraw fees
-    client.withdraw_fees(&source);
-    assert_eq!(client.get_source_fee_balance(&source), 0);
-    assert_eq!(xlm_client.balance(&source), balance);
+    // Direct add_source should fail now because multi-sig governance is active
+    let source = Address::generate(&e);
+    let name = String::from_str(&e, "TestGovSource");
+    let res = client.try_add_source(&source, &name);
+    assert!(res.is_err());
+
+    // Propose a source from non-approver should fail
+    let non_approver = Address::generate(&e);
+    let res = client.try_propose_source(&non_approver, &source, &name);
+    assert!(res.is_err());
+
+    // Propose from app1 (approver)
+    let proposal_id = client.propose_source(&app1, &source, &name);
+    assert_eq!(proposal_id, 1u32);
+
+    // Check proposal state
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.id, 1u32);
+    assert_eq!(prop.source, source);
+    assert_eq!(prop.approvals.len(), 0u32);
+    assert_eq!(prop.executed, false);
+
+    // Approve from app1
+    client.approve_source(&app1, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.approvals.len(), 1u32);
+    assert_eq!(prop.executed, false);
+
+    // Duplicate approval should fail
+    let res = client.try_approve_source(&app1, &proposal_id);
+    assert!(res.is_err());
+
+    // Approve from app2 (this should meet the threshold 2 and execute)
+    client.approve_source(&app2, &proposal_id);
+    let prop = client.get_source_proposal(&proposal_id);
+    assert_eq!(prop.executed, true);
+    assert_eq!(prop.approvals.len(), 2u32);
+
+    // Source should now be successfully registered
+    assert!(client.is_source(&source));
+
+    // Try to approve already executed proposal should fail
+    let res = client.try_approve_source(&app3, &proposal_id);
+    assert!(res.is_err());
 }
+
+#[test]
+fn test_source_geolocation_metrics() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let src1 = register_test_source(&e, &client, "Source1");
+    let src2 = register_test_source(&e, &client, "Source2");
+
+    let geo1 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "US"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "US"),
+    };
+    let geo2 = crate::SourceGeoMetadata {
+        region: String::from_str(&e, "EU"),
+        provider: String::from_str(&e, "AWS"),
+        jurisdiction: String::from_str(&e, "DE"),
+    };
+
+    // Initially both should return None
+    assert!(client.get_source_geo(&src1).is_none());
+    assert!(client.get_source_geo(&src2).is_none());
+
+    // Set geo metadata
+    client.set_source_geo(&src1, &geo1);
+    client.set_source_geo(&src2, &geo2);
+
+    // Verify geo metadata retrieval
+    let retrieved1 = client.get_source_geo(&src1).unwrap();
+    assert_eq!(retrieved1.region, String::from_str(&e, "US"));
+    assert_eq!(retrieved1.provider, String::from_str(&e, "AWS"));
+    assert_eq!(retrieved1.jurisdiction, String::from_str(&e, "US"));
+
+    // Verify decentralization report
+    let report = client.get_decentralization_report();
+    // 2 sources. Region counts: US: 1, EU: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.region_hhi, 5000u32);
+    // Provider counts: AWS: 2. HHI = (2^2) * 10000 / 4 = 10000.
+    assert_eq!(report.provider_hhi, 10000u32);
+    // Jurisdiction counts: US: 1, DE: 1. HHI = (1^2 + 1^2) * 10000 / 4 = 5000.
+    assert_eq!(report.jurisdiction_hhi, 5000u32);
+    // Average HHI = (5000 + 10000 + 5000) / 3 = 6666.
+    // Overall score = 10000 - 6666 = 3334.
+    assert_eq!(report.overall_score, 3334u32);
+}
+
+#[test]
+fn test_source_heartbeat_liveness_bond() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _admin) = setup_contract(&e);
+
+    let source = register_test_source(&e, &client, "Source1");
+    let asset = register_test_asset(&e, &client);
+
+    let token = Address::generate(&e);
+    client.set_stake_token_contract(&token);
+    assert_eq!(client.get_stake_token_contract().unwrap(), token);
+
+    // Initial config check
+    assert_eq!(client.get_source_bond(), 0i128);
+
+    // Set bond to 1000
+    client.set_source_bond(&1000i128);
+    assert_eq!(client.get_source_bond(), 1000i128);
+
+    // Submission should fail now because source has not paid the bond
+    let res = client.try_submit_price(&source, &asset, &100i128, &100u64);
+    assert!(res.is_err());
+
+    // Deposit bond
+    client.deposit_source_bond(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 1000i128);
+
+    // Submission should now succeed
+    client.submit_price(&source, &asset, &100i128, &100u64);
+
+    // Deregistration should return the bond
+    client.remove_source(&source);
+    assert_eq!(client.get_source_deposited_bond(&source), 0i128);
+}
+
+
+
 

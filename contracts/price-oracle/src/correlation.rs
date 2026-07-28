@@ -16,7 +16,7 @@
 
 use soroban_sdk::{panic_with_error, Address, Env, Vec};
 
-use crate::events::{CorrelationBandSetEvent, CorrelationViolationEvent};
+use crate::events::{CorrelationBandSetEvent, CorrelationPriceFlaggedEvent, CorrelationViolationEvent};
 use crate::storage::{get_admin, LEDGER_BUMP, LEDGER_THRESHOLD};
 use crate::types::{CorrelationBand, CorrelationPair, DataKey, ErrorCode};
 
@@ -239,6 +239,21 @@ pub fn validate_correlation(
                 max_ratio: band.max_ratio,
             }
             .publish(env);
+
+            // Flag the (source, submitted_asset) pair so aggregate_asset excludes it.
+            let flag_key = DataKey::CorrelationFlagged(source.clone(), submitted_asset.clone());
+            env.storage().persistent().set(&flag_key, &true);
+            env.storage()
+                .persistent()
+                .extend_ttl(&flag_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+            CorrelationPriceFlaggedEvent {
+                asset: submitted_asset.clone(),
+                source: source.clone(),
+                flagged_price: submitted_price,
+            }
+            .publish(env);
+
             all_valid = false;
         }
     }
@@ -250,4 +265,18 @@ pub fn validate_correlation(
 enum PairRole {
     Base,
     Quote,
+}
+
+/// Returns `true` if the (source, asset) pair has an active correlation flag.
+pub fn is_correlation_flagged(env: &Env, source: &Address, asset: &Address) -> bool {
+    let key = DataKey::CorrelationFlagged(source.clone(), asset.clone());
+    env.storage().persistent().has(&key)
+}
+
+/// Clears the correlation flag for a (source, asset) pair. Admin-only.
+pub fn clear_correlation_flag(env: &Env, source: Address, asset: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    let key = DataKey::CorrelationFlagged(source, asset);
+    env.storage().persistent().remove(&key);
 }

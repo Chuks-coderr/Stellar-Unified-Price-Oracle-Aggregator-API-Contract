@@ -4,18 +4,27 @@ use crate::events::{
     emit_admin_action, RemovalCooldownChangedEvent, SourceActiveAgainEvent, SourceAddedEvent,
     SourceHeartbeatEvent, SourceInactiveEvent, SourceMarkedForRemovalEvent,
     SourceRemovalCancelledEvent, SourceRemovedEvent,
+    SourceWarningEvent, SourceProbationEvent, SourceDisqualifiedEvent, SourceDemeritsResetEvent,
+    DemeritConfigChangedEvent, InvalidSubmissionRecordedEvent,
+    SourceGovConfigChangedEvent, SourceProposalCreatedEvent, SourceProposalApprovedEvent, SourceProposalExecutedEvent,
+    SourceGeoUpdatedEvent,
+    SourceBondConfigChangedEvent, SourceBondDepositedEvent, SourceBondForfeitedEvent, SourceBondReturnedEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
     mark_source_inactive, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
-use crate::types::{DataKey, ErrorCode, OracleSources};
+use crate::types::{
+    DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
+    SourceGovernance, SourceProposal, SourceGeoMetadata, DecentralizationReport,
+};
+
+
+
 
 const MAX_SOURCE_NAME_LENGTH: u32 = 64;
 
-pub fn add_source(env: &Env, source: Address, name: String) {
-    let admin = get_admin(env);
-    admin.require_auth();
+fn register_source_internal(env: &Env, source: Address, name: String) {
     if name.is_empty() {
         panic_with_error!(env, ErrorCode::SourceNameEmpty);
     }
@@ -49,12 +58,26 @@ pub fn add_source(env: &Env, source: Address, name: String) {
         .set(&DataKey::SrcRegistry, &oracle_sources);
     SourceAddedEvent {
         source: source.clone(),
-        admin: admin.clone(),
+        admin: get_admin(env),
         name: source_name,
     }
     .publish(env);
+}
+
+pub fn add_source(env: &Env, source: Address, name: String) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if let Some(gov) = get_source_governance(env) {
+        if gov.threshold > 0 {
+            panic_with_error!(env, ErrorCode::NotAuthorized);
+        }
+    }
+
+    register_source_internal(env, source, name);
     emit_admin_action(env, symbol_short!("add_src"), admin, Bytes::new(env));
 }
+
 
 pub fn remove_source(env: &Env, source: Address) {
     let admin = get_admin(env);
@@ -66,6 +89,26 @@ pub fn remove_source(env: &Env, source: Address) {
     {
         panic_with_error!(env, ErrorCode::SourceNotFound);
     }
+
+    let is_inactive = is_source_inactive(env, source.clone());
+    let deposited = get_source_deposited_bond(env, source.clone());
+    if deposited > 0 {
+        if !is_inactive {
+            if let Some(token_addr) = crate::reputation::get_stake_token_contract(env) {
+                let client = soroban_sdk::token::Client::new(env, &token_addr);
+                let _ = client.try_transfer(&env.current_contract_address(), &source, &deposited);
+                SourceBondReturnedEvent {
+                    source: source.clone(),
+                    amount: deposited,
+                }
+                .publish(env);
+            }
+        } else {
+            forfeit_source_bond_internal(env, source.clone());
+        }
+        env.storage().persistent().remove(&DataKey::SourceBond(source.clone()));
+    }
+
     env.storage()
         .persistent()
         .remove(&DataKey::SrcActive(source.clone()));
@@ -91,6 +134,7 @@ pub fn remove_source(env: &Env, source: Address) {
     .publish(env);
     emit_admin_action(env, symbol_short!("rem_src"), admin, Bytes::new(env));
 }
+
 
 pub fn is_source(env: &Env, source: Address) -> bool {
     let key = DataKey::SrcActive(source.clone());
@@ -221,6 +265,8 @@ pub fn is_source_inactive(env: &Env, source: Address) -> bool {
                     2u32
                 };
                 mark_source_inactive(env, &source);
+                forfeit_source_bond_internal(env, source.clone());
+
 
                 // Record when inactivity started (only on first trip).
                 let inactive_since_key = DataKey::SrcInactiveSinceLedger(source.clone());
@@ -294,31 +340,169 @@ pub fn get_inactive_sources(env: &Env) -> u32 {
     count
 }
 
-pub fn is_source_suspended(env: &Env, source: Address) -> bool {
-    let key = DataKey::SrcSuspended(source);
-    if env.storage().persistent().has(&key) {
-        env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.storage().persistent().get(&key).unwrap_or(false)
-    } else {
-        false
-    }
+pub fn get_demerit_config(env: &Env) -> DemeritConfig {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DemeritConfig)
+        .unwrap_or(DemeritConfig {
+            warning_threshold: 2,
+            probation_threshold: 5,
+            disqualified_threshold: 10,
+            cooldown_ledgers: 100,
+        })
 }
 
-pub fn suspend_source_internal(env: &Env, source: Address) {
-    let key = DataKey::SrcSuspended(source);
-    env.storage().persistent().set(&key, &true);
-}
-
-pub fn reactivate_source(env: &Env, source: Address) {
+pub fn set_demerit_config(env: &Env, config: DemeritConfig) {
     let admin = get_admin(env);
     admin.require_auth();
-    let key = DataKey::SrcSuspended(source);
-    if env.storage().persistent().has(&key) {
-        env.storage().persistent().remove(&key);
+
+    if config.warning_threshold > config.probation_threshold
+        || config.probation_threshold > config.disqualified_threshold
+    {
+        panic_with_error!(env, ErrorCode::InvalidDemeritThreshold);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::DemeritConfig, &config);
+
+    DemeritConfigChangedEvent {
+        admin,
+        warning_threshold: config.warning_threshold,
+        probation_threshold: config.probation_threshold,
+        disqualified_threshold: config.disqualified_threshold,
+        cooldown_ledgers: config.cooldown_ledgers,
+    }
+    .publish(env);
+}
+
+pub fn get_source_demerits(env: &Env, source: Address) -> SourceDemeritState {
+    let key = DataKey::SourceDemerits(source.clone());
+    let mut state: SourceDemeritState = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SourceDemeritState {
+            demerits: 0,
+            status: DisqualificationStatus::Active,
+            status_updated_ledger: 0,
+        });
+
+    if state.status == DisqualificationStatus::Disqualified {
+        let config = get_demerit_config(env);
+        let current_ledger = env.ledger().sequence();
+        if current_ledger >= state.status_updated_ledger.saturating_add(config.cooldown_ledgers) {
+            state.demerits = 0;
+            state.status = DisqualificationStatus::Active;
+            state.status_updated_ledger = current_ledger;
+            env.storage().persistent().set(&key, &state);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+    }
+
+    state
+}
+
+pub fn is_source_suspended(env: &Env, source: Address) -> bool {
+    let state = get_source_demerits(env, source);
+    state.status == DisqualificationStatus::Disqualified
+}
+
+pub fn record_invalid_submission(env: &Env, source: Address) {
+    let key = DataKey::SourceDemerits(source.clone());
+    let mut state = get_source_demerits(env, source.clone());
+
+    state.demerits = state.demerits.saturating_add(1);
+    let config = get_demerit_config(env);
+    let current_ledger = env.ledger().sequence();
+
+    let old_status = state.status;
+
+    if state.demerits >= config.disqualified_threshold {
+        state.status = DisqualificationStatus::Disqualified;
+        state.status_updated_ledger = current_ledger;
+    } else if state.demerits >= config.probation_threshold {
+        state.status = DisqualificationStatus::Probation;
+        state.status_updated_ledger = current_ledger;
+    } else if state.demerits >= config.warning_threshold {
+        state.status = DisqualificationStatus::Warning;
+        state.status_updated_ledger = current_ledger;
+    }
+
+    env.storage().persistent().set(&key, &state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    InvalidSubmissionRecordedEvent {
+        source: source.clone(),
+        demerits: state.demerits,
+    }
+    .publish(env);
+
+    if state.status != old_status {
+        match state.status {
+            DisqualificationStatus::Warning => {
+                SourceWarningEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                }
+                .publish(env);
+            }
+            DisqualificationStatus::Probation => {
+                SourceProbationEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                }
+                .publish(env);
+            }
+            DisqualificationStatus::Disqualified => {
+                SourceDisqualifiedEvent {
+                    source: source.clone(),
+                    demerits: state.demerits,
+                    status_updated_ledger: current_ledger,
+                }
+                .publish(env);
+            }
+            _ => {}
+        }
     }
 }
 
-pub fn record_invalid_submission(_env: &Env, _source: Address) {}
+pub fn reset_source_demerits(env: &Env, source: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let key = DataKey::SourceDemerits(source.clone());
+    let current_ledger = env.ledger().sequence();
+    let state = SourceDemeritState {
+        demerits: 0,
+        status: DisqualificationStatus::Active,
+        status_updated_ledger: current_ledger,
+    };
+
+    env.storage().persistent().set(&key, &state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceDemeritsResetEvent {
+        source,
+        admin,
+    }
+    .publish(env);
+}
+
 
 
 pub fn get_source_last_heartbeat(env: &Env, source: Address) -> u64 {
@@ -791,3 +975,354 @@ fn _remove_source_internal(env: &Env, source: Address) {
         .persistent()
         .remove(&DataKey::SrcPriceSubmitAfterReactivation(source));
 }
+
+pub fn get_source_governance(env: &Env) -> Option<SourceGovernance> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceGovConfig)
+}
+
+pub fn set_source_governance(env: &Env, approvers: Vec<Address>, threshold: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if threshold > approvers.len() {
+        panic_with_error!(env, ErrorCode::InvalidGovernanceConfig);
+    }
+
+    if threshold == 0 && approvers.len() > 0 {
+        panic_with_error!(env, ErrorCode::InvalidGovernanceConfig);
+    }
+
+    let gov = SourceGovernance {
+        approvers: approvers.clone(),
+        threshold,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceGovConfig, &gov);
+
+    SourceGovConfigChangedEvent {
+        admin,
+        threshold,
+        approvers_count: approvers.len(),
+    }
+    .publish(env);
+}
+
+pub fn propose_source(env: &Env, proposer: Address, source: Address, name: String) -> u32 {
+    proposer.require_auth();
+
+    let gov = get_source_governance(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    });
+
+    if gov.threshold == 0 {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let mut is_approver = false;
+    for i in 0..gov.approvers.len() {
+        if gov.approvers.get_unchecked(i) == proposer {
+            is_approver = true;
+            break;
+        }
+    }
+    if !is_approver {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let count_key = DataKey::SourceProposalCount;
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let proposal_id = count.saturating_add(1);
+    env.storage().persistent().set(&count_key, &proposal_id);
+
+    let proposal = SourceProposal {
+        id: proposal_id,
+        source: source.clone(),
+        name: name.clone(),
+        approvals: Vec::new(env),
+        executed: false,
+    };
+
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    env.storage().persistent().set(&prop_key, &proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&prop_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceProposalCreatedEvent {
+        proposal_id,
+        proposer,
+        source,
+        name,
+    }
+    .publish(env);
+
+    proposal_id
+}
+
+pub fn approve_source(env: &Env, approver: Address, proposal_id: u32) {
+    approver.require_auth();
+
+    let gov = get_source_governance(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    });
+
+    if gov.threshold == 0 {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let mut is_approver = false;
+    for i in 0..gov.approvers.len() {
+        if gov.approvers.get_unchecked(i) == approver {
+            is_approver = true;
+            break;
+        }
+    }
+    if !is_approver {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    let mut proposal: SourceProposal = env
+        .storage()
+        .persistent()
+        .get(&prop_key)
+        .unwrap_or_else(|| {
+            panic_with_error!(env, ErrorCode::ProposalNotFound);
+        });
+
+    if proposal.executed {
+        panic_with_error!(env, ErrorCode::ProposalAlreadyExecuted);
+    }
+
+    for i in 0..proposal.approvals.len() {
+        if proposal.approvals.get_unchecked(i) == approver {
+            panic_with_error!(env, ErrorCode::AlreadyApproved);
+        }
+    }
+
+    proposal.approvals.push_back(approver.clone());
+
+    SourceProposalApprovedEvent {
+        proposal_id,
+        approver,
+    }
+    .publish(env);
+
+    if proposal.approvals.len() >= gov.threshold {
+        proposal.executed = true;
+        register_source_internal(env, proposal.source.clone(), proposal.name.clone());
+        SourceProposalExecutedEvent {
+            proposal_id,
+            source: proposal.source.clone(),
+        }
+        .publish(env);
+    }
+
+    env.storage().persistent().set(&prop_key, &proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&prop_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+pub fn get_source_proposal(env: &Env, proposal_id: u32) -> SourceProposal {
+    let prop_key = DataKey::SourceProposal(proposal_id);
+    env.storage()
+        .persistent()
+        .get(&prop_key)
+        .unwrap_or_else(|| {
+            panic_with_error!(env, ErrorCode::ProposalNotFound);
+        })
+}
+
+pub fn get_source_geo(env: &Env, source: Address) -> Option<SourceGeoMetadata> {
+    let key = DataKey::SourceGeo(source);
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_source_geo(env: &Env, source: Address, metadata: SourceGeoMetadata) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let key = DataKey::SourceGeo(source.clone());
+    env.storage().persistent().set(&key, &metadata);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    SourceGeoUpdatedEvent {
+        source,
+        region: metadata.region,
+        provider: metadata.provider,
+        jurisdiction: metadata.jurisdiction,
+    }
+    .publish(env);
+}
+
+fn calculate_hhi(env: &Env, counts: soroban_sdk::Map<soroban_sdk::String, u32>, total: u32) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let mut sum_squares = 0u64;
+    let keys = counts.keys();
+    for i in 0..keys.len() {
+        let key = keys.get_unchecked(i);
+        let count = counts.get_unchecked(key);
+        sum_squares = sum_squares.saturating_add((count as u64) * (count as u64));
+    }
+    let hhi = sum_squares.saturating_mul(10000) / ((total as u64) * (total as u64));
+    hhi as u32
+}
+
+pub fn get_decentralization_report(env: &Env) -> DecentralizationReport {
+    let oracle_sources = read_oracle_sources(env);
+    let total = oracle_sources.sources.len();
+    if total == 0 {
+        return DecentralizationReport {
+            region_hhi: 0,
+            provider_hhi: 0,
+            jurisdiction_hhi: 0,
+            overall_score: 0,
+        };
+    }
+
+    let mut region_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+    let mut provider_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+    let mut jurisdiction_counts: soroban_sdk::Map<soroban_sdk::String, u32> = soroban_sdk::Map::new(env);
+
+    let default_str = soroban_sdk::String::from_str(env, "unknown");
+
+    for i in 0..total {
+        let source = oracle_sources.sources.get_unchecked(i);
+        let geo = get_source_geo(env, source);
+        let (region, provider, jurisdiction) = match geo {
+            Some(g) => (g.region, g.provider, g.jurisdiction),
+            None => (default_str.clone(), default_str.clone(), default_str.clone()),
+        };
+
+        let rc = region_counts.get(region.clone()).unwrap_or(0);
+        region_counts.set(region, rc + 1);
+
+        let pc = provider_counts.get(provider.clone()).unwrap_or(0);
+        provider_counts.set(provider, pc + 1);
+
+        let jc = jurisdiction_counts.get(jurisdiction.clone()).unwrap_or(0);
+        jurisdiction_counts.set(jurisdiction, jc + 1);
+    }
+
+    let region_hhi = calculate_hhi(env, region_counts, total);
+    let provider_hhi = calculate_hhi(env, provider_counts, total);
+    let jurisdiction_hhi = calculate_hhi(env, jurisdiction_counts, total);
+
+    let avg_hhi = (region_hhi + provider_hhi + jurisdiction_hhi) / 3;
+    let overall_score = 10000u32.saturating_sub(avg_hhi);
+
+    DecentralizationReport {
+        region_hhi,
+        provider_hhi,
+        jurisdiction_hhi,
+        overall_score,
+    }
+}
+
+pub fn set_source_bond(env: &Env, amount: i128) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceBondAmount, &amount);
+
+    SourceBondConfigChangedEvent { admin, amount }.publish(env);
+}
+
+pub fn get_source_bond(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceBondAmount)
+        .unwrap_or(0i128)
+}
+
+pub fn get_source_deposited_bond(env: &Env, source: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SourceBond(source))
+        .unwrap_or(0i128)
+}
+
+pub fn deposit_source_bond(env: &Env, source: Address) {
+    source.require_auth();
+
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::SrcActive(source.clone()))
+    {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+
+    let required = get_source_bond(env);
+    if required <= 0 {
+        return;
+    }
+
+    let current_deposited = get_source_deposited_bond(env, source.clone());
+    if current_deposited >= required {
+        return;
+    }
+
+    let deposit_amount = required - current_deposited;
+    let token_contract = crate::reputation::get_stake_token_contract(env).unwrap_or_else(|| {
+        panic_with_error!(env, ErrorCode::StakeTokenNotConfigured);
+    });
+
+    let client = soroban_sdk::token::Client::new(env, &token_contract);
+    client.transfer(&source, &env.current_contract_address(), &deposit_amount);
+
+    let key = DataKey::SourceBond(source.clone());
+    env.storage().persistent().set(&key, &required);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    if check_source_inactive(env, &source) {
+        mark_source_active(env, &source);
+    }
+
+    SourceBondDepositedEvent {
+        source,
+        amount: deposit_amount,
+    }
+    .publish(env);
+}
+
+pub fn forfeit_source_bond_internal(env: &Env, source: Address) {
+    let key = DataKey::SourceBond(source.clone());
+    let deposited = get_source_deposited_bond(env, source.clone());
+    if deposited > 0 {
+        let treasury_key = DataKey::TreasuryBalance;
+        let balance: i128 = env.storage().persistent().get(&treasury_key).unwrap_or(0);
+        env.storage().persistent().set(&treasury_key, &(balance + deposited));
+
+        env.storage().persistent().set(&key, &0i128);
+
+        SourceBondForfeitedEvent {
+            source,
+            amount: deposited,
+        }
+        .publish(env);
+    }
+}
+
+
+

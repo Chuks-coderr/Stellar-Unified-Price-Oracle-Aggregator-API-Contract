@@ -954,6 +954,21 @@ pub struct CorrelationViolationEvent {
     pub max_ratio: u128,
 }
 
+/// Emitted when a (source, asset) price is flagged and excluded from aggregation
+/// due to a correlation violation.
+#[contractevent]
+#[derive(Clone)]
+pub struct CorrelationPriceFlaggedEvent {
+    /// The asset whose submitted price was flagged.
+    #[topic]
+    pub asset: Address,
+    /// The source whose submission was flagged.
+    #[topic]
+    pub source: Address,
+    /// The price value that triggered the flag.
+    pub flagged_price: i128,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #173: Tiered Consumer Access Events
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1268,47 +1283,171 @@ pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
 
-/// Emitted when an asset's metadata is updated.
+// ─────────────────────────────────────────────────────────────────────────────
+// #210: Progressive Disqualification Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a source accumulates enough demerits to trigger a warning.
 #[contractevent]
 #[derive(Clone)]
-pub struct AssetMetadataUpdatedEvent {
+pub struct SourceWarningEvent {
     #[topic]
-    pub asset: Address,
+    pub source: Address,
+    pub demerits: u32,
+}
+
+/// Emitted when a source accumulates enough demerits to be placed on probation.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProbationEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+}
+
+/// Emitted when a source accumulates enough demerits to be disqualified.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDisqualifiedEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+    pub status_updated_ledger: u32,
+}
+
+/// Emitted when a source's demerits and disqualification status are reset by the admin.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDemeritsResetEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the global demerit configuration is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct DemeritConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+
+/// Emitted when an invalid price submission is recorded against a source.
+#[contractevent]
+#[derive(Clone)]
+pub struct InvalidSubmissionRecordedEvent {
+    #[topic]
+    pub source: Address,
+    pub demerits: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #207: Multi-sig Source Governance Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when source governance config is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceGovConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub threshold: u32,
+    pub approvers_count: u32,
+}
+
+/// Emitted when a new source proposal is proposed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalCreatedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub proposer: Address,
+    #[topic]
+    pub source: Address,
     pub name: String,
-    pub symbol: String,
-    pub decimals: Option<u32>,
-    pub logo_uri: String,
 }
 
-/// Emitted when a source is automatically suspended by the circuit breaker due to price deviation.
+/// Emitted when an approver approves a source proposal.
 #[contractevent]
 #[derive(Clone)]
-pub struct SourceAutoSuspendedEvent {
+pub struct SourceProposalApprovedEvent {
+    #[topic]
+    pub proposal_id: u32,
+    #[topic]
+    pub approver: Address,
+}
+
+/// Emitted when a source proposal is executed (threshold met).
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceProposalExecutedEvent {
+    #[topic]
+    pub proposal_id: u32,
     #[topic]
     pub source: Address,
-    #[topic]
-    pub asset: Address,
-    pub submitted_price: i128,
-    pub reference_price: i128,
-    pub deviation_bps: u32,
-    pub threshold_bps: u32,
 }
 
-/// Emitted when a source withdraws their collected fees.
+// ─────────────────────────────────────────────────────────────────────────────
+// #208: Source Geolocation Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when geolocation metadata for a source is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct SourceFeesWithdrawnEvent {
+pub struct SourceGeoUpdatedEvent {
+    #[topic]
+    pub source: Address,
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #209: Source Heartbeat Liveness Bond Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when the required source bond amount is changed.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a source deposits its liveness bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondDepositedEvent {
     #[topic]
     pub source: Address,
     pub amount: i128,
 }
 
-/// Emitted when fees are credited to a source.
+/// Emitted when a source bond is forfeited.
 #[contractevent]
 #[derive(Clone)]
-pub struct SourceFeeCreditedEvent {
+pub struct SourceBondForfeitedEvent {
     #[topic]
     pub source: Address,
     pub amount: i128,
 }
+
+/// Emitted when a source bond is returned.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceBondReturnedEvent {
+    #[topic]
+    pub source: Address,
+    pub amount: i128,
+}
+
+
+
 
