@@ -248,6 +248,9 @@ pub enum DataKey {
     CorrelationBand(Address, Address),
     /// Ordered list of (base, quote) correlation pairs registered.
     CorrelationPairList,
+    /// Flag marking a (source, asset) price submission as correlation-violating.
+    /// Flagged submissions are excluded from aggregation.
+    CorrelationFlagged(Address, Address),
 
     // -------------------------------------------------------------------------
     // #173: Tiered Consumer Whitelisting
@@ -298,7 +301,24 @@ pub enum DataKey {
     ReferenceOracleList,
     /// Allowed deviation in basis points before a cross-reference alert is emitted.
     CrossRefDeviationThreshold,
+    /// Demerit and disqualification state for an oracle source.
+    SourceDemerits(Address),
+    /// Configured thresholds for progressive disqualification.
+    DemeritConfig,
+    /// Configured multi-sig source governance settings.
+    SourceGovConfig,
+    /// Total number of source proposals created.
+    SourceProposalCount,
+    /// A pending source proposal details.
+    SourceProposal(u32),
+    /// Geolocation metadata for a registered oracle source.
+    SourceGeo(Address),
+    /// Configured liveness bond amount required for sources.
+    SourceBondAmount,
+    /// Deposited bond amount for a registered oracle source.
+    SourceBond(Address),
 }
+
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -561,7 +581,21 @@ pub struct AssetMetadata {
     /// Optional override for the number of decimals used by this asset's token contract.
     /// When `None`, the contract-wide decimal setting applies.
     pub decimals: Option<u32>,
+    /// Logo URI of the asset.
+    pub logo_uri: String,
 }
+
+/// Helper struct for batch asset metadata updates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetMetadataUpdate {
+    pub asset: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: Option<u32>,
+    pub logo_uri: String,
+}
+
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -877,3 +911,85 @@ pub struct CrossReferenceResult {
     /// Contract address of the reference oracle that provided `ref_price`.
     pub ref_contract: Address,
 }
+
+// =============================================================================
+// #210 — Progressive Disqualification / Demerits System
+// =============================================================================
+
+/// Progressive disqualification status of an oracle source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum DisqualificationStatus {
+    Active = 0,
+    Warning = 1,
+    Probation = 2,
+    Disqualified = 3,
+}
+
+/// State tracking demerits and progressive disqualification status for a source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceDemeritState {
+    pub demerits: u32,
+    pub status: DisqualificationStatus,
+    pub status_updated_ledger: u32,
+}
+
+/// Configurations for progressive disqualification thresholds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DemeritConfig {
+    pub warning_threshold: u32,
+    pub probation_threshold: u32,
+    pub disqualified_threshold: u32,
+    pub cooldown_ledgers: u32,
+}
+
+// =============================================================================
+// #207 — Multi-sig Source Registration Governance
+// =============================================================================
+
+/// Configuration for source registration multi-sig governance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGovernance {
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A proposal to register a new source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceProposal {
+    pub id: u32,
+    pub source: Address,
+    pub name: String,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
+
+// =============================================================================
+// #208 — Source Geolocation & Decentralization Metrics
+// =============================================================================
+
+/// Geolocation and provider tags for an oracle source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceGeoMetadata {
+    pub region: String,
+    pub provider: String,
+    pub jurisdiction: String,
+}
+
+/// Decentralization and concentration report for registered sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DecentralizationReport {
+    pub region_hhi: u32,
+    pub provider_hhi: u32,
+    pub jurisdiction_hhi: u32,
+    pub overall_score: u32,
+}
+
+
+

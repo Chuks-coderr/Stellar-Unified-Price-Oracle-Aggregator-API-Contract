@@ -7,7 +7,7 @@ use crate::events::{
 use crate::storage::{
     get_admin, read_registered_assets, write_registered_assets, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
-use crate::types::{AssetMetadata, CircuitBreakerEventEntry, DataKey, ErrorCode, PriceBounds};
+use crate::types::{AssetMetadata, AssetMetadataUpdate, DataKey, ErrorCode};
 
 pub fn register_asset(env: &Env, asset: Address) {
     let admin = get_admin(env);
@@ -118,7 +118,47 @@ pub fn set_asset_metadata(env: &Env, asset: Address, metadata: AssetMetadata) {
     env.storage()
         .persistent()
         .set(&DataKey::AssetMetadata(asset.clone()), &metadata);
+
+    crate::events::AssetMetadataUpdatedEvent {
+        asset,
+        name: metadata.name,
+        symbol: metadata.symbol,
+        decimals: metadata.decimals,
+        logo_uri: metadata.logo_uri,
+    }
+    .publish(env);
 }
+
+pub fn batch_set_asset_metadata(env: &Env, updates: Vec<AssetMetadataUpdate>) {
+    let admin = get_admin(env);
+    admin.require_auth();
+
+    for i in 0..updates.len() {
+        let update = updates.get_unchecked(i);
+        crate::storage::check_registered_asset(env, &update.asset);
+
+        let metadata = AssetMetadata {
+            name: update.name.clone(),
+            symbol: update.symbol.clone(),
+            decimals: update.decimals,
+            logo_uri: update.logo_uri.clone(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AssetMetadata(update.asset.clone()), &metadata);
+
+        crate::events::AssetMetadataUpdatedEvent {
+            asset: update.asset.clone(),
+            name: update.name,
+            symbol: update.symbol,
+            decimals: update.decimals,
+            logo_uri: update.logo_uri,
+        }
+        .publish(env);
+    }
+}
+
 
 #[allow(dead_code)]
 pub fn get_asset_metadata(env: &Env, asset: Address) -> Option<AssetMetadata> {
