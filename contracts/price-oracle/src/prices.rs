@@ -1,4 +1,4 @@
-use soroban_sdk::{panic_with_error, Address, Env, String, Vec};
+use soroban_sdk::{panic_with_error, Address, Bytes, BytesN, Env, String, Vec};
 
 use crate::admin::{
     get_aggregation_cooldown, get_aggregation_method, get_asset_resolution, get_decimals,
@@ -187,7 +187,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     check_source(env, &source);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
-        panic_with_error!(env, ErrorCode::NotAuthorized);
+        panic_with_error!(env, ErrorCode::SourceSuspended);
     }
 
     let decimals = get_decimals(env);
@@ -217,6 +217,10 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     for i in 0..asset_prices.len() {
         let (asset, price, timestamp) = asset_prices.get_unchecked(i);
 
+        if check_deviation_circuit_breaker(env, &source, &asset, price) {
+            return;
+        }
+
         let entry = PriceEntry {
             price,
             timestamp,
@@ -229,6 +233,9 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
         env.storage()
             .persistent()
             .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+
+        record_successful_submission(env, source.clone());
+
 
         // #70: track last submission ledger for compliance
         env.storage().persistent().set(
@@ -304,7 +311,15 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
-    let min_interval = get_min_submission_interval(env);
+    let min_interval = {
+        let key = DataKey::AssetMinSubmissionInterval(asset.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            get_min_submission_interval(env)
+        }
+    };
     let current_ledger_for_agg = env.ledger().sequence();
     let selected_count = selected_sources.len();
 
@@ -341,6 +356,10 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
         let sub_key = DataKey::Submission(asset.clone(), src.clone());
         let sub: Option<PriceEntry> = env.storage().persistent().get(&sub_key);
         if let Some(entry_data) = sub {
+            // Skip prices flagged for correlation violations.
+            if crate::correlation::is_correlation_flagged(env, &src, asset) {
+                continue;
+            }
             env.storage()
                 .persistent()
                 .extend_ttl(&sub_key, LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -519,7 +538,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     check_registered_asset(env, &asset);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
-        panic_with_error!(env, ErrorCode::NotAuthorized);
+        panic_with_error!(env, ErrorCode::SourceSuspended);
     }
 
     if price <= 0 {
@@ -533,6 +552,10 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     if timestamp > ledger_time.saturating_add(threshold) {
         crate::sources::record_invalid_submission(env, source.clone());
         panic_with_error!(env, ErrorCode::InvalidTimestamp);
+    }
+
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
     }
 
     let decimals = get_decimals(env);
@@ -551,6 +574,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
 
+    record_successful_submission(env, source.clone());
+
+
     PriceSubmittedEvent {
         asset: asset.clone(),
         source: source.clone(),
@@ -558,6 +584,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         timestamp,
     }
     .publish(env);
+
+    // Cross-asset correlation check: flags (source, asset) if ratio is out of band.
+    crate::correlation::validate_correlation(env, &asset, price, &source);
 
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
@@ -1481,6 +1510,10 @@ pub fn submit_price_internal(
         panic_with_error!(env, ErrorCode::InvalidPrice);
     }
 
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
     let decimals = get_decimals(env);
     let current_ledger = env.ledger().sequence();
 
@@ -1497,6 +1530,8 @@ pub fn submit_price_internal(
         .persistent()
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
 
+    record_successful_submission(env, source.clone());
+
     PriceSubmittedEvent {
         asset: asset.clone(),
         source: source.clone(),
@@ -1506,4 +1541,203 @@ pub fn submit_price_internal(
     .publish(env);
 
     aggregate_asset(env, &asset, current_ledger, decimals);
+}
+
+// =============================================================================
+// simulate_aggregation — pure computation, no storage writes
+// =============================================================================
+
+/// Simulates what the aggregate price WOULD be for `asset` given a set of
+/// hypothetical (source, price) pairs, without writing anything to storage.
+///
+/// Applies the same aggregation method (median / mean / trimmed-mean) that is
+/// currently configured.  The caller can use this to preview the expected
+/// aggregate before committing a real submission.
+///
+/// # Arguments
+/// * `env`                 - Soroban execution environment.
+/// * `asset`               - Asset to simulate (must be registered).
+/// * `hypothetical_prices` - Vec of `(source_address, price)` pairs.
+///
+/// # Returns
+/// The simulated aggregate price, or `None` if fewer sources than
+/// `min_sources_required` are supplied.
+pub fn simulate_aggregation(
+    env: &Env,
+    asset: Address,
+    hypothetical_prices: Vec<(Address, i128)>,
+) -> Option<i128> {
+    check_registered_asset(env, &asset);
+
+    let min_required = get_min_sources_required(env);
+    let mut prices: Vec<i128> = Vec::new(env);
+
+    for i in 0..hypothetical_prices.len() {
+        let (_, price) = hypothetical_prices.get_unchecked(i);
+        if price > 0 {
+            prices.push_back(price);
+        }
+    }
+
+    if prices.len() < min_required {
+        return None;
+    }
+
+    let method = get_aggregation_method(env);
+    let result = match method {
+        0 => compute_median(&prices),
+        1 => compute_mean(&prices),
+        2 => compute_trimmed_mean(&prices, 10),
+        _ => compute_median(&prices),
+    };
+
+    Some(result)
+}
+
+// =============================================================================
+// submit_price_merkle — batch submission with on-chain merkle proof verification
+// =============================================================================
+
+/// A single leaf in a merkle batch: one source's price for one asset.
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct MerkleLeaf {
+    pub source: Address,
+    pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+}
+
+/// A merkle proof for one leaf: the sibling hashes from leaf to root.
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct MerkleProof {
+    /// The leaf data this proof covers.
+    pub leaf: MerkleLeaf,
+    /// Sibling hashes from leaf level up to (but not including) the root.
+    pub siblings: Vec<soroban_sdk::BytesN<32>>,
+    /// Bit-vector: bit `i` is 1 if the sibling at level `i` is on the LEFT.
+    pub left_bitmap: u32,
+}
+
+/// Hashes a `MerkleLeaf` to a 32-byte digest using the Soroban SHA-256 host function.
+///
+/// Pre-image: `price` (16 bytes LE) || `timestamp` (8 bytes LE).
+fn hash_leaf(env: &Env, leaf: &MerkleLeaf) -> soroban_sdk::BytesN<32> {
+    let mut data = soroban_sdk::Bytes::new(env);
+    data.append(&soroban_sdk::Bytes::from_slice(env, &leaf.price.to_le_bytes()));
+    data.append(&soroban_sdk::Bytes::from_slice(env, &leaf.timestamp.to_le_bytes()));
+    env.crypto().sha256(&data)
+}
+
+/// Hashes two 32-byte nodes together to produce the parent node hash.
+fn hash_pair(env: &Env, left: &soroban_sdk::BytesN<32>, right: &soroban_sdk::BytesN<32>) -> soroban_sdk::BytesN<32> {
+    let mut data = soroban_sdk::Bytes::new(env);
+    data.append(&soroban_sdk::Bytes::from_slice(env, left.to_array().as_ref()));
+    data.append(&soroban_sdk::Bytes::from_slice(env, right.to_array().as_ref()));
+    env.crypto().sha256(&data)
+}
+
+/// Verifies a merkle proof and returns `true` if the proof is valid for `root`.
+fn verify_proof(
+    env: &Env,
+    root: &soroban_sdk::BytesN<32>,
+    proof: &MerkleProof,
+) -> bool {
+    let mut current = hash_leaf(env, &proof.leaf);
+    for i in 0..proof.siblings.len() {
+        let sibling = proof.siblings.get_unchecked(i);
+        let left_bit = (proof.left_bitmap >> i) & 1;
+        current = if left_bit == 1 {
+            hash_pair(env, &sibling, &current)
+        } else {
+            hash_pair(env, &current, &sibling)
+        };
+    }
+    current == *root
+}
+
+/// Submits a batch of prices verified against a merkle root in a single transaction.
+///
+/// The caller (source) provides:
+/// 1. A 32-byte merkle `root` that was computed off-chain over all leaf data.
+/// 2. An ordered list of `MerkleProof` entries, each covering one (source, asset, price, timestamp).
+///
+/// The contract verifies every proof against the root before accepting any
+/// submission, then stores and aggregates all valid prices atomically.
+///
+/// This dramatically reduces calldata cost for multi-source submissions because
+/// only the proofs—not all raw price data—need to be transmitted per source.
+///
+/// # Arguments
+/// * `env`    - Soroban execution environment.
+/// * `source` - The caller who signs the transaction.
+/// * `root`   - 32-byte merkle root computed over all leaves in this batch.
+/// * `proofs` - Individual merkle proofs, one per price submission.
+pub fn submit_price_merkle(
+    env: &Env,
+    source: Address,
+    root: soroban_sdk::BytesN<32>,
+    proofs: Vec<MerkleProof>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+
+    if crate::sources::is_source_suspended(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+
+    let decimals = get_decimals(env);
+    let ledger_time = env.ledger().timestamp();
+    let threshold = get_timestamp_threshold(env);
+    let current_ledger = env.ledger().sequence();
+
+    // Phase 1: verify all proofs and validate each leaf — atomicity guaranteed.
+    for i in 0..proofs.len() {
+        let proof = proofs.get_unchecked(i);
+        if !verify_proof(env, &root, &proof) {
+            panic_with_error!(env, ErrorCode::InvalidConfiguration);
+        }
+        check_registered_asset(env, &proof.leaf.asset);
+        if proof.leaf.price <= 0 {
+            panic_with_error!(env, ErrorCode::InvalidPrice);
+        }
+        if proof.leaf.timestamp > ledger_time.saturating_add(threshold) {
+            panic_with_error!(env, ErrorCode::InvalidTimestamp);
+        }
+    }
+
+    // Phase 2: store all submissions (batch storage writes, single loop).
+    let mut assets_to_aggregate: Vec<Address> = Vec::new(env);
+    for i in 0..proofs.len() {
+        let proof = proofs.get_unchecked(i);
+        let leaf = proof.leaf;
+        let entry = PriceEntry {
+            price: leaf.price,
+            timestamp: leaf.timestamp,
+            source: leaf.source.clone(),
+            decimals,
+            last_updated: current_ledger,
+            ledger_timestamp: ledger_time,
+        };
+        env.storage().persistent().set(
+            &DataKey::Submission(leaf.asset.clone(), leaf.source.clone()),
+            &entry,
+        );
+        PriceSubmittedEvent {
+            asset: leaf.asset.clone(),
+            source: leaf.source.clone(),
+            price: leaf.price,
+            timestamp: leaf.timestamp,
+        }
+        .publish(env);
+        assets_to_aggregate.push_back(leaf.asset);
+    }
+
+    // Phase 3: aggregate each unique asset once.
+    for i in 0..assets_to_aggregate.len() {
+        let asset = assets_to_aggregate.get_unchecked(i);
+        aggregate_asset(env, &asset, current_ledger, decimals);
+    }
 }
