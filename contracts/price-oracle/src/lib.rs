@@ -9,6 +9,7 @@
 mod admin;
 mod alerts;
 mod assets;
+mod challenger;
 mod correlation;
 mod cross_reference;
 mod errors;
@@ -31,6 +32,9 @@ mod timelock;
 mod types;
 mod whitelisting;
 mod zk_verify;
+mod audit_log;
+mod rbac;
+mod emergency_pause;
 
 #[cfg(test)]
 mod cross_ref_tests;
@@ -44,11 +48,24 @@ mod prop_tests;
 #[cfg(test)]
 mod string_boundary_tests;
 
+#[cfg(test)]
+mod challenger_tests;
+
+#[cfg(test)]
+mod audit_log_tests;
+
+#[cfg(test)]
+mod rbac_tests;
+
+#[cfg(test)]
+mod emergency_pause_tests;
+
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
-    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
-    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    AggregatePrice, AggregationMethod, Asset, AuditEntry, BatchOperation, Challenge,
+    CrossReferenceResult, DataKey, EmergencyPause, ErrorCode, FinalityStatus, FinalizedPrice,
+    HealthReport, MigrationState, OracleSources, PendingBatch, PendingFinalityEntry, PriceCommit,
+    PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry, RelayerInfo, Role,
+    SourceHealthStatus, SubscriptionPlans,
 };
 
 use soroban_sdk::{
@@ -2300,6 +2317,134 @@ impl PriceOracleContract {
         reentrancy::enter(&env);
         zk_verify::submit_zk_price(&env, source, asset, proof, public_signals);
         reentrancy::exit(&env);
+    }
+
+    // =========================================================================
+    // #235 — Price Feed Verification Challenger
+    // =========================================================================
+
+    /// Challenge an aggregate price with expected price and proof data.
+    pub fn challenge_price(env: Env, asset: Address, expected_price: i128, proof_data: Bytes) {
+        reentrancy::enter(&env);
+        challenger::challenge_price(&env, asset, expected_price, proof_data);
+        reentrancy::exit(&env);
+    }
+
+    /// Resolve a challenge as valid or invalid (admin only).
+    pub fn resolve_challenge(env: Env, challenge_id: u32, is_valid: bool) {
+        reentrancy::enter(&env);
+        challenger::resolve_challenge(&env, challenge_id, is_valid);
+        reentrancy::exit(&env);
+    }
+
+    /// Claim accumulated challenge rewards.
+    pub fn claim_rewards(env: Env) -> i128 {
+        reentrancy::enter(&env);
+        let result = challenger::claim_rewards(&env);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Get challenge history for an asset.
+    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<Challenge> {
+        challenger::get_challenge_history(&env, asset, limit)
+    }
+
+    /// Get unclaimed rewards for a challenger.
+    pub fn get_challenger_rewards(env: Env, challenger: Address) -> i128 {
+        challenger::get_challenger_rewards(&env, challenger)
+    }
+
+    // =========================================================================
+    // #239 — Admin Audit Log with Hash Chain
+    // =========================================================================
+
+    /// Get admin audit log entries.
+    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<AuditEntry> {
+        audit_log::get_admin_audit_log(&env, from_id, limit)
+    }
+
+    /// Verify the integrity of the audit chain.
+    pub fn verify_audit_chain(env: Env) -> bool {
+        audit_log::verify_audit_chain(&env)
+    }
+
+    /// Get the total number of audit entries.
+    pub fn get_audit_log_count(env: Env) -> u32 {
+        audit_log::get_audit_log_count(&env)
+    }
+
+    /// Get the current audit log head hash.
+    pub fn get_audit_log_head(env: Env) -> Bytes {
+        audit_log::get_audit_log_head(&env)
+    }
+
+    // =========================================================================
+    // #241 — Admin Delegation with Role-Based Access Control (RBAC)
+    // =========================================================================
+
+    /// Delegate a role to an address (admin only).
+    pub fn delegate_role(env: Env, delegatee: Address, role: Role) {
+        reentrancy::enter(&env);
+        rbac::delegate_role(&env, delegatee, role);
+        reentrancy::exit(&env);
+    }
+
+    /// Revoke a role from an address (admin only).
+    pub fn revoke_role(env: Env, delegatee: Address, role: Role) {
+        reentrancy::enter(&env);
+        rbac::revoke_role(&env, delegatee, role);
+        reentrancy::exit(&env);
+    }
+
+    /// Check if an address has a specific role.
+    pub fn has_role(env: Env, caller: Address, role: Role) -> bool {
+        rbac::has_role(&env, &caller, role)
+    }
+
+    /// Get all addresses that have a specific role.
+    pub fn get_role_holders(env: Env, role: Role) -> Vec<Address> {
+        rbac::get_role_holders(&env, role)
+    }
+
+    /// Get all roles held by an address.
+    pub fn get_address_roles(env: Env, holder: Address) -> Vec<u32> {
+        rbac::get_address_roles(&env, &holder)
+    }
+
+    // =========================================================================
+    // #240 — Emergency Pause with Timelock Bypass
+    // =========================================================================
+
+    /// Trigger emergency pause (bypasses timelock, admin only).
+    pub fn emergency_pause(env: Env, reason: String, auto_unpause_ledgers: u32) {
+        reentrancy::enter(&env);
+        emergency_pause::emergency_pause(&env, reason, auto_unpause_ledgers);
+        reentrancy::exit(&env);
+    }
+
+    /// Extend an active emergency pause (admin only).
+    pub fn extend_emergency_pause(env: Env, additional_ledgers: u32) {
+        reentrancy::enter(&env);
+        emergency_pause::extend_emergency_pause(&env, additional_ledgers);
+        reentrancy::exit(&env);
+    }
+
+    /// Cancel an active emergency pause (admin only).
+    pub fn cancel_emergency_pause(env: Env) {
+        reentrancy::enter(&env);
+        emergency_pause::cancel_emergency_pause(&env);
+        reentrancy::exit(&env);
+    }
+
+    /// Check if emergency pause is currently active.
+    pub fn is_emergency_pause_active(env: Env) -> bool {
+        emergency_pause::is_emergency_pause_active(&env)
+    }
+
+    /// Get emergency pause details if active.
+    pub fn get_emergency_pause(env: Env) -> Option<EmergencyPause> {
+        emergency_pause::get_emergency_pause(&env)
     }
 }
 

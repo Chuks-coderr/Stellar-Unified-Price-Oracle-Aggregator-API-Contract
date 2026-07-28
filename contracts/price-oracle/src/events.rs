@@ -1267,3 +1267,142 @@ pub struct InterpolationChangedEvent {
 pub struct MaxSourcesChangedEvent {
     pub value: u32,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #235: Price Feed Verification Challenger Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a price challenge is submitted.
+#[contractevent]
+#[derive(Clone)]
+pub struct ChallengePricedEvent {
+    /// Sequential challenge ID.
+    #[topic]
+    pub challenge_id: u32,
+    /// Asset being challenged.
+    #[topic]
+    pub asset: Address,
+    /// Address that submitted the challenge.
+    #[topic]
+    pub challenger: Address,
+    /// Challenger's expected price.
+    pub expected_price: i128,
+    /// Ledger when challenge was submitted.
+    pub challenged_ledger: u32,
+}
+
+/// Emitted when a challenge is resolved.
+#[contractevent]
+#[derive(Clone)]
+pub struct ChallengeResolvedEvent {
+    /// Challenge ID being resolved.
+    #[topic]
+    pub challenge_id: u32,
+    /// Asset that was challenged.
+    pub asset: Address,
+    /// Whether the challenge was valid.
+    pub is_valid: bool,
+    /// Reward amount if valid.
+    pub reward_amount: i128,
+    /// Admin who resolved the challenge.
+    pub resolved_by: Address,
+}
+
+/// Emitted when a challenger claims their rewards.
+#[contractevent]
+#[derive(Clone)]
+pub struct RewardsClaimedEvent {
+    /// Challenger claiming rewards.
+    #[topic]
+    pub claimer: Address,
+    /// Total amount claimed.
+    pub amount: i128,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #239: Admin Audit Log Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when an admin action is appended to the audit log.
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminAuditEntryAppendedEvent {
+    /// Audit entry ID.
+    pub entry_id: u32,
+    /// Action symbol.
+    pub action: Symbol,
+    /// Admin who performed the action.
+    pub admin: Address,
+    /// Unix timestamp of the action.
+    pub timestamp: u64,
+    /// Ledger sequence number.
+    pub ledger: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #241: Role-Based Access Control (RBAC) Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a role is delegated to an address.
+#[contractevent]
+#[derive(Clone)]
+pub struct RoleDelegatedEvent {
+    /// Address that received the role.
+    #[topic]
+    pub delegatee: Address,
+    /// Role discriminant (u32).
+    pub role: u32,
+    /// Admin who delegated the role.
+    pub delegator: Address,
+}
+
+/// Emitted when a role is revoked from an address.
+#[contractevent]
+#[derive(Clone)]
+pub struct RoleRevokedEvent {
+    /// Address that lost the role.
+    #[topic]
+    pub delegatee: Address,
+    /// Role discriminant (u32).
+    pub role: u32,
+    /// Admin who revoked the role.
+    pub delegator: Address,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #240: Emergency Pause Events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when emergency pause is activated.
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyPausedEvent {
+    /// Reason for the emergency pause.
+    pub reason: String,
+    /// Ledger at which automatic unpause will occur.
+    pub auto_unpause_ledger: u32,
+    /// Admin who initiated the emergency pause.
+    pub initiated_by: Address,
+}
+
+/// Emitted when emergency pause is cancelled.
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyUnpausedEvent {
+    /// Reason for the emergency pause that was cancelled.
+    pub reason: String,
+    /// Admin who cancelled the emergency pause.
+    pub cancelled_by: Address,
+}
+
+/// Emitted when emergency pause timeout is extended.
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyPauseExtendedEvent {
+    /// Reason for the emergency pause.
+    pub reason: String,
+    /// New ledger at which automatic unpause will occur.
+    pub new_unpause_ledger: u32,
+    /// Admin who extended the emergency pause.
+    pub extended_by: Address,
+}
