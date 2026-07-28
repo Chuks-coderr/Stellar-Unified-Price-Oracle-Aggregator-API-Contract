@@ -45,6 +45,9 @@ mod override_tests;
 mod prop_tests;
 
 #[cfg(test)]
+mod twap_tests;
+
+#[cfg(test)]
 mod string_boundary_tests;
 
 pub use types::{
@@ -52,7 +55,7 @@ pub use types::{
     CrossReferenceResult, DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport,
     MigrationState, OracleSources, PendingBatch, PendingFinalityEntry, PriceBounds, PriceCommit,
     PriceData, PriceEntry, PriceHistoryEntry, PriceOverrideEntry, RelayerInfo, SourceHealthStatus,
-    SubscriptionPlans,
+    SubscriptionPlans, TwapMethod,
 };
 
 use soroban_sdk::{
@@ -1258,6 +1261,18 @@ impl PriceOracleContract {
     /// `Some(`[`PriceData`]`)` with the latest aggregate price, or `None`.
     pub fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
         prices::lastprice(&env, asset)
+    }
+
+    /// Returns the TWAP for an asset over a window of ledgers.
+    ///
+    /// Supports arithmetic and geometric TWAP computation.
+    pub fn get_twap(
+        env: Env,
+        asset: Asset,
+        window_ledgers: u32,
+        method: TwapMethod,
+    ) -> Option<PriceData> {
+        prices::get_twap(&env, asset, window_ledgers, method)
     }
 
     /// Returns the price for an asset at or before the given Unix timestamp (SEP-40 `price`).
