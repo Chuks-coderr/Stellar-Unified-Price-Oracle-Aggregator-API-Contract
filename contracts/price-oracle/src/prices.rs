@@ -18,12 +18,12 @@ use crate::events::{
 use crate::pause::check_not_paused;
 use crate::storage::{
     check_registered_asset, check_source, compute_confidence_bps, compute_mean, compute_median,
-    compute_trimmed_mean, get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP,
+    compute_trimmed_mean, get_admin, is_subscribed, read_oracle_sources, sort_prices, LEDGER_BUMP,
     LEDGER_THRESHOLD,
 };
 use crate::types::{
-    AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
-    PriceHistoryEntry, PriceOverrideEntry,
+    AggregatePrice, Asset, BftAggregationMethod, DataKey, ErrorCode, OracleSources, PriceData,
+    PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
 };
 
 fn build_candidate_aggregate(
@@ -91,13 +91,7 @@ fn build_candidate_aggregate(
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let method = get_aggregation_method(env);
-        let aggregated_price = match method {
-            0 => compute_median(&valid_prices),
-            1 => compute_mean(&valid_prices),
-            2 => compute_trimmed_mean(&valid_prices, 10),
-            _ => compute_median(&valid_prices),
-        };
+        let aggregated_price = aggregate_prices(env, &valid_prices);
         Some(AggregatePrice {
             price: aggregated_price,
             timestamp: latest_timestamp,
@@ -108,6 +102,122 @@ fn build_candidate_aggregate(
     } else {
         None
     }
+}
+
+fn read_bft_fault_tolerance(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgBftFaultTolerance)
+        .unwrap_or(0)
+}
+
+fn read_bft_aggregation_method(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CfgBftAggregationMethod)
+        .unwrap_or(BftAggregationMethod::Median as u32)
+}
+
+fn enforce_commit_reveal_for_bft(env: &Env) {
+    if read_bft_fault_tolerance(env) > 0 {
+        panic_with_error!(env, ErrorCode::CommitRevealRequired);
+    }
+}
+
+fn aggregate_prices(env: &Env, prices: &Vec<i128>) -> i128 {
+    let bft_fault_tolerance = read_bft_fault_tolerance(env);
+    if bft_fault_tolerance > 0 {
+        let method = read_bft_aggregation_method(env);
+        return aggregate_bft_prices(env, prices, bft_fault_tolerance, method);
+    }
+
+    let method = get_aggregation_method(env);
+    match method {
+        0 => compute_median(prices),
+        1 => compute_mean(prices),
+        2 => compute_trimmed_mean(prices, 10),
+        _ => compute_median(prices),
+    }
+}
+
+fn aggregate_bft_prices(env: &Env, prices: &Vec<i128>, fault_tolerance: u32, method: u32) -> i128 {
+    let n = prices.len();
+    if n == 0 {
+        return 0;
+    }
+    if n == 1 {
+        return prices.get_unchecked(0);
+    }
+
+    let mut sorted: Vec<i128> = prices.clone();
+    sort_prices(&mut sorted);
+
+    let mut accepted: Vec<i128> = Vec::new(env);
+    if n >= 4 {
+        let q1_index = n / 4;
+        let q3_index = (n * 3 / 4).saturating_sub(1);
+        let q1 = sorted.get_unchecked(q1_index);
+        let q3 = sorted.get_unchecked(q3_index);
+        let iqr = q3.saturating_sub(q1);
+        let margin = iqr.saturating_mul(3) / 2;
+        let lower_bound = q1.saturating_sub(margin);
+        let upper_bound = q3.saturating_add(margin);
+
+        for i in 0..n {
+            let value = sorted.get_unchecked(i);
+            if value >= lower_bound && value <= upper_bound {
+                accepted.push_back(value);
+            }
+        }
+    }
+
+    let mut consensus = if accepted.is_empty() {
+        sorted.clone()
+    } else {
+        accepted
+    };
+    let consensus_len = consensus.len();
+    let trim_count = fault_tolerance.min(consensus_len / 2);
+    if trim_count > 0 && consensus_len > trim_count.saturating_mul(2) {
+        let start = trim_count;
+        let end = consensus_len.saturating_sub(trim_count);
+        let mut trimmed: Vec<i128> = Vec::new(env);
+        for i in start..end {
+            trimmed.push_back(consensus.get_unchecked(i));
+        }
+        if !trimmed.is_empty() {
+            consensus = trimmed;
+        }
+    }
+
+    match method {
+        0 => compute_median(&consensus),
+        1 => compute_mean(&consensus),
+        2 => compute_trimmed_mean(&consensus, 10),
+        _ => compute_median(&consensus),
+    }
+}
+
+pub fn set_bft_parameters(env: &Env, fault_tolerance: u32, method: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if method > BftAggregationMethod::TrimmedMean as u32 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgBftFaultTolerance, &fault_tolerance);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgBftAggregationMethod, &method);
+}
+
+pub fn get_bft_fault_tolerance(env: &Env) -> u32 {
+    read_bft_fault_tolerance(env)
+}
+
+pub fn get_bft_aggregation_method(env: &Env) -> u32 {
+    read_bft_aggregation_method(env)
 }
 
 fn validate_price_submission(
@@ -185,6 +295,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     check_not_paused(env);
     source.require_auth();
     check_source(env, &source);
+    enforce_commit_reveal_for_bft(env);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::NotAuthorized);
@@ -353,13 +464,7 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let method = get_aggregation_method(env);
-        let median_price = match method {
-            0 => compute_median(&valid_prices),
-            1 => compute_mean(&valid_prices),
-            2 => compute_trimmed_mean(&valid_prices, 10),
-            _ => compute_median(&valid_prices),
-        };
+        let median_price = aggregate_prices(env, &valid_prices);
 
         let agg_key = DataKey::Aggregate(asset.clone());
         let prev_aggregate: AggregatePrice =
@@ -517,6 +622,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     source.require_auth();
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    enforce_commit_reveal_for_bft(env);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::NotAuthorized);
@@ -1059,13 +1165,7 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let method = get_aggregation_method(env);
-        let agg_price = match method {
-            0 => compute_median(&valid_prices),
-            1 => compute_mean(&valid_prices),
-            2 => compute_trimmed_mean(&valid_prices, 10),
-            _ => compute_median(&valid_prices),
-        };
+        let agg_price = aggregate_prices(env, &valid_prices);
 
         let aggregate = AggregatePrice {
             price: agg_price,
@@ -1476,6 +1576,7 @@ pub fn submit_price_internal(
 ) {
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    enforce_commit_reveal_for_bft(env);
 
     if price <= 0 {
         panic_with_error!(env, ErrorCode::InvalidPrice);

@@ -128,4 +128,7 @@ pub enum ErrorCode {
     ReputationTooHighToSlash = 52,
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
+    /// Direct price submissions are rejected while BFT aggregation is enabled because
+    /// commit-reveal is required for source consensus.
+    CommitRevealRequired = 57,
 }

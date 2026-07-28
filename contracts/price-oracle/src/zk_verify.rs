@@ -99,11 +99,7 @@ pub fn submit_zk_price(
 
     // Source must be registered
     let source_key = DataKey::SrcActive(source.clone());
-    let is_src: bool = env
-        .storage()
-        .persistent()
-        .get(&source_key)
-        .unwrap_or(false);
+    let is_src: bool = env.storage().persistent().get(&source_key).unwrap_or(false);
     if !is_src {
         panic_with_error!(env, ErrorCode::SourceNotFound);
     }
@@ -211,11 +207,7 @@ fn groth16_verify(
 
 /// Computes vk_x = IC[0] + sum(s_i * IC[i+1]) using affine G1 addition.
 /// Each IC entry is 64 bytes: 32 bytes x-coord || 32 bytes y-coord (big-endian).
-fn compute_vk_x(
-    env: &Env,
-    vk: &Groth16VerifyingKey,
-    public_signals: &Vec<BytesN<32>>,
-) -> Bytes {
+fn compute_vk_x(env: &Env, vk: &Groth16VerifyingKey, public_signals: &Vec<BytesN<32>>) -> Bytes {
     // Start with IC[0]
     let mut acc = extract_ic_point(env, &vk.ic_bytes, 0);
 
@@ -484,7 +476,11 @@ fn barrett_reduce(wide: &[u64; 8]) -> U256 {
     let hi: U256 = [wide[4], wide[5], wide[6], wide[7]];
 
     if u256_is_zero(&hi) {
-        return if u256_ge(&lo, &P) { u256_sub_p(&lo) } else { lo };
+        return if u256_ge(&lo, &P) {
+            u256_sub_p(&lo)
+        } else {
+            lo
+        };
     }
 
     // Use the identity: (hi * 2^256 + lo) mod p

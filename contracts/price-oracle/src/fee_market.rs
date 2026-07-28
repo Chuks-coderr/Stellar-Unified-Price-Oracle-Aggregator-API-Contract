@@ -169,11 +169,7 @@ pub fn enqueue_submission(
 
     // Validate source
     let source_key = DataKey::SrcActive(source.clone());
-    let is_source: bool = env
-        .storage()
-        .persistent()
-        .get(&source_key)
-        .unwrap_or(false);
+    let is_source: bool = env.storage().persistent().get(&source_key).unwrap_or(false);
     if !is_source {
         panic_with_error!(env, ErrorCode::SourceNotFound);
     }
