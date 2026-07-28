@@ -38,6 +38,7 @@ mod rotation;
 mod sources;
 mod state_channel;
 mod storage;
+mod gas_metering;
 mod submission_deadline;
 mod subscription;
 mod timelock;
@@ -91,6 +92,7 @@ pub use types::{
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal,
     SourceGeoMetadata, DecentralizationReport,
+    GasRecord, StorageTtlEntry,
 };
 
 
@@ -1144,7 +1146,15 @@ impl PriceOracleContract {
     /// * [`ErrorCode::InvalidTimestamp`] — if `timestamp` is too far in the future.
     pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
         reentrancy::enter(&env);
+        // Measure budget before and after to record last submit_price cost.
+        let before_cpu = env.budget().cpu_instruction_count();
+        let before_mem = env.budget().memory_bytes_count();
         prices::submit_price(&env, source, asset, price, timestamp);
+        let after_cpu = env.budget().cpu_instruction_count();
+        let after_mem = env.budget().memory_bytes_count();
+        let cpu_delta = after_cpu.saturating_sub(before_cpu);
+        let mem_delta = after_mem.saturating_sub(before_mem);
+        crate::gas_metering::write_last_gas(&env, String::from_str(&env, "submit_price"), cpu_delta, mem_delta);
         reentrancy::exit(&env);
     }
 
@@ -1165,6 +1175,23 @@ impl PriceOracleContract {
     /// Same error conditions as `submit_price`, applied per entry.
     pub fn submit_prices(env: Env, source: Address, asset_prices: Vec<(Address, i128, u64)>) {
         prices::submit_prices(&env, source, asset_prices);
+    }
+
+    /// Returns current budget counters and the last recorded gas usage.
+    ///
+    /// Returns `(cpu_instructions_used, memory_bytes_used, last_recorded)` where
+    /// `last_recorded` is the `GasRecord` for the most-recent submit/aggregate.
+    pub fn get_gas_stats(env: Env) -> (u64, u64, Option<GasRecord>) {
+        let cpu = env.budget().cpu_instruction_count();
+        let mem = env.budget().memory_bytes_count();
+        let last = crate::gas_metering::read_last_gas(&env);
+        (cpu, mem, last)
+    }
+
+    /// Returns storage TTL status for well-known keys. Remaining TTL is `0`
+    /// when the runtime does not expose a retrievable TTL value.
+    pub fn get_storage_ttl_status(env: Env) -> Vec<StorageTtlEntry> {
+        crate::storage::get_storage_ttl_status(&env)
     }
 
     /// Returns the latest aggregate price for an asset, filtered by a maximum age.

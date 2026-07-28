@@ -422,3 +422,60 @@ pub fn is_subscribed(env: &Env, consumer: &Address) -> bool {
         false
     }
 }
+
+/// Gather TTL status for known storage entries. Exact remaining TTL values
+/// are not exposed by the Soroban storage API; return `0` when unavailable.
+pub fn get_storage_ttl_status(env: &Env) -> soroban_sdk::Vec<crate::types::StorageTtlEntry> {
+    let mut out: soroban_sdk::Vec<crate::types::StorageTtlEntry> = soroban_sdk::Vec::new(env);
+
+    // Assets registry
+    let asset_key = DataKey::AssetRegistry;
+    let asset_exists = env.storage().persistent().has(&asset_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "AssetRegistry"),
+        exists: asset_exists,
+        remaining_ttl: 0,
+    });
+
+    // Oracle sources registry
+    let src_key = DataKey::SrcRegistry;
+    let src_exists = env.storage().persistent().has(&src_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "SrcRegistry"),
+        exists: src_exists,
+        remaining_ttl: 0,
+    });
+
+    // For each registered asset, report aggregate existence and history entries.
+    let assets = read_registered_assets(env);
+    for i in 0..assets.len() {
+        let a = assets.get_unchecked(i);
+        let agg_key = DataKey::Aggregate(a.clone());
+        let exists = env.storage().persistent().has(&agg_key);
+        out.push_back(crate::types::StorageTtlEntry {
+            key: soroban_sdk::String::from_str(env, &format!("Aggregate({})", i)),
+            exists,
+            remaining_ttl: 0,
+        });
+
+        // Price history ledgers list (if present)
+        let ledgers_key = DataKey::PriceHistoryLedgers(a.clone());
+        if env.storage().persistent().has(&ledgers_key) {
+            let ledger_list: Option<soroban_sdk::Vec<u32>> = env.storage().persistent().get(&ledgers_key);
+            if let Some(list) = ledger_list {
+                for j in 0..list.len() {
+                    let ledger = list.get_unchecked(j);
+                    let hist_key = DataKey::PriceHistory(a.clone(), ledger);
+                    let exists_hist = env.storage().temporary().has(&hist_key);
+                    out.push_back(crate::types::StorageTtlEntry {
+                        key: soroban_sdk::String::from_str(env, &format!("PriceHistory({}, {})", i, ledger)),
+                        exists: exists_hist,
+                        remaining_ttl: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
