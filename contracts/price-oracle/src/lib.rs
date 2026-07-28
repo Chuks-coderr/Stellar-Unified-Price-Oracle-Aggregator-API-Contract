@@ -10,6 +10,7 @@ mod admin;
 mod alerts;
 mod amm;
 mod assets;
+mod challenger;
 mod correlation;
 mod cross_chain_relay;
 mod cross_reference;
@@ -41,6 +42,9 @@ mod types;
 mod vdf_sampler;
 mod whitelisting;
 mod zk_verify;
+mod audit_log;
+mod rbac;
+mod emergency_pause;
 
 #[cfg(test)]
 mod cross_ref_tests;
@@ -53,6 +57,18 @@ mod prop_tests;
 
 #[cfg(test)]
 mod string_boundary_tests;
+
+#[cfg(test)]
+mod challenger_tests;
+
+#[cfg(test)]
+mod audit_log_tests;
+
+#[cfg(test)]
+mod rbac_tests;
+
+#[cfg(test)]
+mod emergency_pause_tests;
 
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
