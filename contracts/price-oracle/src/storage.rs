@@ -1,8 +1,10 @@
 use crate::types::{DataKey, ErrorCode, OracleSources, SubscriptionPlans};
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
-pub const LEDGER_THRESHOLD: u32 = 1000;
-pub const LEDGER_BUMP: u32 = 4000;
+// Keep frequently accessed contract entries alive longer to reduce TTL bump traffic
+// on hot paths such as admin/config/registry lookups.
+pub const LEDGER_THRESHOLD: u32 = 10_000;
+pub const LEDGER_BUMP: u32 = 40_000;
 pub const DEFAULT_QUERY_RATE_LIMIT: u32 = 100;
 
 pub fn get_admin(env: &Env) -> Address {

@@ -333,6 +333,130 @@ pub enum DataKey {
     SourceBondAmount,
     /// Deposited bond amount for a registered oracle source.
     SourceBond(Address),
+
+    // -------------------------------------------------------------------------
+    // Additional keys for feature modules
+    // -------------------------------------------------------------------------
+
+    /// Per-asset minimum submission interval override.
+    AssetMinSubmissionInterval(Address),
+
+    /// Active source set for an asset rotation schedule (#206).
+    AssetActiveSourceSet(Address),
+    /// Standby source set for an asset rotation schedule (#206).
+    AssetStandbySourceSet(Address),
+    /// Rotation schedule for an asset (#206).
+    AssetRotationSchedule(Address),
+    /// Next rotation ledger for an asset (#206).
+    AssetNextRotationLedger(Address),
+
+    /// Ledger when an asset's TTL was last extended (#203).
+    AssetLastTtlExtended(Address),
+
+    /// Per-day operation count for an admin op type (daily limit).
+    AdminOpDailyCount(u32, u32),
+    /// Per-day operation limit configuration for an admin op type.
+    AdminOpDailyLimit(u32),
+
+    /// AMM pool data for an asset (#180).
+    AmmPool(Address),
+    /// AMM maximum deviation basis points for an asset.
+    AmmMaxDeviationBps(Address),
+
+    /// Challenge entries keyed by ID (#235).
+    Challenge(u32),
+    /// Total challenge count (#235).
+    ChallengeCount,
+    /// Challenger rewards balance (#235).
+    ChallengerRewards(Address),
+
+    /// Cross-chain relay configuration (#182).
+    CrossChainRelayConfig,
+
+    /// Submission deadline for an asset (#202).
+    SubmissionDeadline(Address),
+    /// Rebate amount available for a source/asset pair (#202).
+    SubmissionRebate(Address, Address),
+    /// Total rebate balance available for distribution (#202).
+    RebateBalance,
+
+    /// Event type registry for structured event indexing (#201).
+    EventTypeRegistry,
+
+    /// Exotic asset pricing configuration (#177).
+    ExoticAssetConfig(Address),
+
+    /// Fee market pending queue (#176).
+    FmPendingQueue,
+    /// Fee market fee pool balance (#176).
+    FmFeePool,
+    /// Per-source fee balance in the fee market (#176).
+    FmSourceFeeBalance(Address),
+    /// Fee market treasury address (#176).
+    FmTreasury,
+    /// Total treasury balance in fee market (#176).
+    FmTreasuryBalance,
+    /// Minimum priority fee setting (#176).
+    FmMinPriorityFee,
+    /// Fee distribution ratio (bps to sources vs treasury) (#176).
+    FmFeeDistributionRatio,
+
+    /// Multi-sig governors list (#178).
+    MsGovernors,
+    /// Multi-sig required approval count (#178).
+    MsRequiredApprovals,
+    /// A multi-sig operation by ID (#178).
+    MsOp(u32),
+    /// Multi-sig queue head pointer (#178).
+    MsQueueHead,
+    /// Multi-sig queue tail pointer (#178).
+    MsQueueTail,
+    /// Total multi-sig operation count (#178).
+    MsOpCount,
+
+    /// State channel per source (#179).
+    StateChannel(Address),
+
+    /// Current aggregation round metadata.
+    CurrentAggregationRound,
+
+    /// VDF sampling size configuration.
+    VdfSamplingSize,
+
+    /// ZK verifying key storage (#175).
+    ZkVerifyingKey,
+
+    /// Per-asset decimal configuration (#227).
+    AssetDecimals(Address),
+
+    /// Delegated role: (holder, role_discriminant) → bool.
+    DelegatedRole(Address, u32),
+    /// Role holders list keyed by role discriminant.
+    RoleHolders(u32),
+
+    /// Emergency pause entry (#240).
+    EmergencyPauseEntry,
+    /// Whether emergency pause is currently active (#240).
+    EmergencyPauseActive,
+    /// Reason for emergency pause (#240).
+    EmergencyPauseReason,
+
+    /// Per-source fee credit balance (for source reward schemes).
+    SourceFeeBalance(Address),
+    /// Total submission count across all sources.
+    TotalSubmissionCount,
+    /// Per-source submission count.
+    SourceSubmissionCount(Address),
+
+    /// Circuit breaker threshold in basis points.
+    CircuitBreakerThreshold,
+
+    /// Audit log entry by ID (#239).
+    AuditEntry(u32),
+    /// Total audit log entry count (#239).
+    AuditEntryCount,
+    /// Current audit log chain head hash (#239).
+    AuditLogHead,
 }
 
 
@@ -1076,3 +1200,362 @@ pub struct DecentralizationReport {
 
 
 
+
+// =============================================================================
+// Missing types required by feature modules
+// =============================================================================
+
+/// Admin operation type discriminant for operation limiting (#238).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum AdminOperationType {
+    AddSource = 0,
+    RemoveSource = 1,
+    RegisterAsset = 2,
+    UnregisterAsset = 3,
+    SetDecimals = 4,
+    SetResolution = 5,
+}
+
+/// Per-operation-type daily limit configuration (#238).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AdminOpLimit {
+    pub daily_limit: u32,
+    /// Ledger when this limit config was set.
+    pub set_ledger: u32,
+}
+
+/// AMM pool data for the constant-product oracle AMM (#180).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AmmPool {
+    /// Address of token X in the pool.
+    pub asset_x: Address,
+    /// Address of token Y in the pool.
+    pub asset_y: Address,
+    /// Reserve of token X in the pool (scaled).
+    pub reserve_x: u128,
+    /// Reserve of token Y in the pool (scaled).
+    pub reserve_y: u128,
+    /// Constant product k = reserve_x * reserve_y.
+    pub k: u128,
+    /// Whether the pool is currently accepting swaps.
+    pub enabled: bool,
+    /// Fee in basis points applied to each swap (e.g., 30 = 0.3%).
+    pub fee_bps: u32,
+}
+
+/// A price challenge record (#235).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Challenge {
+    /// Unique challenge identifier.
+    pub id: u32,
+    /// Asset being challenged.
+    pub asset: Address,
+    /// Address of the challenger.
+    pub challenger: Address,
+    /// Challenger's claimed correct price.
+    pub expected_price: i128,
+    /// Arbitrary proof bytes.
+    pub proof_data: Bytes,
+    /// Ledger when the challenge was submitted.
+    pub challenged_ledger: u32,
+    /// Whether the challenge has been resolved.
+    pub is_resolved: bool,
+    /// Whether the challenge was deemed valid upon resolution.
+    pub is_valid: bool,
+    /// Reward amount credited on valid resolution.
+    pub reward_amount: i128,
+}
+
+/// Price event payload for cross-chain relay (#182).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriceEventPayload {
+    /// Aggregated price.
+    pub price: i128,
+    /// Unix timestamp of the price.
+    pub timestamp: u64,
+    /// Ledger sequence at which the event was recorded.
+    pub ledger_sequence: u32,
+}
+
+/// Minimal Stellar ledger header fields needed for cross-chain light-client verification (#182).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StellarHeader {
+    /// Ledger sequence number.
+    pub ledger_sequence: u32,
+    /// 32-byte hash of the transaction set.
+    pub tx_set_hash: BytesN<32>,
+    /// 32-byte hash of the bucket list.
+    pub bucket_list_hash: BytesN<32>,
+    /// Expected header digest for consistency check.
+    pub expected_hash: BytesN<32>,
+}
+
+/// Asset pricing type for exotic assets (#177).
+/// Each variant carries the data needed to compute the asset's fair value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum AssetType {
+    /// Directly priced asset (standard oracle feed).
+    Direct,
+    /// LP token: (reserve0, reserve1, total_supply).
+    LPToken(u128, u128, u128),
+    /// Basket/index: (component addresses, weights).
+    Index(Vec<Address>, Vec<u32>),
+    /// Options contract: (underlying asset, strike, expiry_timestamp, is_call).
+    Option(Address, u128, u64, bool),
+}
+
+/// Configuration for an exotic asset's fair-value pricing (#177).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetPricingConfig {
+    /// Category of the exotic asset.
+    pub asset_type: AssetType,
+    /// Whether this configuration is enabled.
+    pub enabled: bool,
+    /// Volatility in basis points (used for option pricing).
+    pub volatility_bps: u32,
+}
+
+/// Fee market submission entry (#176).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FeeMarketSubmission {
+    /// Submitting oracle source address.
+    pub source: Address,
+    /// Asset being priced.
+    pub asset: Address,
+    /// Submitted price.
+    pub price: i128,
+    /// Submitted timestamp.
+    pub timestamp: u64,
+    /// Priority fee attached (in stroops-equivalent).
+    pub priority_fee: u128,
+    /// Ledger when submitted.
+    pub submitted_ledger: u32,
+}
+
+/// Ordered pending-submission queue for the fee market (#176).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingFeeSubmissions {
+    /// Submissions ordered by (priority_fee DESC, timestamp ASC).
+    pub submissions: Vec<FeeMarketSubmission>,
+}
+
+/// Multi-sig governance operation (#178).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct MultiSigOperation {
+    /// Unique sequential ID.
+    pub id: u32,
+    /// Operation type (symbol or discriminant).
+    pub op_type: soroban_sdk::Symbol,
+    /// Encoded payload.
+    pub data: Bytes,
+    /// Addresses that have approved this operation.
+    pub approvals: Vec<Address>,
+    /// Number of approvals required to reach quorum.
+    pub required_approvals: u32,
+    /// Ledger when the operation was first proposed.
+    pub proposed_ledger: u32,
+    /// Address of the proposer.
+    pub proposed_by: Address,
+    /// Whether the operation has been executed.
+    pub executed: bool,
+    /// Ledger when quorum was reached and timelock started (0 = not yet).
+    pub timelock_start_ledger: u32,
+    /// Linked-list next pointer (0 = tail).
+    pub next_op_id: u32,
+}
+
+/// Per-asset decimal precision configuration (#227).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetDecimalConfig {
+    /// Number of decimal places for this asset.
+    pub decimals: u32,
+    /// Whether this configuration is active.
+    pub enabled: bool,
+    /// Ledger when this config was set.
+    pub set_ledger: u32,
+}
+
+/// Source rotation schedule for an asset (#206).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceRotationSchedule {
+    /// Ledger interval between rotations.
+    pub rotation_interval: u32,
+    /// Ledger of the next scheduled rotation.
+    pub next_rotation_ledger: u32,
+    /// Overlap period in ledgers (old+new sources both active during transition).
+    pub overlap_period: u32,
+    /// Whether rotation is currently enabled.
+    pub enabled: bool,
+}
+
+/// Off-chain state channel for high-frequency updates (#179).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateChannel {
+    /// Address of the oracle source that opened the channel.
+    pub source: Address,
+    /// Deposit amount locked in the channel (stroops).
+    pub deposit: i128,
+    /// Current nonce (highest processed batch sequence number).
+    pub nonce: u64,
+    /// Last confirmed price via the channel.
+    pub last_price: u128,
+    /// Last confirmed timestamp via the channel.
+    pub last_timestamp: u64,
+    /// Unix timestamp after which a dispute can be raised.
+    pub dispute_timeout: u64,
+    /// Whether the channel is closed.
+    pub is_closed: bool,
+    /// XLM/token contract address used for the deposit.
+    pub token_contract: Address,
+}
+
+/// Aggregation round metadata for VDF sampler (#VDF).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AggregationRound {
+    /// Round sequence number.
+    pub round_id: u32,
+    /// Ledger when this round started.
+    pub start_ledger: u32,
+    /// Ledger when this round ended (0 if in progress).
+    pub end_ledger: u32,
+    /// Number of submissions in this round.
+    pub submission_count: u32,
+    /// Aggregated price for this round.
+    pub aggregate_price: i128,
+}
+
+/// Groth16 verifying key for ZK proof verification (#175).
+/// Fields are stored as flat byte arrays to avoid BN254 point type complexity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Groth16VerifyingKey {
+    /// Number of IC points (= public_inputs + 1).
+    pub ic_len: u32,
+    /// Flat concatenation of IC points (64 bytes each, x-coord || y-coord).
+    pub ic_bytes: Bytes,
+    /// Pre-computed pairing bytes for the verification equation.
+    pub pairing_precomp: Bytes,
+}
+
+/// Groth16 ZK proof for off-chain price attestation (#175).
+/// Points stored as flat byte arrays: 64 bytes each for A/C, 128 bytes for B.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Groth16Proof {
+    /// A point (64 bytes).
+    pub a: Bytes,
+    /// B point (128 bytes).
+    pub b: Bytes,
+    /// C point (64 bytes).
+    pub c: Bytes,
+    /// Fiat-Shamir verification tag (32 bytes).
+    pub fs_check: BytesN<32>,
+}
+
+/// ZK-verified price attestation (#175).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ZkPriceAttestation {
+    /// Asset address.
+    pub asset: Address,
+    /// Attested price.
+    pub price: i128,
+    /// Unix timestamp.
+    pub timestamp: u64,
+    /// Public signals for the proof.
+    pub public_signals: Vec<BytesN<32>>,
+    /// The Groth16 proof.
+    pub proof: Groth16Proof,
+}
+
+/// Audit log entry for admin actions (#239).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AuditEntry {
+    /// Sequential log entry ID.
+    pub id: u32,
+    /// Short action symbol (e.g., "add_src").
+    pub action: Symbol,
+    /// Admin address that performed the action.
+    pub admin: Address,
+    /// Arbitrary action data.
+    pub data: Bytes,
+    /// Ledger sequence number of this entry.
+    pub ledger: u32,
+    /// Unix timestamp of this entry.
+    pub timestamp: u64,
+    /// SHA-256 hash of the previous entry (hash chain).
+    pub previous_hash: Bytes,
+    /// SHA-256 hash of this entry (for chain validation).
+    pub current_hash: Bytes,
+}
+
+/// RBAC role discriminant (#241).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum Role {
+    /// Manage oracle sources.
+    SourceManager = 0,
+    /// Register/unregister assets.
+    AssetManager = 1,
+    /// Submit and override prices.
+    PriceUpdater = 2,
+    /// Modify configuration settings.
+    ConfigManager = 3,
+    /// Perform upgrades and admin transfers.
+    UpgradeManager = 4,
+}
+
+/// Emergency pause state (#240).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EmergencyPause {
+    /// Admin who triggered the pause.
+    pub initiated_by: Address,
+    /// Reason for the emergency pause.
+    pub reason: String,
+    /// Ledger when the pause was triggered.
+    pub initiated_ledger: u32,
+    /// Ledger after which the pause automatically expires (0 = manual only).
+    pub auto_unpause_ledger: u32,
+}
+
+/// Configuration for cross-chain relay (#182).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CrossChainRelayConfig {
+    /// Whether relay is enabled.
+    pub enabled: bool,
+    /// Quorum threshold percentage (e.g., 67 means 2/3 of validators).
+    pub quorum_threshold_pct: u32,
+    /// Bit-vector encoding the Merkle path direction for proof verification.
+    pub merkle_path_bits: u32,
+}
+
+/// A batch item for state channel high-frequency updates.
+/// Each item carries a price update with strict nonce ordering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BatchItem {
+    /// Monotonically increasing nonce (must exceed channel's current nonce).
+    pub nonce: u64,
+    /// Price value (scaled by decimals).
+    pub price: u128,
+    /// Unix timestamp of the price observation.
+    pub timestamp: u64,
+}
