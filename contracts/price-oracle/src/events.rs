@@ -1914,3 +1914,41 @@ pub struct RateLimitTierChangedEvent {
 // Emitted when an invalid submission is recorded against a source (re-export from events).
 // Already defined elsewhere, but needed here as well.
 // Note: InvalidSubmissionRecordedEvent is already defined above; this is the canonical copy.
+
+/// Emitted when an admin freezes an asset's price during a market emergency (#223).
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceFrozenEvent {
+    #[topic]
+    pub asset: Address,
+    pub reason: String,
+    pub price: i128,
+    pub frozen_at_ledger: u32,
+}
+
+/// Emitted when an admin unfreezes a previously frozen asset (#223).
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceUnfrozenEvent {
+    #[topic]
+    pub asset: Address,
+    pub unfrozen_at_ledger: u32,
+}
+
+/// Emitted when an admin registers a notification preference for an event type (#243).
+#[contractevent]
+#[derive(Clone)]
+pub struct NotifPrefSetEvent {
+    #[topic]
+    pub event_type: u32,
+    pub channel: String,
+    pub target: String,
+}
+
+/// Emitted when an admin clears all notification preferences for an event type (#243).
+#[contractevent]
+#[derive(Clone)]
+pub struct NotifPrefsClearedEvent {
+    #[topic]
+    pub event_type: u32,
+}
