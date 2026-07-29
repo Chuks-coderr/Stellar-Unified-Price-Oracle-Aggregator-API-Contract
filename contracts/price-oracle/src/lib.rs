@@ -11,10 +11,11 @@ mod admin_op_limits;
 mod alerts;
 mod amm;
 mod assets;
-mod challenger;
-mod correlation;
-mod cross_chain_relay;
-mod cross_chain_verify;
+// The core module is always compiled (it has no Env deps).
+// When the `fuzz` feature is enabled it is also re-exported so that the
+// fuzz crate can call `price_oracle::core::*` directly.
+#[cfg_attr(feature = "fuzz", allow(dead_code))]
+pub(crate) mod core;
 mod cross_reference;
 mod deadline_rebate;
 mod errors;
@@ -763,6 +764,28 @@ impl PriceOracleContract {
     /// Returns the current aggregation cooldown in ledgers. Defaults to `10`.
     pub fn get_aggregation_cooldown(env: Env) -> u32 {
         admin::get_aggregation_cooldown(&env)
+    }
+
+    // --- #191: Aggregation method selection ---
+
+    /// Sets the active price aggregation method. Admin-only.
+    ///
+    /// | `method` | Algorithm |
+    /// |----------|-----------|
+    /// | `0` | **Median** (default) — O(n) quickselect, resistant to outliers |
+    /// | `1` | **Mean** — arithmetic average of all prices |
+    /// | `2` | **TrimmedMean** — mean after removing top/bottom 10% |
+    /// | `3` | **WeightedMedian** — median weighted by source reputation scores |
+    ///
+    /// Emits `AggregationMethodChangedEvent`.
+    pub fn set_aggregation_method(env: Env, method: u32) {
+        admin::set_aggregation_method(&env, method);
+    }
+
+    /// Returns the current aggregation method discriminant.
+    /// * `0` = Median, `1` = Mean, `2` = TrimmedMean, `3` = WeightedMedian
+    pub fn get_aggregation_method(env: Env) -> u32 {
+        admin::get_aggregation_method(&env)
     }
 
     // --- #70: Min submission interval ---

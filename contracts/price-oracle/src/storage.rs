@@ -79,7 +79,7 @@ pub fn check_source_asset(env: &Env, source: &Address, asset: &Address) {
 }
 
 /// Sort prices using heapsort — guaranteed O(n log n) worst-case, O(1) extra space.
-/// Preferred over quicksort to avoid O(n²) worst-case gas cost on adversarial inputs.
+/// Used by `compute_trimmed_mean` which needs a fully sorted array.
 pub fn sort_prices(prices: &mut soroban_sdk::Vec<i128>) {
     let n = prices.len();
     if n <= 1 {
