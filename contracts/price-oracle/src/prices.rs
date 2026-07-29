@@ -388,23 +388,27 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     // randomly select a subset using the current ledger hash for determinism.
     let max_agg = get_max_aggregation_sources(env);
     let selected_sources: Vec<Address> = if max_agg > 0 && total_sources > max_agg {
-        // Use ledger hash bytes as a deterministic seed.
-        let hash_bytes = env.ledger().sequence().to_le_bytes();
-        // Simple LCG-style selection: pick indices derived from the hash.
-        let seed = u32::from_le_bytes(hash_bytes);
+        // Use ledger hash bytes as deterministic entropy for selection.
+        // Construct a 32-byte ledger hash using the chainable SHA256 of the
+        // current ledger sequence (stable across nodes) to avoid predictability.
+        let seq_bytes = soroban_sdk::Bytes::from_slice(env, &env.ledger().sequence().to_le_bytes());
+        let hash: soroban_sdk::BytesN<32> = env.crypto().sha256(&seq_bytes).into();
+        // Derive a 32-bit seed from the first 4 bytes of the hash.
+        let mut seed_arr: [u8; 4] = [0u8; 4];
+        seed_arr.copy_from_slice(&hash.as_slice()[0..4]);
+        let seed = u32::from_le_bytes(seed_arr);
+
         let mut selected: Vec<Address> = Vec::new(env);
-        // Reservoir-style: include source[i] if deterministic hash says so.
-        // We iterate all sources and keep `max_agg` of them pseudo-randomly.
         let mut kept: u32 = 0;
+
+        // Deterministic reservoir sampling driven by the seeded LCG.
         for i in 0..total_sources {
             let remaining = total_sources - i;
             let needed = max_agg - kept;
-            // Probability of keeping: needed / remaining (integer check).
-            // Use a hash of seed XOR index to decide.
+            // LCG step to mix seed and index.
             let h = seed
                 .wrapping_mul(1664525u32)
-                .wrapping_add(i)
-                .wrapping_add(1013904223u32);
+                .wrapping_add(i.wrapping_add(1013904223u32));
             if needed >= remaining || (h % remaining) < needed {
                 selected.push_back(oracle_sources.sources.get_unchecked(i));
                 kept += 1;
