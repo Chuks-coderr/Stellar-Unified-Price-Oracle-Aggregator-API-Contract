@@ -1,4 +1,14 @@
-use soroban_sdk::{contractevent, symbol_short, Address, Bytes, String, Symbol};
+use soroban_sdk::{contractevent, Address, Bytes, String, Symbol};
+
+/// Publishes a generic admin-action audit event.
+///
+/// Used by every admin-mutating function to emit a consistent on-chain audit trail.
+/// Callers pass a short `action` symbol (≤8 chars), the acting `admin` address, and
+/// optional arbitrary `data` bytes (may be empty).
+#[allow(deprecated)]
+pub fn emit_admin_action(env: &soroban_sdk::Env, action: Symbol, admin: Address, data: Bytes) {
+    env.events().publish((action, admin), (data,));
+}
 
 // ContractInitializedEvent uses manual publishing due to String field
 // limitations with the macro in soroban-sdk 26.
@@ -19,6 +29,61 @@ pub struct PriceSubmittedEvent {
     pub price: i128,
     /// Unix timestamp (seconds) provided by the source.
     pub timestamp: u64,
+}
+
+/// Emitted when a new optimistic price proposal is created.
+///
+/// Topics: `asset`, `proposer`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalCreatedEvent {
+    /// Address of the asset for which the proposal was made.
+    #[topic]
+    pub asset: Address,
+    /// Address of the proposer.
+    #[topic]
+    pub proposer: Address,
+    /// Monotonic proposal id assigned by the contract.
+    pub proposal_id: u32,
+    /// Proposed price value.
+    pub price: i128,
+    /// Proposed timestamp.
+    pub timestamp: u64,
+    /// Bond amount posted for the proposal.
+    pub bond_amount: i128,
+    /// Ledger at which the proposal becomes final if not disputed.
+    pub expires_at_ledger: u32,
+}
+
+/// Emitted when an optimistic price proposal is disputed.
+///
+/// Topics: `proposal_id`, `disputer`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalDisputedEvent {
+    /// Proposal id being disputed.
+    #[topic]
+    pub proposal_id: u32,
+    /// Address of the disputer.
+    #[topic]
+    pub disputer: Address,
+    /// Bond amount posted by the disputer.
+    pub bond_amount: i128,
+}
+
+/// Emitted when an optimistic price proposal is resolved.
+///
+/// Topics: `proposal_id`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceProposalResolvedEvent {
+    /// Proposal id being resolved.
+    #[topic]
+    pub proposal_id: u32,
+    /// Whether the proposal was accepted by the admin.
+    pub approved: bool,
+    /// Whether the proposal was finalized into an aggregate price.
+    pub finalized: bool,
 }
 
 /// Emitted when the aggregate price for an asset changes.
@@ -71,6 +136,44 @@ pub struct SourceRemovedEvent {
     /// Address of the admin who performed the action.
     #[topic]
     pub admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAssetAddedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAssetRemovedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceVerificationSetEvent {
+    #[topic]
+    pub source: Address,
+    pub verified: bool,
+    pub verification_method: String,
+    pub verifier: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceKeyRotatedEvent {
+    #[topic]
+    pub old_source: Address,
+    #[topic]
+    pub new_source: Address,
+    pub ledger: u32,
 }
 
 /// Emitted when a new asset is registered for price tracking.
@@ -225,6 +328,43 @@ pub struct PriceAggregatedEvent {
     pub num_sources: u32,
     /// Unix timestamp of the most-recent contributing submission.
     pub timestamp: u64,
+}
+
+/// Emitted when an asset's circuit breaker trips and the update is rejected.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct CircuitBreakerTrippedEvent {
+    /// Address of the asset that triggered the breaker.
+    #[topic]
+    pub asset: Address,
+    /// Previous aggregate price before the rejected update.
+    pub previous_price: i128,
+    /// Candidate aggregate price that would have been published.
+    pub candidate_price: i128,
+    /// Change amount in basis points that exceeded the configured limit.
+    pub change_bps: u32,
+    /// Maximum allowed change in basis points for a single ledger.
+    pub max_change_bps: u32,
+    /// Ledger at which the breaker tripped.
+    pub ledger: u32,
+    /// Unix timestamp of the breaker trip.
+    pub timestamp: u64,
+}
+
+/// Emitted when the circuit breaker is manually reset by the admin.
+///
+/// Topics: `asset`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct CircuitBreakerResetEvent {
+    /// Address of the asset whose breaker was reset.
+    #[topic]
+    pub asset: Address,
+    /// Admin who reset the breaker.
+    #[topic]
+    pub admin: Address,
 }
 
 /// Emitted when the oldest history entry for an asset is pruned to enforce `max_history_length`.
@@ -513,6 +653,8 @@ pub struct SubscriptionExpiredEvent {
     /// Address of the consumer whose subscription expired.
     #[topic]
     pub consumer: Address,
+}
+
 // --- #67: Per-asset resolution ---
 
 /// Emitted when the per-asset resolution is set or cleared.
@@ -543,7 +685,7 @@ pub struct AggregationTriggeredEvent {
 /// Emitted when the aggregation cooldown is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct AggregationCooldownChangedEvent {
+pub struct AggCooldownChangedEvent {
     pub cooldown_ledgers: u32,
 }
 
@@ -552,7 +694,7 @@ pub struct AggregationCooldownChangedEvent {
 /// Emitted when the minimum submission interval is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct MinSubmissionIntervalChangedEvent {
+pub struct SubmitIntervalChangedEvent {
     pub interval_ledgers: u32,
 }
 

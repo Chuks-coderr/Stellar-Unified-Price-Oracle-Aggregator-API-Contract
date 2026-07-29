@@ -14,7 +14,7 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
-use crate::{PriceOracleContract, PriceOracleContractClient};
+use crate::{PriceOracleContract, PriceOracleContractClient, storage::compute_median};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -176,6 +176,22 @@ fn bench_get_price(e: &Env, client: &PriceOracleContractClient<'_>, n_sources: u
     );
 }
 
+fn bench_compute_median(e: &Env, n_values: u32) {
+    let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(e);
+    for i in 0..n_values {
+        prices.push_back(((65_000 + i as i128) * 10_i128.pow(7)));
+    }
+    let (cpu, mem) = measure(e, || {
+        let _ = compute_median(&prices);
+    });
+    row(
+        "compute_median",
+        &alloc_label("", n_values, " values"),
+        cpu,
+        mem,
+    );
+}
+
 fn bench_get_all_prices(e: &Env, client: &PriceOracleContractClient<'_>, n_sources: u32) {
     set_ledger(e, 1, 1_000_000);
     let asset = Address::generate(e);
@@ -306,6 +322,12 @@ fn gas_report() {
         let c = deploy(&e);
         init(&e, &c, 1, 200);
         bench_get_all_prices(&e, &c, n);
+    }
+
+    // compute_median: 10, 50, 100 values
+    for n in [10u32, 50, 100] {
+        let e = new_env();
+        bench_compute_median(&e, n);
     }
 
     // get_historical_price: 10, 50, 100 history entries

@@ -5,11 +5,24 @@ use soroban_sdk::contracterror;
 /// Each variant maps to a `u32` discriminant that is embedded in the Soroban
 /// host error returned to the caller. Clients should match on these values to
 /// present meaningful error messages.
+///
+/// **Discriminant registry** (never reuse a number, even after a variant is removed):
+///
+/// | Range  | Category               |
+/// |--------|------------------------|
+/// | 0–15   | Core / original        |
+/// | 16–19  | Rate-limit & migration |
+/// | 20–30  | Source management      |
+/// | 31–39  | Commit-reveal (#187)   |
+/// | 40–49  | Finality gadget (#188) |
+/// | 50–61  | Relayer & misc         |
+/// | 62–74  | Asset/price bounds     |
+/// | 75–99  | Advanced features      |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
+    // ── 0–15: Core ───────────────────────────────────────────────────────────
     /// The caller is not authorized to perform the requested operation.
-    /// Returned when `require_auth()` fails or a non-admin attempts an admin action.
     NotAuthorized = 0,
     /// `initialize` was called on a contract that has already been set up.
     AlreadyInitialized = 1,
@@ -29,8 +42,7 @@ pub enum ErrorCode {
     NoData = 8,
     /// The submitted timestamp lies too far in the future relative to the current ledger time.
     InvalidTimestamp = 9,
-    /// A configuration parameter is out of its valid range (e.g. `min_sources = 0`,
-    /// `deviation_basis_points > 100_000`, or `heartbeat_interval = 0`).
+    /// A configuration parameter is out of its valid range.
     InvalidConfiguration = 10,
     /// The description string exceeds the maximum allowed length of 256 characters.
     DescriptionTooLong = 11,
@@ -42,17 +54,150 @@ pub enum ErrorCode {
     OperationNotFound = 14,
     /// The submitted price is below the asset's configured minimum price floor.
     PriceBelowMinimum = 15,
-    /// Rate limit exceeded for an operation (e.g., too many price submissions).
+
+    // ── 16–19: Rate-limit, subscription & migration ──────────────────────────
+    /// Rate limit exceeded for an operation.
     RateLimitExceeded = 16,
     /// The requested subscription plan duration does not exist.
     InvalidDuration = 17,
     /// The consumer's subscription has expired.
     SubscriptionExpired = 18,
-    Reentrant = 16,
-    /// The `op_type` discriminant passed to `propose_operation` is not in `[0, 7]`.
-    InvalidOperationType = 17,
-    /// A migration is already in progress; complete or resume it before starting another.
-    MigrationInProgress = 18,
+    /// A migration is already in progress.
+    MigrationInProgress = 19,
+
+    // ── 20–30: Source management ─────────────────────────────────────────────
     /// No migration is currently in progress.
-    NoMigrationInProgress = 19,
+    NoMigrationInProgress = 20,
+    /// The source name is empty.
+    SourceNameEmpty = 21,
+    /// The source name exceeds the maximum allowed length.
+    SourceNameTooLong = 22,
+    /// The maximum number of sources has been reached.
+    MaxSourcesReached = 23,
+    /// The `op_type` discriminant passed to `propose_operation` is not valid.
+    InvalidOperationType = 24,
+    /// A reentrancy attempt was detected.
+    Reentrant = 25,
+    /// Source is not pending removal (cancel / finalize called on non-pending source).
+    SourceNotPendingRemoval = 26,
+    /// The removal cooldown has not elapsed yet.
+    CooldownNotElapsed = 27,
+    /// Maximum number of registered assets reached.
+    MaxAssetsReached = 28,
+    /// A reason string is too long.
+    ReasonTooLong = 29,
+    /// Records limit exceeded for price history query.
+    RecordsLimitExceeded = 30,
+
+    // ── 31–39: Commit-reveal (#187) ──────────────────────────────────────────
+    /// The revealed hash does not match the committed hash.
+    CommitHashMismatch = 31,
+    /// The commit has expired (reveal window has closed for this round).
+    CommitExpired = 32,
+    /// No commit was found for this (source, asset, round).
+    CommitNotFound = 33,
+    /// The reveal window is closed — too early or too late to reveal.
+    RevealWindowClosed = 34,
+    /// A commit already exists for this (source, asset, round); cannot double-commit.
+    AlreadyCommitted = 35,
+    /// The commit round ledger is invalid (e.g., in the future).
+    InvalidCommitRound = 36,
+    /// Commit-reveal scheme is required (BFT fault tolerance > 0) but was bypassed.
+    CommitRevealRequired = 37,
+
+    // ── 40–49: Finality gadget (#188) ────────────────────────────────────────
+    /// The price has already been finalized and cannot be changed.
+    AlreadyFinalized = 40,
+    /// The price was retracted due to a detected reorg.
+    PriceRetracted = 41,
+    /// The price is still in the finality pending window.
+    FinalityPending = 42,
+    /// The requested price does not meet the caller's minimum finality requirement.
+    InsufficientFinality = 43,
+    /// A reorg was detected via ledger hash chain inconsistency.
+    ReorgDetected = 44,
+
+    // ── 50–61: Relayer & misc ────────────────────────────────────────────────
+    /// The caller is not a registered and approved relayer.
+    RelayerNotAuthorized = 50,
+    /// `add_relayer` was called for an address that is already an approved relayer.
+    RelayerAlreadyExists = 51,
+    /// Source reputation is too high to be eligible for slashing.
+    ReputationTooHighToSlash = 52,
+    /// Maximum number of alert subscriptions has been reached.
+    MaxSubscriptionsReached = 53,
+    /// The oracle source has been suspended due to progressive disqualification.
+    SourceSuspended = 62,
+    /// Demerit configuration thresholds are invalid.
+    InvalidDemeritThreshold = 63,
+    /// Invalid source governance config.
+    InvalidGovernanceConfig = 64,
+    /// The specified source proposal does not exist.
+    ProposalNotFound = 57,
+    /// Approver has already approved the proposal.
+    AlreadyApproved = 58,
+    /// The source proposal was already executed.
+    ProposalAlreadyExecuted = 59,
+    /// The source has not deposited the required bond.
+    InsufficientBond = 60,
+    /// The staking/fee token contract has not been configured.
+    StakeTokenNotConfigured = 61,
+
+    // ── 62–74: Asset/price bounds & circuit breaker ───────────────────────────
+    /// The submitted price falls outside the asset's configured price bounds.
+    PriceOutOfBounds = 65,
+    /// The asset is currently paused and cannot accept new submissions.
+    AssetPaused = 66,
+    /// The circuit breaker tripped for the asset and rejected the update.
+    CircuitBreakerTripped = 67,
+
+    // ── 75–99: Advanced features ──────────────────────────────────────────────
+    /// Daily admin operation limit exceeded.
+    OperationLimitExceeded = 75,
+    /// An arithmetic overflow occurred in a calculation.
+    ArithmeticOverflow = 76,
+    /// AMM pool already exists for this asset pair.
+    PoolAlreadyExists = 77,
+    /// AMM pool not found for this asset pair.
+    PoolNotFound = 78,
+    /// AMM swap would exceed maximum allowed slippage.
+    SlippageExceeded = 79,
+    /// AMM price manipulation detected.
+    AmmPriceManipulation = 80,
+    /// Price challenge submission is outside the valid submission window.
+    OutOfSubmissionWindow = 81,
+    /// State channel not found for this source.
+    ChannelNotFound = 82,
+    /// State channel is already open for this source.
+    ChannelAlreadyOpen = 83,
+    /// Exotic asset cycle depth limit exceeded.
+    ExoticCycleLimitExceeded = 84,
+    /// Exotic cycle detected in asset dependency graph.
+    ExoticCycleDetected = 85,
+    /// Exotic asset pricing configuration not found.
+    ExoticAssetNotConfigured = 86,
+    /// Fee market submission is below the minimum priority fee.
+    FeeMarketBelowMinimum = 87,
+    /// Multi-sig: approval not found.
+    ApprovalNotFound = 88,
+    /// Multi-sig: not the queue head.
+    MsNotQueueHead = 89,
+    /// Multi-sig: quorum not reached.
+    MsQuorumNotReached = 90,
+    /// Optimistic oracle: bond is too small.
+    BondTooSmall = 91,
+    /// Optimistic oracle: proposal already disputed.
+    ProposalAlreadyDisputed = 92,
+    /// Optimistic oracle: proposal already resolved.
+    ProposalAlreadyResolved = 93,
+    /// Optimistic oracle: proposal has expired.
+    ProposalExpired = 94,
+    /// Optimistic oracle: proposal not disputed (cannot resolve).
+    ProposalNotDisputed = 95,
+    /// ZK proof is invalid.
+    ZkProofInvalid = 96,
+    /// ZK verifying key not set.
+    ZkVkNotSet = 97,
+    /// ZK invalid public signals.
+    ZkInvalidPublicSignals = 98,
 }

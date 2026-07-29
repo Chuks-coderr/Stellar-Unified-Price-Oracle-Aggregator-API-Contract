@@ -70,9 +70,7 @@ fn test_add_reference_oracle_unauthorized() {
     let mapping: Map<Address, Address> = Map::new(&e);
 
     clear_auth(&e);
-    assert!(client
-        .try_add_reference_oracle(&mock_id, &mapping)
-        .is_err());
+    assert!(client.try_add_reference_oracle(&mock_id, &mapping).is_err());
 }
 
 #[test]
@@ -98,40 +96,38 @@ fn test_cross_ref_deviation_threshold_default() {
     let (client, _admin) = setup_contract(&e);
 
     // Default is 500 bps (5%)
-    assert_eq!(client.get_cross_ref_deviation_threshold(), 500u32);
+    assert_eq!(client.get_cross_ref_deviation_bps(), 500u32);
 }
 
 #[test]
-fn test_set_cross_ref_deviation_threshold() {
+fn test_set_cross_ref_deviation_bps() {
     let e = Env::default();
     e.mock_all_auths();
     let (client, _admin) = setup_contract(&e);
 
-    client.set_cross_ref_deviation_threshold(&1000u32);
-    assert_eq!(client.get_cross_ref_deviation_threshold(), 1000u32);
+    client.set_cross_ref_deviation_bps(&1000u32);
+    assert_eq!(client.get_cross_ref_deviation_bps(), 1000u32);
 }
 
 #[test]
-fn test_set_cross_ref_deviation_threshold_unauthorized() {
+fn test_set_cross_ref_deviation_bps_unauthorized() {
     let e = Env::default();
     e.mock_all_auths();
     let (client, _admin) = setup_contract(&e);
 
     clear_auth(&e);
-    assert!(client
-        .try_set_cross_ref_deviation_threshold(&1000u32)
-        .is_err());
+    assert!(client.try_set_cross_ref_deviation_bps(&1000u32).is_err());
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")]
-fn test_set_cross_ref_deviation_threshold_too_high() {
+fn test_set_cross_ref_deviation_bps_too_high() {
     let e = Env::default();
     e.mock_all_auths();
     let (client, _admin) = setup_contract(&e);
 
     // 100_001 exceeds the maximum allowed 100_000
-    client.set_cross_ref_deviation_threshold(&100_001u32);
+    client.set_cross_ref_deviation_bps(&100_001u32);
 }
 
 #[test]
@@ -194,7 +190,7 @@ fn test_get_cross_reference_returns_prices_no_deviation() {
     client.add_reference_oracle(&mock_id, &mapping);
 
     // Set threshold to 500 bps (5%)
-    client.set_cross_ref_deviation_threshold(&500u32);
+    client.set_cross_ref_deviation_bps(&500u32);
 
     let result = client.get_cross_reference(&our_asset).unwrap();
     assert_eq!(result.our_price, price);
@@ -228,7 +224,7 @@ fn test_get_cross_reference_detects_deviation_below_threshold() {
     client.add_reference_oracle(&mock_id, &mapping);
 
     // Threshold at 5% — 2% deviation should NOT trigger the event
-    client.set_cross_ref_deviation_threshold(&500u32);
+    client.set_cross_ref_deviation_bps(&500u32);
 
     let result = client.get_cross_reference(&our_asset).unwrap();
     assert_eq!(result.our_price, our_price);
@@ -262,7 +258,7 @@ fn test_get_cross_reference_emits_event_on_deviation() {
     client.add_reference_oracle(&mock_id, &mapping);
 
     // Threshold at 5% — 10% deviation should trigger the CrossRefDeviationEvent
-    client.set_cross_ref_deviation_threshold(&500u32);
+    client.set_cross_ref_deviation_bps(&500u32);
 
     let result = client.get_cross_reference(&our_asset).unwrap();
     assert_eq!(result.our_price, our_price);

@@ -307,9 +307,7 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Resolution, &val);
+                env.storage().persistent().set(&DataKey::Resolution, &val);
             }
         }
         5 => {
@@ -320,9 +318,7 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Decimals, &val);
+                env.storage().persistent().set(&DataKey::Decimals, &val);
             }
         }
         6 => {

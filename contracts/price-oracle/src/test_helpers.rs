@@ -53,9 +53,8 @@ pub fn submit_test_price(
     asset: &Address,
     price: i128,
     timestamp: u64,
-    nonce: u64,
 ) {
-    client.submit_price(source, asset, &price, &timestamp, &nonce);
+    client.submit_price(source, asset, &price, &timestamp);
 }
 
 /// Creates an initialized contract with N sources and M assets; sets min_sources to N.

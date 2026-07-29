@@ -1,8 +1,10 @@
 use crate::types::{DataKey, ErrorCode, OracleSources, SubscriptionPlans};
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
-pub const LEDGER_THRESHOLD: u32 = 1000;
-pub const LEDGER_BUMP: u32 = 4000;
+// Keep frequently accessed contract entries alive longer to reduce TTL bump traffic
+// on hot paths such as admin/config/registry lookups.
+pub const LEDGER_THRESHOLD: u32 = 10_000;
+pub const LEDGER_BUMP: u32 = 40_000;
 pub const DEFAULT_QUERY_RATE_LIMIT: u32 = 100;
 
 pub fn get_admin(env: &Env) -> Address {
@@ -15,10 +17,20 @@ pub fn check_source(env: &Env, addr: &Address) {
     if !is_source {
         panic_with_error!(env, ErrorCode::NotAuthorized);
     }
+
+    let required_bond = crate::sources::get_source_bond(env);
+    if required_bond > 0 {
+        let deposited = crate::sources::get_source_deposited_bond(env, addr.clone());
+        if deposited < required_bond {
+            panic_with_error!(env, ErrorCode::InsufficientBond);
+        }
+    }
+
     env.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
+
 
 pub fn check_registered_asset(env: &Env, asset: &Address) {
     // Prefer the O(1) membership index.
@@ -48,6 +60,22 @@ pub fn check_registered_asset(env: &Env, asset: &Address) {
     env.storage()
         .persistent()
         .extend_ttl(&index_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+pub fn check_source_asset(env: &Env, source: &Address, asset: &Address) {
+    let key = DataKey::SourceAssets(source.clone());
+    let assets: Option<Vec<Address>> = env.storage().persistent().get(&key);
+    if let Some(assets) = assets {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        for i in 0..assets.len() {
+            if assets.get_unchecked(i) == *asset {
+                return;
+            }
+        }
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
 }
 
 /// Sort prices using heapsort — guaranteed O(n log n) worst-case, O(1) extra space.
@@ -103,143 +131,102 @@ fn heapify(prices: &mut soroban_sdk::Vec<i128>, n: u32, root: u32) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Quickselect (Floyd-Rivest selection algorithm) — O(n) average, O(n²) worst
-// ---------------------------------------------------------------------------
-// We use a deterministic pivot (median-of-three) to avoid O(n²) on adversarial
-// sorted or reverse-sorted inputs while still beating heapsort for large n.
-//
-// Gas impact: for 50 sources quickselect processes ≈50 elements vs heapsort's
-// ≈50×6 = 300 comparisons — an estimated 40–60 % gas reduction per aggregation.
-
-/// Swap elements at positions `a` and `b` in a soroban `Vec<i128>`.
-#[inline]
-fn swap_prices(prices: &mut soroban_sdk::Vec<i128>, a: u32, b: u32) {
-    if a != b {
-        let tmp = prices.get_unchecked(a);
-        prices.set(a, prices.get_unchecked(b));
-        prices.set(b, tmp);
+fn vec_swap(prices: &mut soroban_sdk::Vec<i128>, i: u32, j: u32) {
+    if i == j {
+        return;
     }
+    let tmp = prices.get_unchecked(i);
+    prices.set(i, prices.get_unchecked(j));
+    prices.set(j, tmp);
 }
 
-/// Partition `prices[lo..=hi]` around a pivot chosen as the median of
-/// `prices[lo]`, `prices[mid]`, `prices[hi]`. Returns the final pivot index.
-fn partition(prices: &mut soroban_sdk::Vec<i128>, lo: u32, hi: u32) -> u32 {
-    let mid = lo + (hi - lo) / 2;
-
-    // Median-of-three pivot selection (sorts lo, mid, hi in-place as a side effect)
-    if prices.get_unchecked(lo) > prices.get_unchecked(mid) {
-        swap_prices(prices, lo, mid);
-    }
-    if prices.get_unchecked(lo) > prices.get_unchecked(hi) {
-        swap_prices(prices, lo, hi);
-    }
-    if prices.get_unchecked(mid) > prices.get_unchecked(hi) {
-        swap_prices(prices, mid, hi);
-    }
-    // pivot is now at `mid`; move it to hi-1 to stay out of the partition loop
-    let pivot = prices.get_unchecked(mid);
-    swap_prices(prices, mid, hi);
-
-    // Lomuto-style partition around `pivot`
-    let mut store = lo;
-    let mut i = lo;
-    // iterate [lo, hi-1) since we placed the pivot at hi
-    while i < hi {
-        if prices.get_unchecked(i) <= pivot {
-            swap_prices(prices, i, store);
-            store += 1;
+fn median_of_five(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let mut i = left + 1;
+    while i <= right {
+        let mut j = i;
+        while j > left && prices.get_unchecked(j) < prices.get_unchecked(j - 1) {
+            vec_swap(prices, j, j - 1);
+            j -= 1;
         }
         i += 1;
     }
-    // Restore pivot to its final position
-    swap_prices(prices, store, hi);
-    store
+    left + (right - left) / 2
 }
 
-/// Rearrange `prices` in-place so that `prices[k]` is the k-th smallest
-/// element (0-indexed) and all elements before it are ≤ it. O(n) average.
-///
-/// Uses iterative tail recursion to avoid stack growth in `no_std` WASM.
-pub fn quickselect(prices: &mut soroban_sdk::Vec<i128>, k: u32) {
-    let n = prices.len();
-    if n <= 1 || k >= n {
-        return;
+fn partition(
+    prices: &mut soroban_sdk::Vec<i128>,
+    left: u32,
+    right: u32,
+    pivot_index: u32,
+) -> u32 {
+    let pivot_value = prices.get_unchecked(pivot_index);
+    vec_swap(prices, pivot_index, right);
+    let mut store_index = left;
+    let mut i = left;
+    while i < right {
+        if prices.get_unchecked(i) < pivot_value {
+            vec_swap(prices, store_index, i);
+            store_index += 1;
+        }
+        i += 1;
     }
-    let mut lo: u32 = 0;
-    let mut hi: u32 = n - 1;
+    vec_swap(prices, store_index, right);
+    store_index
+}
+
+fn select_pivot(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let n = right - left + 1;
+    if n <= 5 {
+        return median_of_five(prices, left, right);
+    }
+    let mut store = left;
+    let mut i = left;
+    while i <= right {
+        let group_end = if i + 4 <= right { i + 4 } else { right };
+        let median = median_of_five(prices, i, group_end);
+        vec_swap(prices, median, store);
+        store += 1;
+        i += 5;
+    }
+    let mid = left + ((store - left - 1) / 2);
+    select_kth(prices, left, store - 1, mid)
+}
+
+fn select_kth(
+    prices: &mut soroban_sdk::Vec<i128>,
+    mut left: u32,
+    mut right: u32,
+    k: u32,
+) -> i128 {
     loop {
-        if lo >= hi {
-            break;
+        if left == right {
+            return prices.get_unchecked(left);
         }
-        // For tiny sub-arrays (≤ 3 elements) just do an insertion-sort style
-        // network to avoid recursion overhead.
-        if hi - lo < 3 {
-            // Sort the 2–3 element window directly.
-            if prices.get_unchecked(lo) > prices.get_unchecked(lo + 1) {
-                swap_prices(prices, lo, lo + 1);
-            }
-            if hi - lo == 2 {
-                if prices.get_unchecked(lo + 1) > prices.get_unchecked(hi) {
-                    swap_prices(prices, lo + 1, hi);
-                }
-                if prices.get_unchecked(lo) > prices.get_unchecked(lo + 1) {
-                    swap_prices(prices, lo, lo + 1);
-                }
-            }
-            break;
-        }
-        let pivot_idx = partition(prices, lo, hi);
-        if k < pivot_idx {
-            hi = pivot_idx - 1;
-        } else if k > pivot_idx {
-            lo = pivot_idx + 1;
+        let pivot_index = select_pivot(prices, left, right);
+        let pivot_index = partition(prices, left, right, pivot_index);
+        if k == pivot_index {
+            return prices.get_unchecked(k);
+        } else if k < pivot_index {
+            right = pivot_index - 1;
         } else {
-            break; // prices[k] is in its final sorted position
+            left = pivot_index + 1;
         }
     }
 }
 
-/// Compute the median of `prices` using O(n) quickselect.
-///
-/// * Odd length  → middle element.
-/// * Even length → average of the two middle elements (same formula as before
-///   to keep differential test parity).
-///
-/// Replaces the previous O(n log n) heapsort-based implementation.
 pub fn compute_median(prices: &soroban_sdk::Vec<i128>) -> i128 {
     let n = prices.len();
     if n == 0 {
         return 0;
     }
-    if n == 1 {
-        return prices.get_unchecked(0);
-    }
-    let mut buf = prices.clone();
-    if n % 2 == 1 {
-        // Odd: select the middle element.
-        let mid = n / 2;
-        quickselect(&mut buf, mid);
-        buf.get_unchecked(mid)
+    let mut selected = prices.clone();
+    let mid = n / 2;
+    if n.is_multiple_of(2) {
+        let lower = select_kth(&mut selected, 0, n - 1, mid - 1);
+        let upper = select_kth(&mut selected, 0, n - 1, mid);
+        lower + (upper - lower) / 2
     } else {
-        // Even: we need both middle elements. Run quickselect for the upper
-        // middle first, which also partitions the lower half correctly, then
-        // take the maximum of the lower half as the lower middle.
-        let upper_mid = n / 2;
-        quickselect(&mut buf, upper_mid);
-        // After quickselect for upper_mid, all elements in buf[0..upper_mid]
-        // are ≤ buf[upper_mid]. The lower middle is the maximum of buf[0..upper_mid].
-        let b = buf.get_unchecked(upper_mid);
-        let mut a = buf.get_unchecked(0);
-        for i in 1..upper_mid {
-            let v = buf.get_unchecked(i);
-            if v > a {
-                a = v;
-            }
-        }
-        // Use the same rounding formula as the old implementation to stay
-        // bit-exact with all existing tests and the reference implementation.
-        a + (b - a) / 2
+        select_kth(&mut selected, 0, n - 1, mid)
     }
 }
 
@@ -255,89 +242,54 @@ pub fn compute_mean(prices: &soroban_sdk::Vec<i128>) -> i128 {
     sum / (n as i128)
 }
 
-/// Compute a weighted median where each price is weighted by its source's reputation score.
-///
-/// The weighted median is the value v such that the sum of weights for prices ≤ v
-/// is ≥ total_weight/2, and the sum of weights for prices ≥ v is ≥ total_weight/2.
-///
-/// This is computed by:
-///   1. Pairing each price with its weight (reputation score, clamped to [1, 100]).
-///   2. Sorting the pairs by price.
-///   3. Walking the sorted list until the cumulative weight crosses total_weight/2.
-///
-/// If `weights` is empty or has a different length to `prices`, falls back to `compute_median`.
-/// A weight of 0 is treated as 1 to avoid dead sources suppressing the result entirely.
-pub fn compute_weighted_median(
-    prices: &soroban_sdk::Vec<i128>,
-    weights: &soroban_sdk::Vec<i128>,
-) -> i128 {
+fn integer_sqrt(value: i128) -> i128 {
+    if value <= 1 {
+        return value;
+    }
+
+    let mut lo = 0i128;
+    let mut hi = value;
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid.saturating_mul(mid) <= value {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+pub fn compute_stddev(prices: &soroban_sdk::Vec<i128>) -> u32 {
     let n = prices.len();
     if n == 0 {
         return 0;
     }
-    if n == 1 {
-        return prices.get_unchecked(0);
-    }
-    if weights.len() != n {
-        // Mismatch — fall back to unweighted median for safety.
-        return compute_median(prices);
-    }
 
-    // Build (price, weight) pairs as two parallel soroban Vecs sorted by price.
-    // We copy into sorted_prices and sorted_weights together using insertion sort
-    // (n is always small in practice — contract enforces MaxSources ≤ 100).
-    let mut sorted_prices = prices.clone();
-    let mut sorted_weights = weights.clone();
-
-    // Insertion sort of both arrays by price (stable, O(n²) but n is tiny)
-    let len = sorted_prices.len();
-    let mut i: u32 = 1;
-    while i < len {
-        let key_price = sorted_prices.get_unchecked(i);
-        let key_weight = sorted_weights.get_unchecked(i);
-        let mut j = i;
-        while j > 0 && sorted_prices.get_unchecked(j - 1) > key_price {
-            sorted_prices.set(j, sorted_prices.get_unchecked(j - 1));
-            sorted_weights.set(j, sorted_weights.get_unchecked(j - 1));
-            j -= 1;
-        }
-        sorted_prices.set(j, key_price);
-        sorted_weights.set(j, key_weight);
-        i += 1;
+    let mean = compute_mean(prices);
+    let mut sum_sq: i128 = 0;
+    for i in 0..n {
+        let diff = prices.get_unchecked(i) - mean;
+        sum_sq = sum_sq.saturating_add(diff.saturating_mul(diff));
     }
 
-    // Compute total weight (each weight clamped to minimum 1)
-    let mut total_weight: i128 = 0;
-    for i in 0..len {
-        let w = sorted_weights.get_unchecked(i).max(1);
-        total_weight = total_weight.saturating_add(w);
+    let variance = sum_sq / (n as i128);
+    integer_sqrt(variance).max(0) as u32
+}
+
+pub fn compute_confidence_bps(prices: &soroban_sdk::Vec<i128>) -> u32 {
+    let n = prices.len();
+    if n == 0 {
+        return 0;
     }
 
-    // Walk sorted prices until cumulative weight ≥ total_weight / 2
-    // The weighted median is the first price where this condition holds.
-    let half = total_weight / 2;
-    let mut cumulative: i128 = 0;
-    let mut median_idx: u32 = 0;
-    for i in 0..len {
-        let w = sorted_weights.get_unchecked(i).max(1);
-        cumulative = cumulative.saturating_add(w);
-        if cumulative > half {
-            median_idx = i;
-            break;
-        }
-        median_idx = i;
+    let mean = compute_mean(prices);
+    if mean <= 0 {
+        return 0;
     }
 
-    // When total_weight is even and cumulative == half exactly at index i,
-    // interpolate between sorted_prices[i] and sorted_prices[i+1] (like
-    // the unweighted even-length case) for consistency.
-    let price_at = sorted_prices.get_unchecked(median_idx);
-    if total_weight % 2 == 0 && cumulative == half && median_idx + 1 < len {
-        let next = sorted_prices.get_unchecked(median_idx + 1);
-        return price_at + (next - price_at) / 2;
-    }
-
-    price_at
+    let stddev = compute_stddev(prices) as u128;
+    ((stddev.saturating_mul(10000u128)) / (mean as u128)) as u32
 }
 
 pub fn compute_trimmed_mean(prices: &soroban_sdk::Vec<i128>, trim_percent: u32) -> i128 {
@@ -367,6 +319,30 @@ pub fn compute_trimmed_mean(prices: &soroban_sdk::Vec<i128>, trim_percent: u32) 
     }
 
     compute_mean(&trimmed)
+}
+
+pub fn compute_vwap(prices: &soroban_sdk::Vec<i128>, volumes: &soroban_sdk::Vec<i128>) -> i128 {
+    let n = prices.len().min(volumes.len());
+    if n == 0 {
+        return 0;
+    }
+
+    let mut weighted_sum: i128 = 0;
+    let mut total_volume: i128 = 0;
+    for i in 0..n {
+        let volume = volumes.get_unchecked(i);
+        if volume <= 0 {
+            continue;
+        }
+        weighted_sum = weighted_sum.saturating_add(prices.get_unchecked(i).saturating_mul(volume));
+        total_volume = total_volume.saturating_add(volume);
+    }
+
+    if total_volume == 0 {
+        compute_mean(prices)
+    } else {
+        weighted_sum / total_volume
+    }
 }
 
 pub fn read_registered_assets(env: &Env) -> Vec<Address> {
@@ -401,6 +377,7 @@ pub fn read_oracle_sources(env: &Env) -> OracleSources {
         .unwrap_or(OracleSources {
             sources: soroban_sdk::Vec::new(env),
             metadata: soroban_sdk::Map::new(env),
+            verification: soroban_sdk::Map::new(env),
         })
 }
 
@@ -419,22 +396,32 @@ pub fn mark_source_active(env: &Env, source: &Address) {
     env.storage().persistent().remove(&key);
 }
 
+/// Not currently wired into `get_price` — kept for a future rate-limiting pass.
+#[allow(dead_code)]
 pub fn check_rate_limit(env: &Env, consumer: &Address) -> bool {
     let ledger = env.ledger().sequence();
     let key = DataKey::QueryCount(consumer.clone(), ledger);
     let count: u32 = env.storage().temporary().get(&key).unwrap_or(0);
     let rate_limit_key = DataKey::QueryRateLimit;
-    let max_queries: u32 = env.storage().persistent().get(&rate_limit_key).unwrap_or(DEFAULT_QUERY_RATE_LIMIT);
+    let max_queries: u32 = env
+        .storage()
+        .persistent()
+        .get(&rate_limit_key)
+        .unwrap_or(DEFAULT_QUERY_RATE_LIMIT);
     count < max_queries
 }
 
+/// Not currently wired into `get_price` — kept for a future rate-limiting pass.
+#[allow(dead_code)]
 pub fn increment_query_count(env: &Env, consumer: &Address) -> u32 {
     let ledger = env.ledger().sequence();
     let key = DataKey::QueryCount(consumer.clone(), ledger);
     let count: u32 = env.storage().temporary().get(&key).unwrap_or(0);
     let new_count = count + 1;
     env.storage().temporary().set(&key, &new_count);
-    env.storage().temporary().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
     new_count
 }
 
@@ -466,6 +453,8 @@ pub fn get_plan_amount(env: &Env, duration: u32) -> Option<i128> {
     plans.get(duration)
 }
 
+/// Only reachable today via `check_rate_limit_and_increment`, which is itself unwired.
+#[allow(dead_code)]
 pub fn is_subscribed(env: &Env, consumer: &Address) -> bool {
     let key = DataKey::SubscriptionExpiry(consumer.clone());
     let expiry: u64 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -475,4 +464,61 @@ pub fn is_subscribed(env: &Env, consumer: &Address) -> bool {
     } else {
         false
     }
+}
+
+/// Gather TTL status for known storage entries. Exact remaining TTL values
+/// are not exposed by the Soroban storage API; return `0` when unavailable.
+pub fn get_storage_ttl_status(env: &Env) -> soroban_sdk::Vec<crate::types::StorageTtlEntry> {
+    let mut out: soroban_sdk::Vec<crate::types::StorageTtlEntry> = soroban_sdk::Vec::new(env);
+
+    // Assets registry
+    let asset_key = DataKey::AssetRegistry;
+    let asset_exists = env.storage().persistent().has(&asset_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "AssetRegistry"),
+        exists: asset_exists,
+        remaining_ttl: 0,
+    });
+
+    // Oracle sources registry
+    let src_key = DataKey::SrcRegistry;
+    let src_exists = env.storage().persistent().has(&src_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "SrcRegistry"),
+        exists: src_exists,
+        remaining_ttl: 0,
+    });
+
+    // For each registered asset, report aggregate existence and history entries.
+    let assets = read_registered_assets(env);
+    for i in 0..assets.len() {
+        let a = assets.get_unchecked(i);
+        let agg_key = DataKey::Aggregate(a.clone());
+        let exists = env.storage().persistent().has(&agg_key);
+        out.push_back(crate::types::StorageTtlEntry {
+            key: soroban_sdk::String::from_str(env, &format!("Aggregate({})", i)),
+            exists,
+            remaining_ttl: 0,
+        });
+
+        // Price history ledgers list (if present)
+        let ledgers_key = DataKey::PriceHistoryLedgers(a.clone());
+        if env.storage().persistent().has(&ledgers_key) {
+            let ledger_list: Option<soroban_sdk::Vec<u32>> = env.storage().persistent().get(&ledgers_key);
+            if let Some(list) = ledger_list {
+                for j in 0..list.len() {
+                    let ledger = list.get_unchecked(j);
+                    let hist_key = DataKey::PriceHistory(a.clone(), ledger);
+                    let exists_hist = env.storage().temporary().has(&hist_key);
+                    out.push_back(crate::types::StorageTtlEntry {
+                        key: soroban_sdk::String::from_str(env, &format!("PriceHistory({}, {})", i, ledger)),
+                        exists: exists_hist,
+                        remaining_ttl: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    out
 }

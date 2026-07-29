@@ -2,7 +2,9 @@ use soroban_sdk::{panic_with_error, Address, Env, IntoVal, Map, Symbol, Val, Vec
 
 use crate::events::CrossRefDeviationEvent;
 use crate::storage::{get_admin, LEDGER_BUMP, LEDGER_THRESHOLD};
-use crate::types::{AggregatePrice, CrossReferenceResult, DataKey, ErrorCode, ReferenceOracleEntry};
+use crate::types::{
+    AggregatePrice, CrossReferenceResult, DataKey, ErrorCode, ReferenceOracleEntry,
+};
 
 const DEFAULT_CROSS_REF_DEVIATION_BPS: u32 = 500; // 5%
 
@@ -11,11 +13,7 @@ const DEFAULT_CROSS_REF_DEVIATION_BPS: u32 = 500; // 5%
 /// The `asset_mapping` maps our asset `Address` values to the corresponding asset
 /// `Address` values used by the reference oracle contract. On each
 /// `get_cross_reference` call the contract will invoke `lastprice` on this oracle.
-pub fn add_reference_oracle(
-    env: &Env,
-    contract_id: Address,
-    asset_mapping: Map<Address, Address>,
-) {
+pub fn add_reference_oracle(env: &Env, contract_id: Address, asset_mapping: Map<Address, Address>) {
     let admin = get_admin(env);
     admin.require_auth();
 
@@ -121,12 +119,11 @@ pub fn get_cross_reference(env: &Env, asset: Address) -> Option<CrossReferenceRe
                 let mut args: Vec<Val> = Vec::new(env);
                 args.push_back(mapped_asset.into_val(env));
 
-                let ref_price: i128 =
-                    env.invoke_contract(&entry.contract_id, &func, args);
+                let ref_price: i128 = env.invoke_contract(&entry.contract_id, &func, args);
 
                 if ref_price > 0 {
                     let deviation_bps = compute_deviation_bps(our_price, ref_price);
-                    let threshold_bps = get_cross_ref_deviation_threshold(env);
+                    let threshold_bps = get_cross_ref_deviation_bps(env);
 
                     if deviation_bps > threshold_bps {
                         CrossRefDeviationEvent {
@@ -156,7 +153,7 @@ pub fn get_cross_reference(env: &Env, asset: Address) -> Option<CrossReferenceRe
 
 /// Sets the deviation threshold (in basis points) above which a [`CrossRefDeviationEvent`]
 /// is emitted during a cross-reference check. Must be in the range `[0, 100_000]`.
-pub fn set_cross_ref_deviation_threshold(env: &Env, threshold_bps: u32) {
+pub fn set_cross_ref_deviation_bps(env: &Env, threshold_bps: u32) {
     let admin = get_admin(env);
     admin.require_auth();
     if threshold_bps > 100_000 {
@@ -171,7 +168,7 @@ pub fn set_cross_ref_deviation_threshold(env: &Env, threshold_bps: u32) {
 
 /// Returns the current cross-reference deviation threshold in basis points.
 /// Defaults to `500` (5 %).
-pub fn get_cross_ref_deviation_threshold(env: &Env) -> u32 {
+pub fn get_cross_ref_deviation_bps(env: &Env) -> u32 {
     let key = DataKey::CrossRefDeviationThreshold;
     if env.storage().persistent().has(&key) {
         env.storage()
