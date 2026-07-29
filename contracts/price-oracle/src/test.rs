@@ -2461,6 +2461,92 @@ fn test_source_heartbeat_liveness_bond() {
     assert_eq!(client.get_source_deposited_bond(&source), 0i128);
 }
 
+#[test]
+fn test_source_verification_management() {
+    let e = Env::default();
+    let (client, _) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "VerifiedSource");
+    let verifier = Address::generate(&e);
+
+    client.set_source_verification(
+        &source,
+        &true,
+        &String::from_str(&e, "did"),
+        &verifier,
+    );
+
+    let verification = client.get_source_verification(&source).unwrap();
+    assert!(verification.verified);
+    assert_eq!(verification.verification_method, String::from_str(&e, "did"));
+    assert_eq!(verification.verifier, verifier);
+
+    let sources = client.get_oracle_sources();
+    assert!(sources.verification.get(source).unwrap().verified);
+}
+
+#[test]
+fn test_source_asset_binding_enforced() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    client.set_min_sources_required(&1u32);
+    let source = Address::generate(&e);
+    let asset1 = register_test_asset(&e, &client);
+    let asset2 = register_test_asset(&e, &client);
+    let mut assets = Vec::new(&e);
+    assets.push_back(asset1.clone());
+
+    client.add_source_with_assets(&source, &String::from_str(&e, "Scoped"), &assets);
+    assert_eq!(client.get_source_assets(&source), assets);
+
+    client.submit_price(&source, &asset1, &100i128, &1000u64);
+    assert!(client
+        .try_submit_price(&source, &asset2, &100i128, &1000u64)
+        .is_err());
+
+    client.add_source_asset(&source, &asset2);
+    client.submit_price(&source, &asset2, &100i128, &1000u64);
+    client.remove_source_asset(&source, &asset2);
+    assert!(client
+        .try_submit_price(&source, &asset2, &100i128, &1000u64)
+        .is_err());
+}
+
+#[test]
+fn test_rotate_source_key_success_and_cooldown() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Rotating");
+    let new_source = Address::generate(&e);
+    let another_source = Address::generate(&e);
+
+    client.rotate_source_key(&source, &new_source);
+    assert!(!client.is_source(&source));
+    assert!(client.is_source(&new_source));
+    assert!(client
+        .try_rotate_source_key(&new_source, &another_source)
+        .is_err());
+}
+
+#[test]
+fn test_vwap_aggregation() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    let source1 = register_test_source(&e, &client, "VWAP1");
+    let source2 = register_test_source(&e, &client, "VWAP2");
+    let asset = register_test_asset(&e, &client);
+    client.set_min_sources_required(&2u32);
+    client.set_aggregation_method(&(crate::AggregationMethod::VWAP as u32));
+
+    client.submit_price_with_volume(&source1, &asset, &100i128, &1000u64, &Some(1i128));
+    client.submit_price_with_volume(&source2, &asset, &200i128, &1000u64, &Some(3i128));
+
+    let price = client.get_price(&asset, &0u64).unwrap();
+    assert_eq!(price.price, 175i128);
+    assert_eq!(client.get_aggregation_method(), crate::AggregationMethod::VWAP as u32);
+}
 
 
 

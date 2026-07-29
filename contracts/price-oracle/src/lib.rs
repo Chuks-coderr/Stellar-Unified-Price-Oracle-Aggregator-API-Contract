@@ -89,7 +89,7 @@ pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
     ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SubscriptionPlans,
+    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal,
     SourceGeoMetadata, DecentralizationReport,
@@ -564,6 +564,16 @@ impl PriceOracleContract {
         result
     }
 
+    pub fn set_aggregation_method(env: Env, method: u32) {
+        reentrancy::enter(&env);
+        admin::set_aggregation_method(&env, method);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_aggregation_method(env: Env) -> u32 {
+        admin::get_aggregation_method(&env)
+    }
+
     /// Sets the heartbeat interval — the period after which a silent source is considered
     /// inactive.
     ///
@@ -908,6 +918,56 @@ impl PriceOracleContract {
         let result = sources::get_oracle_sources(&env);
         exit_reentrancy_guard(&env);
         result
+    }
+
+    pub fn add_source_with_assets(env: Env, source: Address, name: String, assets: Vec<Address>) {
+        reentrancy::enter(&env);
+        sources::add_source_with_assets(&env, source, name, assets);
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_assets(env: Env, source: Address) -> Vec<Address> {
+        sources::get_source_assets(&env, source)
+    }
+
+    pub fn add_source_asset(env: Env, source: Address, asset: Address) {
+        reentrancy::enter(&env);
+        sources::add_source_asset(&env, source, asset);
+        reentrancy::exit(&env);
+    }
+
+    pub fn remove_source_asset(env: Env, source: Address, asset: Address) {
+        reentrancy::enter(&env);
+        sources::remove_source_asset(&env, source, asset);
+        reentrancy::exit(&env);
+    }
+
+    pub fn set_source_verification(
+        env: Env,
+        source: Address,
+        verified: bool,
+        verification_method: String,
+        verifier: Address,
+    ) {
+        reentrancy::enter(&env);
+        sources::set_source_verification(
+            &env,
+            source,
+            verified,
+            verification_method,
+            verifier,
+        );
+        reentrancy::exit(&env);
+    }
+
+    pub fn get_source_verification(env: Env, source: Address) -> Option<SourceVerification> {
+        sources::get_source_verification(&env, source)
+    }
+
+    pub fn rotate_source_key(env: Env, source: Address, new_address: Address) {
+        reentrancy::enter(&env);
+        sources::rotate_source_key(&env, source, new_address);
+        reentrancy::exit(&env);
     }
 
     /// Records a liveness heartbeat for a source, resetting its inactivity timer.
@@ -1309,6 +1369,19 @@ impl PriceOracleContract {
         let cpu_delta = after_cpu.saturating_sub(before_cpu);
         let mem_delta = after_mem.saturating_sub(before_mem);
         crate::gas_metering::write_last_gas(&env, String::from_str(&env, "submit_price"), cpu_delta, mem_delta);
+        reentrancy::exit(&env);
+    }
+
+    pub fn submit_price_with_volume(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        volume: Option<i128>,
+    ) {
+        reentrancy::enter(&env);
+        prices::submit_price_with_volume(&env, source, asset, price, timestamp, volume);
         reentrancy::exit(&env);
     }
 

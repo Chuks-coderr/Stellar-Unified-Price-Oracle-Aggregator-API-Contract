@@ -9,6 +9,8 @@ use crate::events::{
     SourceGovConfigChangedEvent, SourceProposalCreatedEvent, SourceProposalApprovedEvent, SourceProposalExecutedEvent,
     SourceGeoUpdatedEvent,
     SourceBondConfigChangedEvent, SourceBondDepositedEvent, SourceBondForfeitedEvent, SourceBondReturnedEvent,
+    SourceAssetAddedEvent, SourceAssetRemovedEvent, SourceKeyRotatedEvent,
+    SourceVerificationSetEvent,
 };
 use crate::storage::{
     get_admin, is_source_inactive as check_source_inactive, mark_source_active,
@@ -17,12 +19,14 @@ use crate::storage::{
 use crate::types::{
     DataKey, ErrorCode, OracleSources, DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal, SourceGeoMetadata, DecentralizationReport,
+    SourceVerification,
 };
 
 
 
 
 const MAX_SOURCE_NAME_LENGTH: u32 = 64;
+const SOURCE_ROTATION_COOLDOWN: u32 = 100;
 
 fn register_source_internal(env: &Env, source: Address, name: String) {
     if name.is_empty() {
@@ -64,6 +68,15 @@ fn register_source_internal(env: &Env, source: Address, name: String) {
     .publish(env);
 }
 
+fn contains_address(items: &Vec<Address>, needle: &Address) -> bool {
+    for i in 0..items.len() {
+        if items.get_unchecked(i) == *needle {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn add_source(env: &Env, source: Address, name: String) {
     let admin = get_admin(env);
     admin.require_auth();
@@ -76,6 +89,26 @@ pub fn add_source(env: &Env, source: Address, name: String) {
 
     register_source_internal(env, source, name);
     emit_admin_action(env, symbol_short!("add_src"), admin, Bytes::new(env));
+}
+
+pub fn add_source_with_assets(env: &Env, source: Address, name: String, assets: Vec<Address>) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    for i in 0..assets.len() {
+        crate::storage::check_registered_asset(env, &assets.get_unchecked(i));
+    }
+    register_source_internal(env, source.clone(), name);
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceAssets(source.clone()), &assets);
+    for i in 0..assets.len() {
+        SourceAssetAddedEvent {
+            source: source.clone(),
+            asset: assets.get_unchecked(i),
+        }
+        .publish(env);
+    }
+    emit_admin_action(env, symbol_short!("add_srca"), admin, Bytes::new(env));
 }
 
 
@@ -124,9 +157,16 @@ pub fn remove_source(env: &Env, source: Address) {
     oracle_sources.sources = new_sources;
     let removed_source = source.clone();
     oracle_sources.metadata.remove(source);
+    oracle_sources.verification.remove(removed_source.clone());
     env.storage()
         .persistent()
         .set(&DataKey::SrcRegistry, &oracle_sources);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SourceAssets(removed_source.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SourceVerification(removed_source.clone()));
     SourceRemovedEvent {
         source: removed_source,
         admin: admin.clone(),
@@ -149,6 +189,220 @@ pub fn is_source(env: &Env, source: Address) -> bool {
 
 pub fn get_oracle_sources(env: &Env) -> OracleSources {
     read_oracle_sources(env)
+}
+
+pub fn get_source_assets(env: &Env, source: Address) -> Vec<Address> {
+    if !is_source(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+    let key = DataKey::SourceAssets(source);
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn add_source_asset(env: &Env, source: Address, asset: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if !is_source(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+    crate::storage::check_registered_asset(env, &asset);
+    let key = DataKey::SourceAssets(source.clone());
+    let mut assets: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+    if !contains_address(&assets, &asset) {
+        assets.push_back(asset.clone());
+        env.storage().persistent().set(&key, &assets);
+        SourceAssetAddedEvent {
+            source: source.clone(),
+            asset,
+        }
+        .publish(env);
+    }
+    emit_admin_action(env, symbol_short!("add_sass"), admin, Bytes::new(env));
+}
+
+pub fn remove_source_asset(env: &Env, source: Address, asset: Address) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if !is_source(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+    let key = DataKey::SourceAssets(source.clone());
+    let assets: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+    let mut next: Vec<Address> = Vec::new(env);
+    let mut removed = false;
+    for i in 0..assets.len() {
+        let current = assets.get_unchecked(i);
+        if current == asset {
+            removed = true;
+        } else {
+            next.push_back(current);
+        }
+    }
+    env.storage().persistent().set(&key, &next);
+    if removed {
+        SourceAssetRemovedEvent {
+            source: source.clone(),
+            asset,
+        }
+        .publish(env);
+    }
+    emit_admin_action(env, symbol_short!("rem_sass"), admin, Bytes::new(env));
+}
+
+pub fn set_source_verification(
+    env: &Env,
+    source: Address,
+    verified: bool,
+    verification_method: String,
+    verifier: Address,
+) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if !is_source(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+    let verification = SourceVerification {
+        verified,
+        verification_method: verification_method.clone(),
+        verifier: verifier.clone(),
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::SourceVerification(source.clone()), &verification);
+    let mut oracle_sources = read_oracle_sources(env);
+    oracle_sources
+        .verification
+        .set(source.clone(), verification);
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcRegistry, &oracle_sources);
+    SourceVerificationSetEvent {
+        source,
+        verified,
+        verification_method,
+        verifier,
+    }
+    .publish(env);
+    emit_admin_action(env, symbol_short!("set_ver"), admin, Bytes::new(env));
+}
+
+pub fn get_source_verification(env: &Env, source: Address) -> Option<SourceVerification> {
+    let key = DataKey::SourceVerification(source);
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage().persistent().get(&key)
+}
+
+pub fn rotate_source_key(env: &Env, source: Address, new_address: Address) {
+    source.require_auth();
+    new_address.require_auth();
+    if !is_source(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceNotFound);
+    }
+    if is_source(env, new_address.clone()) {
+        panic_with_error!(env, ErrorCode::SourceAlreadyExists);
+    }
+    let current_ledger = env.ledger().sequence();
+    let last_rotation: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SourceRotationLedger(source.clone()))
+        .unwrap_or(0);
+    if last_rotation > 0
+        && current_ledger.saturating_sub(last_rotation) < SOURCE_ROTATION_COOLDOWN
+    {
+        panic_with_error!(env, ErrorCode::CooldownNotElapsed);
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SrcActive(source.clone()));
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcActive(new_address.clone()), &true);
+
+    let mut oracle_sources = read_oracle_sources(env);
+    for i in 0..oracle_sources.sources.len() {
+        if oracle_sources.sources.get_unchecked(i) == source {
+            oracle_sources.sources.set(i, new_address.clone());
+            break;
+        }
+    }
+    if let Some(name) = oracle_sources.metadata.get(source.clone()) {
+        oracle_sources.metadata.remove(source.clone());
+        oracle_sources.metadata.set(new_address.clone(), name);
+    }
+    if let Some(verification) = oracle_sources.verification.get(source.clone()) {
+        oracle_sources.verification.remove(source.clone());
+        oracle_sources
+            .verification
+            .set(new_address.clone(), verification.clone());
+        env.storage()
+            .persistent()
+            .remove(&DataKey::SourceVerification(source.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::SourceVerification(new_address.clone()), &verification);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::SrcRegistry, &oracle_sources);
+
+    if let Some(assets) = env
+        .storage()
+        .persistent()
+        .get::<_, Vec<Address>>(&DataKey::SourceAssets(source.clone()))
+    {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::SourceAssets(source.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::SourceAssets(new_address.clone()), &assets);
+    }
+
+    let registered_assets = crate::storage::read_registered_assets(env);
+    for i in 0..registered_assets.len() {
+        let asset = registered_assets.get_unchecked(i);
+        let old_key = DataKey::Submission(asset.clone(), source.clone());
+        if let Some(mut entry) = env.storage().persistent().get::<_, crate::types::PriceEntry>(&old_key) {
+            entry.source = new_address.clone();
+            env.storage().persistent().remove(&old_key);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Submission(asset.clone(), new_address.clone()), &entry);
+        }
+    }
+
+    env.storage().persistent().set(
+        &DataKey::SourceRotationLedger(new_address.clone()),
+        &current_ledger,
+    );
+    SourceKeyRotatedEvent {
+        old_source: source,
+        new_source: new_address,
+        ledger: current_ledger,
+    }
+    .publish(env);
 }
 
 pub fn submit_heartbeat(env: &Env, source: Address) {
@@ -1323,6 +1577,5 @@ pub fn forfeit_source_bond_internal(env: &Env, source: Address) {
         .publish(env);
     }
 }
-
 
 

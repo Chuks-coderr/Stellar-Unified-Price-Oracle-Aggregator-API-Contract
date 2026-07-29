@@ -17,9 +17,9 @@ use crate::events::{
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
-    check_registered_asset, check_source, compute_confidence_bps, compute_mean, compute_median,
-    compute_trimmed_mean, get_admin, is_subscribed, read_oracle_sources, sort_prices, LEDGER_BUMP,
-    LEDGER_THRESHOLD,
+    check_registered_asset, check_source, check_source_asset, compute_confidence_bps,
+    compute_mean, compute_median, compute_trimmed_mean, compute_vwap, get_admin, is_subscribed,
+    read_oracle_sources, sort_prices, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
 use crate::types::{
     AggregatePrice, Asset, BftAggregationMethod, DataKey, ErrorCode, OracleSources, PriceData,
@@ -65,6 +65,7 @@ fn build_candidate_aggregate(
     };
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut valid_volumes: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
@@ -76,6 +77,7 @@ fn build_candidate_aggregate(
                 latest_timestamp = timestamp;
             }
             valid_prices.push_back(price);
+            valid_volumes.push_back(0);
             contributing_sources += 1;
             continue;
         }
@@ -86,12 +88,13 @@ fn build_candidate_aggregate(
                 latest_timestamp = entry_data.timestamp;
             }
             valid_prices.push_back(entry_data.price);
+            valid_volumes.push_back(entry_data.volume.unwrap_or(0));
             contributing_sources += 1;
         }
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let aggregated_price = aggregate_prices(env, &valid_prices);
+        let aggregated_price = aggregate_prices(env, &valid_prices, &valid_volumes);
         Some(AggregatePrice {
             price: aggregated_price,
             timestamp: latest_timestamp,
@@ -124,7 +127,7 @@ fn enforce_commit_reveal_for_bft(env: &Env) {
     }
 }
 
-fn aggregate_prices(env: &Env, prices: &Vec<i128>) -> i128 {
+fn aggregate_prices(env: &Env, prices: &Vec<i128>, volumes: &Vec<i128>) -> i128 {
     let bft_fault_tolerance = read_bft_fault_tolerance(env);
     if bft_fault_tolerance > 0 {
         let method = read_bft_aggregation_method(env);
@@ -136,6 +139,7 @@ fn aggregate_prices(env: &Env, prices: &Vec<i128>) -> i128 {
         0 => compute_median(prices),
         1 => compute_mean(prices),
         2 => compute_trimmed_mean(prices, 10),
+        3 => compute_vwap(prices, volumes),
         _ => compute_median(prices),
     }
 }
@@ -310,6 +314,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     for i in 0..asset_prices.len() {
         let (ref asset, price, timestamp) = asset_prices.get_unchecked(i);
         check_registered_asset(env, asset);
+        check_source_asset(env, &source, asset);
 
         if price <= 0 {
             crate::sources::record_invalid_submission(env, source.clone());
@@ -339,6 +344,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
             decimals,
             last_updated: current_ledger,
             ledger_timestamp: ledger_time,
+            volume: None,
         };
 
         env.storage()
@@ -511,6 +517,7 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     };
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut valid_volumes: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
@@ -570,12 +577,13 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
                 latest_timestamp = entry_data.timestamp;
             }
             valid_prices.push_back(entry_data.price);
+            valid_volumes.push_back(entry_data.volume.unwrap_or(0));
             contributing_sources += 1;
         }
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let median_price = aggregate_prices(env, &valid_prices);
+        let median_price = aggregate_prices(env, &valid_prices, &valid_volumes);
 
         let agg_key = DataKey::Aggregate(asset.clone());
         let prev_aggregate: AggregatePrice =
@@ -748,6 +756,8 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     source.require_auth();
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    check_source_asset(env, &source, &asset);
+    check_source_asset(env, &source, &asset);
     enforce_commit_reveal_for_bft(env);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
@@ -781,6 +791,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         decimals,
         last_updated: current_ledger,
         ledger_timestamp: env.ledger().timestamp(),
+        volume: None,
     };
 
     env.storage()
@@ -804,6 +815,66 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     if !maybe_aggregate_after_submission(env, &asset, current_ledger) {
         return;
     }
+    aggregate_asset(env, &asset, current_ledger, decimals);
+}
+
+pub fn submit_price_with_volume(
+    env: &Env,
+    source: Address,
+    asset: Address,
+    price: i128,
+    timestamp: u64,
+    volume: Option<i128>,
+) {
+    check_not_paused(env);
+    source.require_auth();
+    check_source(env, &source);
+    check_registered_asset(env, &asset);
+    check_source_asset(env, &source, &asset);
+    enforce_commit_reveal_for_bft(env);
+
+    if crate::sources::is_source_suspended(env, source.clone()) {
+        panic_with_error!(env, ErrorCode::SourceSuspended);
+    }
+    if price <= 0 || volume.unwrap_or(1) < 0 {
+        crate::sources::record_invalid_submission(env, source.clone());
+        panic_with_error!(env, ErrorCode::InvalidPrice);
+    }
+
+    let ledger_time = env.ledger().timestamp();
+    let decimals = get_decimals(env);
+    validate_price_submission(env, &asset, &source, price, timestamp, decimals);
+    let threshold = get_timestamp_threshold(env);
+    if timestamp > ledger_time.saturating_add(threshold) {
+        crate::sources::record_invalid_submission(env, source.clone());
+        panic_with_error!(env, ErrorCode::InvalidTimestamp);
+    }
+    if check_deviation_circuit_breaker(env, &source, &asset, price) {
+        return;
+    }
+
+    let current_ledger = env.ledger().sequence();
+    let entry = PriceEntry {
+        price,
+        timestamp,
+        source: source.clone(),
+        decimals,
+        last_updated: current_ledger,
+        ledger_timestamp: ledger_time,
+        volume,
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
+    record_successful_submission(env, source.clone());
+    PriceSubmittedEvent {
+        asset: asset.clone(),
+        source: source.clone(),
+        price,
+        timestamp,
+    }
+    .publish(env);
+    crate::correlation::validate_correlation(env, &asset, price, &source);
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
 
@@ -1401,6 +1472,7 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
     let decimals = get_decimals(env);
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut valid_volumes: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
@@ -1427,12 +1499,13 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
                 latest_timestamp = entry_data.timestamp;
             }
             valid_prices.push_back(entry_data.price);
+            valid_volumes.push_back(entry_data.volume.unwrap_or(0));
             contributing_sources += 1;
         }
     }
 
     if contributing_sources >= min_required && !valid_prices.is_empty() {
-        let agg_price = aggregate_prices(env, &valid_prices);
+        let agg_price = aggregate_prices(env, &valid_prices, &valid_volumes);
 
         let aggregate = AggregatePrice {
             price: agg_price,
@@ -1681,6 +1754,7 @@ pub fn reveal_prices_batch(
     for i in 0..reveals.len() {
         let (asset, price, salt, round_ledger) = reveals.get_unchecked(i);
         check_registered_asset(env, &asset);
+        check_source_asset(env, &source, &asset);
         _do_reveal(env, &source, &asset, price, salt, round_ledger);
     }
 }
@@ -1762,6 +1836,7 @@ fn _do_reveal(
         decimals,
         last_updated: current_ledger,
         ledger_timestamp: ledger_time,
+        volume: None,
     };
 
     env.storage()
@@ -1846,6 +1921,7 @@ pub fn submit_price_internal(
 ) {
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    check_source_asset(env, &source, &asset);
     enforce_commit_reveal_for_bft(env);
 
     if price <= 0 {
@@ -1866,6 +1942,7 @@ pub fn submit_price_internal(
         decimals,
         last_updated: current_ledger,
         ledger_timestamp: env.ledger().timestamp(),
+        volume: None,
     };
 
     env.storage()
@@ -2045,6 +2122,7 @@ pub fn submit_price_merkle(
             panic_with_error!(env, ErrorCode::InvalidConfiguration);
         }
         check_registered_asset(env, &proof.leaf.asset);
+        check_source_asset(env, &proof.leaf.source, &proof.leaf.asset);
         if proof.leaf.price <= 0 {
             panic_with_error!(env, ErrorCode::InvalidPrice);
         }
@@ -2065,6 +2143,7 @@ pub fn submit_price_merkle(
             decimals,
             last_updated: current_ledger,
             ledger_timestamp: ledger_time,
+            volume: None,
         };
         env.storage().persistent().set(
             &DataKey::Submission(leaf.asset.clone(), leaf.source.clone()),

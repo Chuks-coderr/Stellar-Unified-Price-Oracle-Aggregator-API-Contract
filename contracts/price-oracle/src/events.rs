@@ -138,6 +138,44 @@ pub struct SourceRemovedEvent {
     pub admin: Address,
 }
 
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAssetAddedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceAssetRemovedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub asset: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceVerificationSetEvent {
+    #[topic]
+    pub source: Address,
+    pub verified: bool,
+    pub verification_method: String,
+    pub verifier: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceKeyRotatedEvent {
+    #[topic]
+    pub old_source: Address,
+    #[topic]
+    pub new_source: Address,
+    pub ledger: u32,
+}
+
 /// Emitted when a new asset is registered for price tracking.
 ///
 /// Topics: `asset`, `admin`

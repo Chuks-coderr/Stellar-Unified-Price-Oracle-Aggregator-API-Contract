@@ -9,7 +9,8 @@ use crate::pause::check_not_paused;
 use crate::prices::do_aggregate;
 use crate::sources::{is_source_suspended, record_invalid_submission};
 use crate::storage::{
-    check_registered_asset, check_source, get_admin, LEDGER_BUMP, LEDGER_THRESHOLD,
+    check_registered_asset, check_source, check_source_asset, get_admin, LEDGER_BUMP,
+    LEDGER_THRESHOLD,
 };
 use crate::types::{DataKey, ErrorCode, PriceEntry, RelayerInfo};
 
@@ -172,6 +173,7 @@ pub fn submit_price_relayed(
     // Standard source and asset checks.
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    check_source_asset(env, &source, &asset);
 
     if is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::NotAuthorized);
@@ -211,6 +213,7 @@ pub fn submit_price_relayed(
         decimals,
         last_updated: current_ledger,
         ledger_timestamp: env.ledger().timestamp(),
+        volume: None,
     };
     env.storage()
         .persistent()

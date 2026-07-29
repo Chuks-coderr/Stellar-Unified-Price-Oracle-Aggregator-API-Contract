@@ -92,6 +92,7 @@ pub fn initialize(
         &OracleSources {
             sources: soroban_sdk::Vec::new(env),
             metadata: soroban_sdk::Map::new(env),
+            verification: soroban_sdk::Map::new(env),
         },
     );
     env.storage().persistent().set(
@@ -321,6 +322,18 @@ pub fn get_aggregation_method(env: &Env) -> u32 {
         .persistent()
         .get(&key)
         .unwrap_or(AggregationMethod::Median as u32)
+}
+
+pub fn set_aggregation_method(env: &Env, method: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if method > AggregationMethod::VWAP as u32 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgAggregationMethod, &method);
+    emit_admin_action(env, symbol_short!("set_agg"), admin, Bytes::new(env));
 }
 
 pub fn set_timestamp_threshold(env: &Env, threshold: u64) {
