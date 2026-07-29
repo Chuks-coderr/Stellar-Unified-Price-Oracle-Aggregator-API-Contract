@@ -315,6 +315,32 @@ pub fn get_aggregation_method(env: &Env) -> u32 {
         .unwrap_or(AggregationMethod::Median as u32)
 }
 
+/// Set the active aggregation method. Admin-only.
+///
+/// # Valid values
+/// * `0` — `Median` (default)
+/// * `1` — `Mean`
+/// * `2` — `TrimmedMean`
+/// * `3` — `WeightedMedian`
+pub fn set_aggregation_method(env: &Env, method: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if method > 3 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    let old_method = get_aggregation_method(env);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgAggregationMethod, &method);
+    crate::events::AggregationMethodChangedEvent {
+        admin: admin.clone(),
+        old_method,
+        new_method: method,
+    }
+    .publish(env);
+    emit_admin_action(env, symbol_short!("set_agg"), admin, soroban_sdk::Bytes::new(env));
+}
+
 pub fn set_timestamp_threshold(env: &Env, threshold: u64) {
     let admin = get_admin(env);
     admin.require_auth();

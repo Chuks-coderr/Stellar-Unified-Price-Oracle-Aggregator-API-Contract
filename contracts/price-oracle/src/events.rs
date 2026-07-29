@@ -641,3 +641,18 @@ pub struct SourceRemovalCancelledEvent {
 pub struct RemovalCooldownChangedEvent {
     pub value: u32,
 }
+
+/// Emitted when the active aggregation method is changed by the admin.
+///
+/// Topics: `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct AggregationMethodChangedEvent {
+    /// Address of the admin who changed the method.
+    #[topic]
+    pub admin: Address,
+    /// Previous aggregation method discriminant (0=Median,1=Mean,2=TrimmedMean,3=WeightedMedian).
+    pub old_method: u32,
+    /// New aggregation method discriminant.
+    pub new_method: u32,
+}

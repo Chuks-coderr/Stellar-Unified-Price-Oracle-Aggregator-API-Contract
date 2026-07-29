@@ -13,8 +13,8 @@ use crate::events::{
 use crate::pause::check_not_paused;
 use crate::storage::{
     check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
-    get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
-    check_rate_limit, increment_query_count,
+    compute_weighted_median, get_admin, is_subscribed, read_oracle_sources, LEDGER_BUMP,
+    LEDGER_THRESHOLD, check_rate_limit, increment_query_count,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
@@ -160,6 +160,7 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     };
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut reputation_weights: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
@@ -206,6 +207,9 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
                 latest_timestamp = entry_data.timestamp;
             }
             valid_prices.push_back(entry_data.price);
+            // Gather reputation weight for WeightedMedian; default 50 for new sources.
+            let rep = crate::sources::get_source_reputation(env, src.clone());
+            reputation_weights.push_back(rep);
             contributing_sources += 1;
         }
     }
@@ -216,6 +220,7 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
             0 => compute_median(&valid_prices),
             1 => compute_mean(&valid_prices),
             2 => compute_trimmed_mean(&valid_prices, 10),
+            3 => compute_weighted_median(&valid_prices, &reputation_weights),
             _ => compute_median(&valid_prices),
         };
 
@@ -817,6 +822,7 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
     let decimals = get_decimals(env);
 
     let mut valid_prices: Vec<i128> = Vec::new(env);
+    let mut reputation_weights: Vec<i128> = Vec::new(env);
     let mut latest_timestamp: u64 = 0;
     let mut contributing_sources: u32 = 0;
 
@@ -843,6 +849,8 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
                 latest_timestamp = entry_data.timestamp;
             }
             valid_prices.push_back(entry_data.price);
+            let rep = crate::sources::get_source_reputation(env, src.clone());
+            reputation_weights.push_back(rep);
             contributing_sources += 1;
         }
     }
@@ -853,6 +861,7 @@ pub fn trigger_aggregation(env: &Env, asset: Address) {
             0 => compute_median(&valid_prices),
             1 => compute_mean(&valid_prices),
             2 => compute_trimmed_mean(&valid_prices, 10),
+            3 => compute_weighted_median(&valid_prices, &reputation_weights),
             _ => compute_median(&valid_prices),
         };
 

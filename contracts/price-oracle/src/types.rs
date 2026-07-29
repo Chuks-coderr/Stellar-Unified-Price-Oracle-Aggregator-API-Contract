@@ -138,6 +138,30 @@ pub enum DataKey {
     StorageVersion,
     /// Active migration state, if a migration is in progress.
     MigrationState,
+    /// Reputation score (0–100) for a registered oracle source.
+    SourceReputation(Address),
+    /// Decay factor (0–100) controlling how quickly reputation mean-reverts to 50.
+    ReputationDecayFactor,
+    /// Maximum number of oracle sources that may be registered simultaneously.
+    MaxSources,
+    /// Soft-removal pending flag and eligible-at ledger for phased source removal.
+    SrcPendingRemoval(Address),
+    /// Cooldown (in ledgers) before a source marked-for-removal can be finalized.
+    RemovalCooldown,
+    /// Timestamp threshold for submission validation (alias for CfgTimestampThreshold).
+    TimestampThreshold,
+    /// Maximum price deviation in basis points (alias for CfgMaxDeviation).
+    MaxPriceDeviation,
+    /// Maximum number of aggregation sources to sample per aggregation round.
+    MaxAggregationSources,
+    /// Maximum events allowed per contract call before suppression kicks in.
+    MaxEventsPerCall,
+    /// Maximum per-asset history entries (separate from the global cap).
+    MaxHistoryPerAsset,
+    /// Number of invalid submissions recorded for a source (for auto-suspension).
+    InvalidSubmissions(Address),
+    /// Suspension flag for a source that exceeded max invalid submissions.
+    SrcSuspended(Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.
@@ -263,6 +287,9 @@ pub enum AggregationMethod {
     Mean = 1,
     /// Arithmetic mean after removing the top and bottom 10 % of values.
     TrimmedMean = 2,
+    /// Median weighted by each source's reputation score (0–100).
+    /// Sources with higher reputation have proportionally more influence.
+    WeightedMedian = 3,
 }
 
 /// SEP-40 compatible price data returned by the standard oracle interface methods.

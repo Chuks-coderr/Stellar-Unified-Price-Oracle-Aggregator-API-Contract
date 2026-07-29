@@ -2,6 +2,11 @@
 
 mod admin;
 mod assets;
+// The core module is always compiled (it has no Env deps).
+// When the `fuzz` feature is enabled it is also re-exported so that the
+// fuzz crate can call `price_oracle::core::*` directly.
+#[cfg_attr(feature = "fuzz", allow(dead_code))]
+pub(crate) mod core;
 mod cross_reference;
 mod errors;
 mod events;
@@ -12,7 +17,7 @@ mod pause;
 mod prices;
 mod reentrancy;
 mod sources;
-mod storage;
+pub(crate) mod storage;
 mod subscription;
 mod timelock;
 mod types;
@@ -28,6 +33,17 @@ mod prop_tests;
 
 #[cfg(test)]
 mod string_boundary_tests;
+
+#[cfg(test)]
+mod diff_tests;
+
+// When compiled with `--features fuzz`, expose the pure core and storage
+// functions so the `price-oracle-fuzz` crate can call them without
+// going through the contract's #[contractimpl] entry points.
+#[cfg(feature = "fuzz")]
+pub use core as core;
+#[cfg(feature = "fuzz")]
+pub use storage::{compute_mean, compute_median, compute_trimmed_mean, compute_weighted_median};
 
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, DataKey, ErrorCode, OracleSources, PriceData,
@@ -548,6 +564,28 @@ impl PriceOracleContract {
     /// Returns the current aggregation cooldown in ledgers. Defaults to `10`.
     pub fn get_aggregation_cooldown(env: Env) -> u32 {
         admin::get_aggregation_cooldown(&env)
+    }
+
+    // --- #191: Aggregation method selection ---
+
+    /// Sets the active price aggregation method. Admin-only.
+    ///
+    /// | `method` | Algorithm |
+    /// |----------|-----------|
+    /// | `0` | **Median** (default) — O(n) quickselect, resistant to outliers |
+    /// | `1` | **Mean** — arithmetic average of all prices |
+    /// | `2` | **TrimmedMean** — mean after removing top/bottom 10% |
+    /// | `3` | **WeightedMedian** — median weighted by source reputation scores |
+    ///
+    /// Emits `AggregationMethodChangedEvent`.
+    pub fn set_aggregation_method(env: Env, method: u32) {
+        admin::set_aggregation_method(&env, method);
+    }
+
+    /// Returns the current aggregation method discriminant.
+    /// * `0` = Median, `1` = Mean, `2` = TrimmedMean, `3` = WeightedMedian
+    pub fn get_aggregation_method(env: Env) -> u32 {
+        admin::get_aggregation_method(&env)
     }
 
     // --- #70: Min submission interval ---
