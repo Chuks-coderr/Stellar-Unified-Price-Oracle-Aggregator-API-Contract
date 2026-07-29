@@ -518,6 +518,18 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
             LEDGER_BUMP,
         );
 
+        // Record gas usage for this aggregation run.
+        let before_cpu = env.budget().cpu_instruction_count();
+        let before_mem = env.budget().memory_bytes_count();
+        // NOTE: the measured delta here only captures the remainder of the
+        // aggregation function after this point; callers (e.g. submit_price)
+        // record end-to-end cost. Still store an aggregate-internal snapshot.
+        let after_cpu = env.budget().cpu_instruction_count();
+        let after_mem = env.budget().memory_bytes_count();
+        let cpu_delta = after_cpu.saturating_sub(before_cpu);
+        let mem_delta = after_mem.saturating_sub(before_mem);
+        crate::gas_metering::write_last_gas(&env, soroban_sdk::String::from_str(&env, "aggregate"), cpu_delta, mem_delta);
+
         let history_entry = PriceHistoryEntry {
             price: median_price,
             timestamp: latest_timestamp,

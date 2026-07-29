@@ -277,6 +277,12 @@ pub enum DataKey {
     XlmTokenContract,
 
     // -------------------------------------------------------------------------
+    // Gas metering
+    // -------------------------------------------------------------------------
+    /// Storage key for the last recorded gas usage (submit/aggregate)
+    LastGasRecord,
+
+    // -------------------------------------------------------------------------
     // #174: Price Deviation Alerts
     // -------------------------------------------------------------------------
     /// Alert subscription record for a (consumer, asset) pair.
@@ -448,6 +454,34 @@ pub struct PriceHistoryEntry {
     /// `true` when this entry was produced by linear interpolation rather than a
     /// real submission. Consumers should treat interpolated values as estimates.
     pub is_interpolated: bool,
+}
+
+/// Gas usage record for the most-recent submit/aggregate operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GasRecord {
+    /// Human-readable method name (e.g. "submit_price", "aggregate").
+    pub method: String,
+    /// CPU instructions consumed during the recorded call.
+    pub cpu_instructions: u64,
+    /// Memory bytes consumed during the recorded call.
+    pub memory_bytes: u64,
+    /// Ledger sequence when the recorded call occurred.
+    pub ledger: u32,
+    /// Unix timestamp when the recorded call occurred.
+    pub timestamp: u64,
+}
+
+/// Report entry describing a storage key and (where available) remaining TTL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageTtlEntry {
+    /// Descriptive key name.
+    pub key: String,
+    /// Whether the key currently exists.
+    pub exists: bool,
+    /// Remaining TTL in ledgers (0 if unavailable/unknown).
+    pub remaining_ttl: u32,
 }
 
 /// Registry of all authorized oracle sources and their display names.
