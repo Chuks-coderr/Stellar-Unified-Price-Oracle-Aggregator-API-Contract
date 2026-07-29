@@ -327,6 +327,12 @@ pub enum DataKey {
     SourceBondAmount,
     /// Deposited bond amount for a registered oracle source.
     SourceBond(Address),
+    /// Assets a source is explicitly authorized to submit for. Absence means unrestricted.
+    SourceAssets(Address),
+    /// Optional source identity verification metadata.
+    SourceVerification(Address),
+    /// Ledger sequence of the last self-service source key rotation.
+    SourceRotationLedger(Address),
 }
 
 
@@ -347,6 +353,8 @@ pub struct PriceEntry {
     /// Ledger sequence number when this entry was last written.
     pub last_updated: u32,
     pub ledger_timestamp: u64,
+    /// Optional liquidity/volume weight used by VWAP aggregation.
+    pub volume: Option<i128>,
 }
 
 /// Aggregated price bounds applied to an asset before a submission is accepted.
@@ -461,6 +469,16 @@ pub struct OracleSources {
     pub sources: Vec<Address>,
     /// Human-readable display name for each source, keyed by address.
     pub metadata: Map<Address, String>,
+    /// Optional proof-of-identity verification metadata for each source.
+    pub verification: Map<Address, SourceVerification>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceVerification {
+    pub verified: bool,
+    pub verification_method: String,
+    pub verifier: Address,
 }
 
 /// Represents a priced asset, following the SEP-40 oracle interface convention.
@@ -476,6 +494,7 @@ pub enum Asset {
 /// Strategy used when combining multiple source prices into a single aggregate.
 ///
 /// Stored as a `u32` discriminant under [`DataKey::AggregationMethod`].
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum AggregationMethod {
@@ -485,6 +504,8 @@ pub enum AggregationMethod {
     Mean = 1,
     /// Arithmetic mean after removing the top and bottom 10 % of values.
     TrimmedMean = 2,
+    /// Volume-weighted average price using submitted positive volumes.
+    VWAP = 3,
 }
 
 /// Aggregation modes available inside the BFT path.
@@ -1039,6 +1060,4 @@ pub struct DecentralizationReport {
     pub jurisdiction_hhi: u32,
     pub overall_score: u32,
 }
-
-
 

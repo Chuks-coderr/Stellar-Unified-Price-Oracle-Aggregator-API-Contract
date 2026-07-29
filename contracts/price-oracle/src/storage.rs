@@ -60,6 +60,22 @@ pub fn check_registered_asset(env: &Env, asset: &Address) {
         .extend_ttl(&index_key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
+pub fn check_source_asset(env: &Env, source: &Address, asset: &Address) {
+    let key = DataKey::SourceAssets(source.clone());
+    let assets: Option<Vec<Address>> = env.storage().persistent().get(&key);
+    if let Some(assets) = assets {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        for i in 0..assets.len() {
+            if assets.get_unchecked(i) == *asset {
+                return;
+            }
+        }
+        panic_with_error!(env, ErrorCode::NotAuthorized);
+    }
+}
+
 /// Sort prices using heapsort — guaranteed O(n log n) worst-case, O(1) extra space.
 /// Preferred over quicksort to avoid O(n²) worst-case gas cost on adversarial inputs.
 pub fn sort_prices(prices: &mut soroban_sdk::Vec<i128>) {
@@ -221,6 +237,30 @@ pub fn compute_trimmed_mean(prices: &soroban_sdk::Vec<i128>, trim_percent: u32) 
     compute_mean(&trimmed)
 }
 
+pub fn compute_vwap(prices: &soroban_sdk::Vec<i128>, volumes: &soroban_sdk::Vec<i128>) -> i128 {
+    let n = prices.len().min(volumes.len());
+    if n == 0 {
+        return 0;
+    }
+
+    let mut weighted_sum: i128 = 0;
+    let mut total_volume: i128 = 0;
+    for i in 0..n {
+        let volume = volumes.get_unchecked(i);
+        if volume <= 0 {
+            continue;
+        }
+        weighted_sum = weighted_sum.saturating_add(prices.get_unchecked(i).saturating_mul(volume));
+        total_volume = total_volume.saturating_add(volume);
+    }
+
+    if total_volume == 0 {
+        compute_mean(prices)
+    } else {
+        weighted_sum / total_volume
+    }
+}
+
 pub fn read_registered_assets(env: &Env) -> Vec<Address> {
     let key = DataKey::AssetRegistry;
     if env.storage().persistent().has(&key) {
@@ -253,6 +293,7 @@ pub fn read_oracle_sources(env: &Env) -> OracleSources {
         .unwrap_or(OracleSources {
             sources: soroban_sdk::Vec::new(env),
             metadata: soroban_sdk::Map::new(env),
+            verification: soroban_sdk::Map::new(env),
         })
 }
 
