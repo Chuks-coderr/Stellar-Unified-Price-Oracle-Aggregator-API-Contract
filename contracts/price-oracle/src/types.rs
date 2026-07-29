@@ -457,6 +457,25 @@ pub enum DataKey {
     AuditEntryCount,
     /// Current audit log chain head hash (#239).
     AuditLogHead,
+
+    // -------------------------------------------------------------------------
+    // #223: Price freeze mechanism for market emergencies
+    // -------------------------------------------------------------------------
+    /// Frozen price snapshot for an asset, present only while frozen (#223).
+    FrozenPrice(Address),
+
+    // -------------------------------------------------------------------------
+    // #229: Cursor-paginated historical price queries
+    // -------------------------------------------------------------------------
+    // (no additional storage keys — pagination reuses `PriceHistoryLedgers`)
+
+    // -------------------------------------------------------------------------
+    // #243: Admin notification preference system
+    // -------------------------------------------------------------------------
+    /// Notification preferences registered for a given event-type discriminant (#243).
+    NotificationPrefs(u32),
+    /// Every event-type discriminant that currently has at least one preference (#243).
+    NotificationEventTypes,
 }
 
 
@@ -580,6 +599,39 @@ pub struct PriceHistoryEntry {
     /// `true` when this entry was produced by linear interpolation rather than a
     /// real submission. Consumers should treat interpolated values as estimates.
     pub is_interpolated: bool,
+}
+
+/// A frozen aggregate price snapshot, recorded when an admin freezes an asset
+/// during a market emergency (#223). While present, it takes priority over the
+/// live aggregate for `get_price` and blocks new submissions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FrozenPrice {
+    /// The aggregate price at the moment of freezing, scaled by `10^decimals`.
+    pub price: i128,
+    /// Unix timestamp of the aggregate at the moment of freezing.
+    pub timestamp: u64,
+    /// Decimal precision in effect when the price was frozen.
+    pub decimals: u32,
+    /// Admin-supplied human-readable reason for the freeze.
+    pub reason: String,
+    /// Ledger sequence number at which the freeze was triggered.
+    pub frozen_at_ledger: u32,
+}
+
+/// An admin-configured off-chain notification target for a given event type (#243).
+///
+/// Dispatch happens off-chain: an external relayer service watches contract events
+/// and forwards them to the configured `channel`/`target` pairs registered here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct NotificationPreference {
+    /// Event-type discriminant this preference applies to.
+    pub event_type: u32,
+    /// Notification channel kind (e.g. "webhook", "email").
+    pub channel: String,
+    /// Channel-specific target (URL, email address, etc).
+    pub target: String,
 }
 
 /// Gas usage record for the most-recent submit/aggregate operation.

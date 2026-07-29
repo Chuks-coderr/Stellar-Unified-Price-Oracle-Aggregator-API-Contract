@@ -52,6 +52,8 @@ mod zk_verify;
 mod audit_log;
 mod rbac;
 mod emergency_pause;
+mod freeze;
+mod notifications;
 
 #[cfg(test)]
 mod circuit_breaker_tests;
@@ -95,6 +97,7 @@ pub use types::{
     SourceGovernance, SourceProposal,
     SourceGeoMetadata, DecentralizationReport,
     GasRecord, StorageTtlEntry,
+    FrozenPrice, NotificationPreference,
 };
 
 
@@ -1632,6 +1635,111 @@ impl PriceOracleContract {
         let result = history::get_historical_prices(&env, asset, start_ledger, end_ledger);
         exit_reentrancy_guard(&env);
         result
+    }
+
+    /// Returns a cursor-paginated page of historical price entries for an asset (#229).
+    ///
+    /// `cursor` is the ledger sequence number to start from (inclusive); pass `0` for the
+    /// first page. `limit` is capped at `history::MAX_PAGE_SIZE` (50).
+    ///
+    /// # Returns
+    ///
+    /// `(entries, next_cursor)` — `next_cursor` is `Some(ledger)` to request the next page,
+    /// or `None` once all recorded entries have been returned.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    /// * [`ErrorCode::InvalidPageSize`] — if `limit` is `0` or exceeds the maximum page size.
+    pub fn get_historical_prices_paginated(
+        env: Env,
+        asset: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<PriceHistoryEntry>, Option<u32>) {
+        enter_reentrancy_guard(&env);
+        let result = history::get_historical_prices_paginated(&env, asset, cursor, limit);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
+    // --- Price freeze (#223) ---
+
+    /// Freezes the current aggregate price for an asset during a market emergency.
+    ///
+    /// While frozen, `get_price` returns the frozen snapshot and price submissions for
+    /// the asset are rejected until `unfreeze_price` is called.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    /// * [`ErrorCode::ReasonTooLong`] — if `reason` exceeds 256 characters.
+    /// * [`ErrorCode::PriceFrozen`] — if the asset is already frozen.
+    /// * [`ErrorCode::NoData`] — if the asset has no aggregate price yet.
+    pub fn freeze_price(env: Env, asset: Address, reason: String) {
+        freeze::freeze_price(&env, asset, reason);
+    }
+
+    /// Unfreezes a previously frozen asset, resuming normal price updates.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::PriceNotFrozen`] — if the asset is not currently frozen.
+    pub fn unfreeze_price(env: Env, asset: Address) {
+        freeze::unfreeze_price(&env, asset);
+    }
+
+    /// Returns whether an asset's price is currently frozen.
+    pub fn is_price_frozen(env: Env, asset: Address) -> bool {
+        freeze::is_price_frozen(&env, asset)
+    }
+
+    // --- Notification preferences (#243) ---
+
+    /// Registers an admin notification preference for a given event type.
+    ///
+    /// `event_type` is a caller-defined discriminant (e.g. matching an event-indexing
+    /// scheme); `channel` identifies the notification kind (e.g. `"webhook"`, `"email"`)
+    /// and `target` is the channel-specific destination. Dispatch is performed by an
+    /// off-chain relayer service watching contract events — this only stores the
+    /// preference.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::NotificationConfigInvalid`] — if `channel` or `target` exceeds 256 chars.
+    pub fn set_notification_preference(
+        env: Env,
+        event_type: u32,
+        channel: String,
+        target: String,
+    ) {
+        notifications::set_notification_preference(&env, event_type, channel, target);
+    }
+
+    /// Returns all notification preferences registered for a given event type.
+    pub fn list_notification_preferences(
+        env: Env,
+        event_type: u32,
+    ) -> Vec<NotificationPreference> {
+        notifications::list_notification_preferences(&env, event_type)
+    }
+
+    /// Returns every event-type discriminant that currently has at least one
+    /// notification preference registered.
+    pub fn list_notification_event_types(env: Env) -> Vec<u32> {
+        notifications::list_notification_event_types(&env)
+    }
+
+    /// Clears all notification preferences registered for a given event type.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    pub fn clear_notification_preferences(env: Env, event_type: u32) {
+        notifications::clear_notification_preferences(&env, event_type);
     }
 
     /// Enables or disables linear interpolation for `get_historical_price` queries.
