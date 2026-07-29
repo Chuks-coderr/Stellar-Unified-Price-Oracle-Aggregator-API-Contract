@@ -12,10 +12,12 @@ use soroban_sdk::contracterror;
 /// |--------|------------------------|
 /// | 0–15   | Core / original        |
 /// | 16–19  | Rate-limit & migration |
-/// | 20–29  | Source management      |
-/// | 30–39  | Commit-reveal (#187)   |
+/// | 20–30  | Source management      |
+/// | 31–39  | Commit-reveal (#187)   |
 /// | 40–49  | Finality gadget (#188) |
-/// | 50–59  | Relayer & misc         |
+/// | 50–61  | Relayer & misc         |
+/// | 62–74  | Asset/price bounds     |
+/// | 75–99  | Advanced features      |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -52,12 +54,6 @@ pub enum ErrorCode {
     OperationNotFound = 14,
     /// The submitted price is below the asset's configured minimum price floor.
     PriceBelowMinimum = 15,
-    /// The submitted price falls outside the asset's configured price bounds.
-    PriceOutOfBounds = 54,
-    /// The asset is currently paused and cannot accept new submissions.
-    AssetPaused = 55,
-    /// The circuit breaker tripped for the asset and rejected the update.
-    CircuitBreakerTripped = 56,
 
     // ── 16–19: Rate-limit, subscription & migration ──────────────────────────
     /// Rate limit exceeded for an operation.
@@ -69,7 +65,7 @@ pub enum ErrorCode {
     /// A migration is already in progress.
     MigrationInProgress = 19,
 
-    // ── 20–29: Source management ─────────────────────────────────────────────
+    // ── 20–30: Source management ─────────────────────────────────────────────
     /// No migration is currently in progress.
     NoMigrationInProgress = 20,
     /// The source name is empty.
@@ -106,6 +102,8 @@ pub enum ErrorCode {
     AlreadyCommitted = 35,
     /// The commit round ledger is invalid (e.g., in the future).
     InvalidCommitRound = 36,
+    /// Commit-reveal scheme is required (BFT fault tolerance > 0) but was bypassed.
+    CommitRevealRequired = 37,
 
     // ── 40–49: Finality gadget (#188) ────────────────────────────────────────
     /// The price has already been finalized and cannot be changed.
@@ -119,7 +117,7 @@ pub enum ErrorCode {
     /// A reorg was detected via ledger hash chain inconsistency.
     ReorgDetected = 44,
 
-    // ── 50–59: Relayer & misc ────────────────────────────────────────────────
+    // ── 50–61: Relayer & misc ────────────────────────────────────────────────
     /// The caller is not a registered and approved relayer.
     RelayerNotAuthorized = 50,
     /// `add_relayer` was called for an address that is already an approved relayer.
@@ -129,11 +127,11 @@ pub enum ErrorCode {
     /// Maximum number of alert subscriptions has been reached.
     MaxSubscriptionsReached = 53,
     /// The oracle source has been suspended due to progressive disqualification.
-    SourceSuspended = 54,
+    SourceSuspended = 62,
     /// Demerit configuration thresholds are invalid.
-    InvalidDemeritThreshold = 55,
+    InvalidDemeritThreshold = 63,
     /// Invalid source governance config.
-    InvalidGovernanceConfig = 56,
+    InvalidGovernanceConfig = 64,
     /// The specified source proposal does not exist.
     ProposalNotFound = 57,
     /// Approver has already approved the proposal.
@@ -144,7 +142,62 @@ pub enum ErrorCode {
     InsufficientBond = 60,
     /// The staking/fee token contract has not been configured.
     StakeTokenNotConfigured = 61,
+
+    // ── 62–74: Asset/price bounds & circuit breaker ───────────────────────────
+    /// The submitted price falls outside the asset's configured price bounds.
+    PriceOutOfBounds = 65,
+    /// The asset is currently paused and cannot accept new submissions.
+    AssetPaused = 66,
+    /// The circuit breaker tripped for the asset and rejected the update.
+    CircuitBreakerTripped = 67,
+
+    // ── 75–99: Advanced features ──────────────────────────────────────────────
+    /// Daily admin operation limit exceeded.
+    OperationLimitExceeded = 75,
+    /// An arithmetic overflow occurred in a calculation.
+    ArithmeticOverflow = 76,
+    /// AMM pool already exists for this asset pair.
+    PoolAlreadyExists = 77,
+    /// AMM pool not found for this asset pair.
+    PoolNotFound = 78,
+    /// AMM swap would exceed maximum allowed slippage.
+    SlippageExceeded = 79,
+    /// AMM price manipulation detected.
+    AmmPriceManipulation = 80,
+    /// Price challenge submission is outside the valid submission window.
+    OutOfSubmissionWindow = 81,
+    /// State channel not found for this source.
+    ChannelNotFound = 82,
+    /// State channel is already open for this source.
+    ChannelAlreadyOpen = 83,
+    /// Exotic asset cycle depth limit exceeded.
+    ExoticCycleLimitExceeded = 84,
+    /// Exotic cycle detected in asset dependency graph.
+    ExoticCycleDetected = 85,
+    /// Exotic asset pricing configuration not found.
+    ExoticAssetNotConfigured = 86,
+    /// Fee market submission is below the minimum priority fee.
+    FeeMarketBelowMinimum = 87,
+    /// Multi-sig: approval not found.
+    ApprovalNotFound = 88,
+    /// Multi-sig: not the queue head.
+    MsNotQueueHead = 89,
+    /// Multi-sig: quorum not reached.
+    MsQuorumNotReached = 90,
+    /// Optimistic oracle: bond is too small.
+    BondTooSmall = 91,
+    /// Optimistic oracle: proposal already disputed.
+    ProposalAlreadyDisputed = 92,
+    /// Optimistic oracle: proposal already resolved.
+    ProposalAlreadyResolved = 93,
+    /// Optimistic oracle: proposal has expired.
+    ProposalExpired = 94,
+    /// Optimistic oracle: proposal not disputed (cannot resolve).
+    ProposalNotDisputed = 95,
+    /// ZK proof is invalid.
+    ZkProofInvalid = 96,
+    /// ZK verifying key not set.
+    ZkVkNotSet = 97,
+    /// ZK invalid public signals.
+    ZkInvalidPublicSignals = 98,
 }
-
-
-

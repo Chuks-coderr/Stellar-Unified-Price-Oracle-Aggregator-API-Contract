@@ -1,8 +1,10 @@
 use crate::types::{DataKey, ErrorCode, OracleSources, SubscriptionPlans};
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
-pub const LEDGER_THRESHOLD: u32 = 1000;
-pub const LEDGER_BUMP: u32 = 4000;
+// Keep frequently accessed contract entries alive longer to reduce TTL bump traffic
+// on hot paths such as admin/config/registry lookups.
+pub const LEDGER_THRESHOLD: u32 = 10_000;
+pub const LEDGER_BUMP: u32 = 40_000;
 pub const DEFAULT_QUERY_RATE_LIMIT: u32 = 100;
 
 pub fn get_admin(env: &Env) -> Address {
@@ -129,20 +131,102 @@ fn heapify(prices: &mut soroban_sdk::Vec<i128>, n: u32, root: u32) {
     }
 }
 
+fn vec_swap(prices: &mut soroban_sdk::Vec<i128>, i: u32, j: u32) {
+    if i == j {
+        return;
+    }
+    let tmp = prices.get_unchecked(i);
+    prices.set(i, prices.get_unchecked(j));
+    prices.set(j, tmp);
+}
+
+fn median_of_five(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let mut i = left + 1;
+    while i <= right {
+        let mut j = i;
+        while j > left && prices.get_unchecked(j) < prices.get_unchecked(j - 1) {
+            vec_swap(prices, j, j - 1);
+            j -= 1;
+        }
+        i += 1;
+    }
+    left + (right - left) / 2
+}
+
+fn partition(
+    prices: &mut soroban_sdk::Vec<i128>,
+    left: u32,
+    right: u32,
+    pivot_index: u32,
+) -> u32 {
+    let pivot_value = prices.get_unchecked(pivot_index);
+    vec_swap(prices, pivot_index, right);
+    let mut store_index = left;
+    let mut i = left;
+    while i < right {
+        if prices.get_unchecked(i) < pivot_value {
+            vec_swap(prices, store_index, i);
+            store_index += 1;
+        }
+        i += 1;
+    }
+    vec_swap(prices, store_index, right);
+    store_index
+}
+
+fn select_pivot(prices: &mut soroban_sdk::Vec<i128>, left: u32, right: u32) -> u32 {
+    let n = right - left + 1;
+    if n <= 5 {
+        return median_of_five(prices, left, right);
+    }
+    let mut store = left;
+    let mut i = left;
+    while i <= right {
+        let group_end = if i + 4 <= right { i + 4 } else { right };
+        let median = median_of_five(prices, i, group_end);
+        vec_swap(prices, median, store);
+        store += 1;
+        i += 5;
+    }
+    let mid = left + ((store - left - 1) / 2);
+    select_kth(prices, left, store - 1, mid)
+}
+
+fn select_kth(
+    prices: &mut soroban_sdk::Vec<i128>,
+    mut left: u32,
+    mut right: u32,
+    k: u32,
+) -> i128 {
+    loop {
+        if left == right {
+            return prices.get_unchecked(left);
+        }
+        let pivot_index = select_pivot(prices, left, right);
+        let pivot_index = partition(prices, left, right, pivot_index);
+        if k == pivot_index {
+            return prices.get_unchecked(k);
+        } else if k < pivot_index {
+            right = pivot_index - 1;
+        } else {
+            left = pivot_index + 1;
+        }
+    }
+}
+
 pub fn compute_median(prices: &soroban_sdk::Vec<i128>) -> i128 {
     let n = prices.len();
     if n == 0 {
         return 0;
     }
-    let mut sorted = prices.clone();
-    sort_prices(&mut sorted);
+    let mut selected = prices.clone();
+    let mid = n / 2;
     if n.is_multiple_of(2) {
-        let mid = n / 2;
-        let a = sorted.get_unchecked(mid - 1);
-        let b = sorted.get_unchecked(mid);
-        a + (b - a) / 2
+        let lower = select_kth(&mut selected, 0, n - 1, mid - 1);
+        let upper = select_kth(&mut selected, 0, n - 1, mid);
+        lower + (upper - lower) / 2
     } else {
-        sorted.get_unchecked(n / 2)
+        select_kth(&mut selected, 0, n - 1, mid)
     }
 }
 
@@ -380,4 +464,61 @@ pub fn is_subscribed(env: &Env, consumer: &Address) -> bool {
     } else {
         false
     }
+}
+
+/// Gather TTL status for known storage entries. Exact remaining TTL values
+/// are not exposed by the Soroban storage API; return `0` when unavailable.
+pub fn get_storage_ttl_status(env: &Env) -> soroban_sdk::Vec<crate::types::StorageTtlEntry> {
+    let mut out: soroban_sdk::Vec<crate::types::StorageTtlEntry> = soroban_sdk::Vec::new(env);
+
+    // Assets registry
+    let asset_key = DataKey::AssetRegistry;
+    let asset_exists = env.storage().persistent().has(&asset_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "AssetRegistry"),
+        exists: asset_exists,
+        remaining_ttl: 0,
+    });
+
+    // Oracle sources registry
+    let src_key = DataKey::SrcRegistry;
+    let src_exists = env.storage().persistent().has(&src_key);
+    out.push_back(crate::types::StorageTtlEntry {
+        key: soroban_sdk::String::from_str(env, "SrcRegistry"),
+        exists: src_exists,
+        remaining_ttl: 0,
+    });
+
+    // For each registered asset, report aggregate existence and history entries.
+    let assets = read_registered_assets(env);
+    for i in 0..assets.len() {
+        let a = assets.get_unchecked(i);
+        let agg_key = DataKey::Aggregate(a.clone());
+        let exists = env.storage().persistent().has(&agg_key);
+        out.push_back(crate::types::StorageTtlEntry {
+            key: soroban_sdk::String::from_str(env, &format!("Aggregate({})", i)),
+            exists,
+            remaining_ttl: 0,
+        });
+
+        // Price history ledgers list (if present)
+        let ledgers_key = DataKey::PriceHistoryLedgers(a.clone());
+        if env.storage().persistent().has(&ledgers_key) {
+            let ledger_list: Option<soroban_sdk::Vec<u32>> = env.storage().persistent().get(&ledgers_key);
+            if let Some(list) = ledger_list {
+                for j in 0..list.len() {
+                    let ledger = list.get_unchecked(j);
+                    let hist_key = DataKey::PriceHistory(a.clone(), ledger);
+                    let exists_hist = env.storage().temporary().has(&hist_key);
+                    out.push_back(crate::types::StorageTtlEntry {
+                        key: soroban_sdk::String::from_str(env, &format!("PriceHistory({}, {})", i, ledger)),
+                        exists: exists_hist,
+                        remaining_ttl: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    out
 }

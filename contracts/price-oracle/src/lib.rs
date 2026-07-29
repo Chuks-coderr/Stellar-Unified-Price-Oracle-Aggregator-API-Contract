@@ -14,6 +14,7 @@ mod assets;
 mod challenger;
 mod correlation;
 mod cross_chain_relay;
+mod cross_chain_verify;
 mod cross_reference;
 mod deadline_rebate;
 mod errors;
@@ -38,6 +39,7 @@ mod rotation;
 mod sources;
 mod state_channel;
 mod storage;
+mod gas_metering;
 mod submission_deadline;
 mod subscription;
 mod timelock;
@@ -91,6 +93,7 @@ pub use types::{
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
     SourceGovernance, SourceProposal,
     SourceGeoMetadata, DecentralizationReport,
+    GasRecord, StorageTtlEntry,
 };
 
 
@@ -100,7 +103,7 @@ use soroban_sdk::{
     Vec,
 };
 
-use crate::storage::read_registered_assets;
+use crate::storage::{enter_reentrancy_guard, exit_reentrancy_guard, read_registered_assets};
 
 /// Stellar Unified Price Oracle — a multi-source, aggregating price oracle smart contract.
 ///
@@ -199,7 +202,118 @@ impl PriceOracleContract {
     ///
     /// The `Address` of the current admin.
     pub fn get_admin_address(env: Env) -> Address {
-        admin::get_admin_address(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_admin_address(&env);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
+    pub fn has_role(env: Env, caller: Address, role: crate::types::Role) -> bool {
+        rbac::has_role(&env, &caller, role)
+    }
+
+    pub fn delegate_role(env: Env, delegatee: Address, role: crate::types::Role) {
+        rbac::delegate_role(&env, delegatee, role);
+    }
+
+    pub fn revoke_role(env: Env, delegatee: Address, role: crate::types::Role) {
+        rbac::revoke_role(&env, delegatee, role);
+    }
+
+    pub fn get_role_holders(env: Env, role: crate::types::Role) -> Vec<Address> {
+        rbac::get_role_holders(&env, role)
+    }
+
+    pub fn get_roles_for_holder(env: Env, holder: Address) -> Vec<crate::types::Role> {
+        rbac::get_roles_for_holder(&env, &holder)
+    }
+
+    pub fn emergency_pause(env: Env, reason: String, auto_unpause_ledgers: u32) {
+        emergency_pause::emergency_pause(&env, reason, auto_unpause_ledgers);
+    }
+
+    pub fn extend_emergency_pause(env: Env, additional_ledgers: u32) {
+        emergency_pause::extend_emergency_pause(&env, additional_ledgers);
+    }
+
+    pub fn cancel_emergency_pause(env: Env) {
+        emergency_pause::cancel_emergency_pause(&env);
+    }
+
+    pub fn is_emergency_pause_active(env: Env) -> bool {
+        emergency_pause::is_emergency_pause_active(&env)
+    }
+
+    pub fn get_emergency_pause(env: Env) -> Option<crate::types::EmergencyPause> {
+        emergency_pause::get_emergency_pause(&env)
+    }
+
+    pub fn set_correlation_pair(
+        env: Env,
+        base_asset: Address,
+        quote_asset: Address,
+        min_ratio: u128,
+        max_ratio: u128,
+        enabled: bool,
+    ) {
+        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+    }
+
+    pub fn is_correlation_flagged(env: Env, source: Address, asset: Address) -> bool {
+        correlation::is_correlation_flagged(&env, &source, &asset)
+    }
+
+    pub fn clear_correlation_flag(env: Env, source: Address, asset: Address) {
+        correlation::clear_correlation_flag(&env, source, asset);
+    }
+
+    pub fn challenge_price(env: Env, asset: Address, expected_price: i128, proof_data: Bytes) {
+        challenger::challenge_price(&env, asset, expected_price, proof_data);
+    }
+
+    pub fn resolve_challenge(env: Env, challenge_id: u32, is_valid: bool) {
+        challenger::resolve_challenge(&env, challenge_id, is_valid);
+    }
+
+    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<crate::types::Challenge> {
+        challenger::get_challenge_history(&env, asset, limit)
+    }
+
+    pub fn get_challenger_rewards(env: Env, challenger: Address) -> i128 {
+        challenger::get_challenger_rewards(&env, challenger)
+    }
+
+    pub fn get_audit_log_count(env: Env) -> u32 {
+        audit_log::get_audit_log_count(&env)
+    }
+
+    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<crate::types::AuditEntry> {
+        audit_log::get_admin_audit_log(&env, from_id, limit)
+    }
+
+    pub fn get_audit_log_head(env: Env) -> Bytes {
+        audit_log::get_audit_log_head(&env)
+    }
+
+    pub fn verify_audit_chain(env: Env) -> bool {
+        audit_log::verify_audit_chain(&env)
+    }
+
+    pub fn simulate_aggregation(
+        env: Env,
+        asset: Address,
+        hypothetical_prices: Vec<(Address, i128)>,
+    ) -> Option<i128> {
+        prices::simulate_aggregation(&env, asset, hypothetical_prices)
+    }
+
+    pub fn submit_price_merkle(
+        env: Env,
+        source: Address,
+        root: BytesN<32>,
+        proofs: Vec<prices::MerkleProof>,
+    ) {
+        prices::submit_price_merkle(&env, source, root, proofs);
     }
 
     /// Updates the minimum number of oracle sources required before a price is aggregated.
@@ -233,7 +347,10 @@ impl PriceOracleContract {
     ///
     /// Minimum number of sources required for aggregation. Defaults to `1`.
     pub fn get_min_sources_required(env: Env) -> u32 {
-        admin::get_min_sources_required(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_min_sources_required(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Updates the maximum number of historical price entries retained per asset.
@@ -265,7 +382,10 @@ impl PriceOracleContract {
     ///
     /// Maximum number of history entries kept per asset. Defaults to `100`.
     pub fn get_max_history_length(env: Env) -> u32 {
-        admin::get_max_history_length(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_max_history_length(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Sets the price resolution window in seconds (SEP-40 `resolution` field).
@@ -298,7 +418,10 @@ impl PriceOracleContract {
     ///
     /// Resolution in seconds, or `0` if not set. Defaults to `0`.
     pub fn get_resolution(env: Env) -> u32 {
-        admin::get_resolution(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_resolution(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Updates the decimal precision used for all prices stored by this oracle.
@@ -330,7 +453,10 @@ impl PriceOracleContract {
     ///
     /// Number of decimals. Defaults to `18`.
     pub fn get_decimals(env: Env) -> u32 {
-        admin::get_decimals(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_decimals(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Updates the human-readable description of this oracle instance.
@@ -360,7 +486,10 @@ impl PriceOracleContract {
     ///
     /// The description `String`. Defaults to `"Stellar Price Oracle"`.
     pub fn get_description(env: Env) -> String {
-        admin::get_description(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_description(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Sets the maximum allowed gap (in seconds) between a submitted timestamp and
@@ -393,7 +522,10 @@ impl PriceOracleContract {
     ///
     /// Threshold in seconds. Defaults to `300` (5 minutes).
     pub fn get_timestamp_threshold(env: Env) -> u64 {
-        admin::get_timestamp_threshold(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_timestamp_threshold(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Sets the maximum allowed price deviation, expressed in basis points (100 bp = 1 %).
@@ -426,7 +558,10 @@ impl PriceOracleContract {
     ///
     /// Maximum deviation in basis points. Defaults to `500` (5 %).
     pub fn get_max_price_deviation(env: Env) -> u32 {
-        admin::get_max_price_deviation(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_max_price_deviation(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_aggregation_method(env: Env, method: u32) {
@@ -469,7 +604,10 @@ impl PriceOracleContract {
     ///
     /// Heartbeat interval in seconds. Defaults to `3600` (1 hour).
     pub fn get_heartbeat_interval(env: Env) -> u64 {
-        admin::get_heartbeat_interval(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_heartbeat_interval(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Sets the query rate limit — the maximum number of queries allowed per ledger.
@@ -760,7 +898,10 @@ impl PriceOracleContract {
     ///
     /// `true` if `source` is registered; `false` otherwise.
     pub fn is_source(env: Env, source: Address) -> bool {
-        sources::is_source(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::is_source(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the full registry of oracle sources and their metadata.
@@ -773,7 +914,10 @@ impl PriceOracleContract {
     ///
     /// An [`OracleSources`] struct containing all source addresses and their display names.
     pub fn get_oracle_sources(env: Env) -> OracleSources {
-        sources::get_oracle_sources(&env)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_oracle_sources(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn add_source_with_assets(env: Env, source: Address, name: String, assets: Vec<Address>) {
@@ -860,7 +1004,10 @@ impl PriceOracleContract {
     ///
     /// `true` if the source is inactive; `false` otherwise.
     pub fn is_source_inactive(env: Env, source: Address) -> bool {
-        sources::is_source_inactive(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::is_source_inactive(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the number of oracle sources currently classified as inactive.
@@ -873,7 +1020,10 @@ impl PriceOracleContract {
     ///
     /// Count of inactive sources among all registered sources.
     pub fn get_inactive_sources(env: Env) -> u32 {
-        sources::get_inactive_sources(&env)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_inactive_sources(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the Unix timestamp of the last heartbeat submitted by a source.
@@ -887,7 +1037,10 @@ impl PriceOracleContract {
     ///
     /// Unix timestamp (seconds) of the last heartbeat, or `0` if none has been submitted.
     pub fn get_source_last_heartbeat(env: Env, source: Address) -> u64 {
-        sources::get_source_last_heartbeat(&env, source)
+        enter_reentrancy_guard(&env);
+        let result = sources::get_source_last_heartbeat(&env, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- #65: Source Reputation ---
@@ -1105,7 +1258,10 @@ impl PriceOracleContract {
     ///
     /// `true` if registered; `false` otherwise.
     pub fn is_asset_registered(env: Env, asset: Address) -> bool {
-        assets::is_asset_registered(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = assets::is_asset_registered(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn set_price_bounds(
@@ -1204,7 +1360,15 @@ impl PriceOracleContract {
     /// * [`ErrorCode::InvalidTimestamp`] — if `timestamp` is too far in the future.
     pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
         reentrancy::enter(&env);
+        // Measure budget before and after to record last submit_price cost.
+        let before_cpu = env.budget().cpu_instruction_count();
+        let before_mem = env.budget().memory_bytes_count();
         prices::submit_price(&env, source, asset, price, timestamp);
+        let after_cpu = env.budget().cpu_instruction_count();
+        let after_mem = env.budget().memory_bytes_count();
+        let cpu_delta = after_cpu.saturating_sub(before_cpu);
+        let mem_delta = after_mem.saturating_sub(before_mem);
+        crate::gas_metering::write_last_gas(&env, String::from_str(&env, "submit_price"), cpu_delta, mem_delta);
         reentrancy::exit(&env);
     }
 
@@ -1240,6 +1404,23 @@ impl PriceOracleContract {
         prices::submit_prices(&env, source, asset_prices);
     }
 
+    /// Returns current budget counters and the last recorded gas usage.
+    ///
+    /// Returns `(cpu_instructions_used, memory_bytes_used, last_recorded)` where
+    /// `last_recorded` is the `GasRecord` for the most-recent submit/aggregate.
+    pub fn get_gas_stats(env: Env) -> (u64, u64, Option<GasRecord>) {
+        let cpu = env.budget().cpu_instruction_count();
+        let mem = env.budget().memory_bytes_count();
+        let last = crate::gas_metering::read_last_gas(&env);
+        (cpu, mem, last)
+    }
+
+    /// Returns storage TTL status for well-known keys. Remaining TTL is `0`
+    /// when the runtime does not expose a retrievable TTL value.
+    pub fn get_storage_ttl_status(env: Env) -> Vec<StorageTtlEntry> {
+        crate::storage::get_storage_ttl_status(&env)
+    }
+
     /// Returns the latest aggregate price for an asset, filtered by a maximum age.
     ///
     /// When `max_age > 0`, returns `None` and emits a
@@ -1263,7 +1444,10 @@ impl PriceOracleContract {
     /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
     /// * [`ErrorCode::RateLimitExceeded`] — if the caller has exceeded the query rate limit.
     pub fn get_price(env: Env, asset: Address, max_age: u64) -> Option<AggregatePrice> {
-        prices::get_price(&env, asset, max_age)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_price(&env, asset, max_age);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn get_price_with_confidence(env: Env, asset: Address) -> Option<(AggregatePrice, u32)> {
@@ -1291,7 +1475,10 @@ impl PriceOracleContract {
     /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
     /// * [`ErrorCode::SourceNotFound`] — if `source` is not registered.
     pub fn get_source_price(env: Env, asset: Address, source: Address) -> PriceEntry {
-        prices::get_source_price(&env, asset, source)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_source_price(&env, asset, source);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns all price submissions currently stored for an asset, one per source.
@@ -1311,7 +1498,10 @@ impl PriceOracleContract {
     ///
     /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
     pub fn get_all_prices(env: Env, asset: Address) -> Vec<PriceEntry> {
-        prices::get_all_prices(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = prices::get_all_prices(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     pub fn override_price(
@@ -1333,7 +1523,10 @@ impl PriceOracleContract {
     }
 
     pub fn get_latest_ledger(env: Env) -> u32 {
-        env.ledger().sequence()
+        enter_reentrancy_guard(&env);
+        let result = env.ledger().sequence();
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- History ---
@@ -1360,7 +1553,10 @@ impl PriceOracleContract {
     ///
     /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
     pub fn get_historical_price(env: Env, asset: Address, ledger: u32) -> PriceHistoryEntry {
-        history::get_historical_price(&env, asset, ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::get_historical_price(&env, asset, ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns whether a price history entry exists for an asset at a specific ledger.
@@ -1376,7 +1572,10 @@ impl PriceOracleContract {
     /// `true` if a snapshot exists at `ledger`; `false` otherwise (including when
     /// the asset is not registered).
     pub fn has_historical_price(env: Env, asset: Address, ledger: u32) -> bool {
-        history::has_historical_price(&env, asset, ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::has_historical_price(&env, asset, ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns all historical price snapshots for an asset within a ledger range.
@@ -1406,7 +1605,10 @@ impl PriceOracleContract {
         start_ledger: u32,
         end_ledger: u32,
     ) -> Vec<PriceHistoryEntry> {
-        history::get_historical_prices(&env, asset, start_ledger, end_ledger)
+        enter_reentrancy_guard(&env);
+        let result = history::get_historical_prices(&env, asset, start_ledger, end_ledger);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Enables or disables linear interpolation for `get_historical_price` queries.
@@ -1440,7 +1642,10 @@ impl PriceOracleContract {
     ///
     /// Number of decimals. Defaults to `18`.
     pub fn decimals(env: Env) -> u32 {
-        Self::get_decimals(env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_decimals(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the base asset for all prices quoted by this oracle (SEP-40 `base`).
@@ -1455,7 +1660,10 @@ impl PriceOracleContract {
     ///
     /// [`Asset::Other`] with the symbol `"USD"`.
     pub fn base(env: Env) -> Asset {
-        Asset::Other(Symbol::new(&env, "USD"))
+        enter_reentrancy_guard(&env);
+        let result = Asset::Other(Symbol::new(&env, "USD"));
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the list of all registered assets as SEP-40 [`Asset`] values (SEP-40 `assets`).
@@ -1468,11 +1676,13 @@ impl PriceOracleContract {
     ///
     /// A [`Vec`] of [`Asset::Stellar`] wrapping each registered asset address.
     pub fn assets(env: Env) -> Vec<Asset> {
+        enter_reentrancy_guard(&env);
         let registered = read_registered_assets(&env);
         let mut result: Vec<Asset> = Vec::new(&env);
         for i in 0..registered.len() {
             result.push_back(Asset::Stellar(registered.get_unchecked(i)));
         }
+        exit_reentrancy_guard(&env);
         result
     }
 
@@ -1488,7 +1698,10 @@ impl PriceOracleContract {
     ///
     /// Resolution in seconds, or `0` if not configured.
     pub fn resolution(env: Env) -> u32 {
-        admin::get_resolution(&env)
+        enter_reentrancy_guard(&env);
+        let result = admin::get_resolution(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the latest available price for an asset (SEP-40 `lastprice`).
@@ -1505,7 +1718,10 @@ impl PriceOracleContract {
     ///
     /// `Some(`[`PriceData`]`)` with the latest aggregate price, or `None`.
     pub fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
-        prices::lastprice(&env, asset)
+        enter_reentrancy_guard(&env);
+        let result = prices::lastprice(&env, asset);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the TWAP for an asset over a window of ledgers.
@@ -1513,11 +1729,19 @@ impl PriceOracleContract {
     /// Supports arithmetic and geometric TWAP computation.
     pub fn get_twap(
         env: Env,
-        asset: Asset,
+        asset: Address,
         window_ledgers: u32,
         method: TwapMethod,
     ) -> Option<PriceData> {
-        prices::get_twap(&env, asset, window_ledgers, method)
+        prices::get_twap(&env, Asset::Stellar(asset), window_ledgers, method)
+    }
+
+    pub fn claim_rewards(env: Env) -> i128 {
+        challenger::claim_rewards(&env)
+    }
+
+    pub fn get_address_roles(env: Env, holder: Address) -> Vec<u32> {
+        rbac::get_address_roles(&env, &holder)
     }
 
     /// Returns the price for an asset at or before the given Unix timestamp (SEP-40 `price`).
@@ -1538,7 +1762,10 @@ impl PriceOracleContract {
     ///
     /// `Some(`[`PriceData`]`)` if a matching record is found; `None` otherwise.
     pub fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
-        prices::price(&env, asset, timestamp)
+        enter_reentrancy_guard(&env);
+        let result = prices::price(&env, asset, timestamp);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns the most recent `records` price entries for an asset (SEP-40 `prices`).
@@ -1561,7 +1788,10 @@ impl PriceOracleContract {
     /// `Some(`[`Vec<PriceData>`]`)` containing up to `records` entries in reverse
     /// chronological order, or `None`.
     pub fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
-        prices::prices(&env, asset, records)
+        enter_reentrancy_guard(&env);
+        let result = prices::prices(&env, asset, records);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     // --- Pause ---
@@ -1609,7 +1839,10 @@ impl PriceOracleContract {
     ///
     /// `true` if paused; `false` otherwise.
     pub fn is_paused(env: Env) -> bool {
-        pause::is_paused(&env)
+        enter_reentrancy_guard(&env);
+        let result = pause::is_paused(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Returns a snapshot of the oracle's current health status.
@@ -1758,7 +1991,10 @@ impl PriceOracleContract {
     /// Number of ledgers that must pass between proposing and executing an operation.
     /// Defaults to `10`.
     pub fn get_timelock_duration(env: Env) -> u32 {
-        timelock::get_timelock_duration(&env)
+        enter_reentrancy_guard(&env);
+        let result = timelock::get_timelock_duration(&env);
+        exit_reentrancy_guard(&env);
+        result
     }
 
     /// Sets the timelock delay — the number of ledgers that must elapse between

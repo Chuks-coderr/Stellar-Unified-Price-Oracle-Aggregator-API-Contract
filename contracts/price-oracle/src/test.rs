@@ -1,6 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, String, Symbol, Vec,
+};
 
 use crate::test_helpers::*;
 use crate::{Asset, PriceData, PriceEntry, AssetMetadataUpdate};
@@ -1112,6 +1115,28 @@ fn test_timestamp_threshold_custom_rejects_beyond() {
 
     // 1061 is 61s in future — beyond custom threshold of 60s
     client.submit_price(&source, &asset, &100i128, &1061u64);
+}
+
+#[test]
+fn test_submit_price_returns_early_when_sources_insufficient() {
+    let e = Env::default();
+    ledger_default(&e, 1, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.set_min_sources_required(&2u32);
+    client.set_min_submission_interval(&1u32);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64);
+
+    ledger_default(&e, 10, 1000);
+    client.submit_price(&source, &asset, &200i128, &1000u64);
+
+    let stored = client.get_source_price(&asset, &source);
+    assert_eq!(stored.price, 200i128);
+    assert!(client.get_price(&asset, &0u64).is_none());
+
+    let events = e.events().all().events();
+    assert_eq!(events.len(), 2, "expected only price + insufficiency events");
 }
 
 // ---- Asset Lifecycle Tests ----

@@ -30,7 +30,7 @@ pub fn append_audit_entry(
     let current_ledger = env.ledger().sequence();
     let timestamp = env.ledger().timestamp();
 
-    // Get the current audit log head (previous hash)
+    // Get the current audit log head (previous hash) as Bytes
     let previous_hash: Bytes = env
         .storage()
         .persistent()
@@ -45,27 +45,21 @@ pub fn append_audit_entry(
         .unwrap_or(0);
     let entry_id = entry_count + 1;
 
-    // Compute hash of this entry: sha256(previous_hash || action_symbol || admin || data || timestamp || entry_id)
+    // Compute hash of this entry: sha256(previous_hash || data || timestamp || entry_id)
     let mut entry_data = Bytes::new(env);
     entry_data.append(&previous_hash);
-    
-    // Convert symbol to bytes for hashing
-    let action_bytes = env.serialize_to_bytes(&action);
-    entry_data.append(&action_bytes);
-    
-    let admin_bytes = env.serialize_to_bytes(&admin);
-    entry_data.append(&admin_bytes);
-    
+
     entry_data.append(&data);
-    
-    let timestamp_bytes = env.serialize_to_bytes(&timestamp);
-    entry_data.append(&timestamp_bytes);
-    
-    let entry_id_bytes = env.serialize_to_bytes(&entry_id);
-    entry_data.append(&entry_id_bytes);
+
+    entry_data.append(&Bytes::from_slice(env, &timestamp.to_le_bytes()));
+
+    entry_data.append(&Bytes::from_slice(env, &entry_id.to_le_bytes()));
 
     // Compute SHA-256 hash
-    let current_hash = env.crypto().sha256(&entry_data);
+    // Compute SHA-256 and store as `Bytes`
+    let sha = env.crypto().sha256(&entry_data);
+    let sha_bytesn: soroban_sdk::BytesN<32> = sha.into();
+    let current_hash = Bytes::from_slice(env, &sha_bytesn.to_array());
 
     // Create audit entry
     let entry = AuditEntry {
@@ -183,34 +177,21 @@ pub fn verify_audit_chain(env: &Env) -> bool {
             .persistent()
             .get::<_, AuditEntry>(&DataKey::AuditEntry(i))
         {
-            // Verify previous hash matches
-            if i == 1 {
-                if !previous_hash.is_empty() {
-                    return false; // First entry should have empty previous hash
-                }
-            } else if entry.previous_hash != previous_hash {
-                return false; // Chain broken
+            // Verify previous hash matches expected
+            if entry.previous_hash != previous_hash {
+                return false; // Chain broken or unexpected previous hash
             }
 
-            // Verify current hash by recomputing
+            // Recompute hash over the same fields used when appending
             let mut entry_data = Bytes::new(env);
             entry_data.append(&entry.previous_hash);
-            
-            let action_bytes = env.serialize_to_bytes(&entry.action);
-            entry_data.append(&action_bytes);
-            
-            let admin_bytes = env.serialize_to_bytes(&entry.admin);
-            entry_data.append(&admin_bytes);
-            
             entry_data.append(&entry.data);
-            
-            let timestamp_bytes = env.serialize_to_bytes(&entry.timestamp);
-            entry_data.append(&timestamp_bytes);
-            
-            let entry_id_bytes = env.serialize_to_bytes(&entry.id);
-            entry_data.append(&entry_id_bytes);
+            entry_data.append(&Bytes::from_slice(env, &entry.timestamp.to_le_bytes()));
+            entry_data.append(&Bytes::from_slice(env, &entry.id.to_le_bytes()));
 
-            let recomputed_hash = env.crypto().sha256(&entry_data);
+            let recomputed_sha = env.crypto().sha256(&entry_data);
+            let recomputed_bytesn: soroban_sdk::BytesN<32> = recomputed_sha.into();
+            let recomputed_hash = Bytes::from_slice(env, &recomputed_bytesn.to_array());
             if recomputed_hash != entry.current_hash {
                 return false; // Hash mismatch
             }
