@@ -17,7 +17,8 @@ use soroban_sdk::contracterror;
 /// | 40–49  | Finality gadget (#188) |
 /// | 50–61  | Relayer & misc         |
 /// | 62–74  | Asset/price bounds     |
-/// | 75–99  | Advanced features      |
+/// | 75–98  | Advanced features      |
+/// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -200,4 +201,14 @@ pub enum ErrorCode {
     ZkVkNotSet = 97,
     /// ZK invalid public signals.
     ZkInvalidPublicSignals = 98,
+
+    // ── 99–105: Freeze, pagination & notifications ────────────────────────────
+    /// The asset's price is currently frozen (#223).
+    PriceFrozen = 99,
+    /// The asset's price is not currently frozen (#223).
+    PriceNotFrozen = 100,
+    /// The requested pagination limit is `0` or exceeds the configured maximum (#229).
+    InvalidPageSize = 101,
+    /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
+    NotificationConfigInvalid = 102,
 }
