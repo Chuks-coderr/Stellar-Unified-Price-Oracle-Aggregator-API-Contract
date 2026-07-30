@@ -19,6 +19,7 @@ use soroban_sdk::contracterror;
 /// | 62–74  | Asset/price bounds     |
 /// | 75–98  | Advanced features      |
 /// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
+/// | 103–107 | Relayer batch/bond/fee market (#264,#265,#266) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -211,4 +212,17 @@ pub enum ErrorCode {
     InvalidPageSize = 101,
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
+
+    // ── 103–107: Relayer batch / bond / fee market ────────────────────────────
+    /// `submit_prices_relayed` was called with an empty batch (#264).
+    BatchEmpty = 103,
+    /// `submit_prices_relayed` batch exceeds the maximum allowed size (#264).
+    BatchTooLarge = 104,
+    /// Batch legs are not ordered by non-increasing `priority_fee` (#266).
+    BatchNotFeePrioritized = 105,
+    /// The relayer's deposited bond is below the configured required amount (#265).
+    RelayerBondInsufficient = 106,
+    /// `slash_relayer` called without `force` while the relayer's failure count is
+    /// below the configured slash-eligibility threshold (#265).
+    RelayerFailureThresholdNotReached = 107,
 }

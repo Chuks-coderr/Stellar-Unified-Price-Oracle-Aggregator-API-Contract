@@ -1509,3 +1509,77 @@ pub struct NotifPrefsClearedEvent {
     #[topic]
     pub event_type: u32,
 }
+
+// =============================================================================
+// #264 — Relayer batch submission
+// =============================================================================
+
+/// Emitted once per successful `submit_prices_relayed` batch invocation.
+///
+/// Topics: `relayer`
+#[contractevent]
+#[derive(Clone)]
+pub struct BatchPriceRelayedEvent {
+    /// Address of the relayer that submitted the batch.
+    #[topic]
+    pub relayer: Address,
+    /// Number of legs successfully relayed in this batch.
+    pub submission_count: u32,
+    /// Sum of `priority_fee` across every leg in the batch.
+    pub total_priority_fee: u128,
+}
+
+// =============================================================================
+// #265 — Relayer performance bonds
+// =============================================================================
+
+/// Emitted when the admin changes the required relayer bond amount.
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerBondConfigChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub amount: i128,
+}
+
+/// Emitted when a relayer deposits its performance bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerBondDepositedEvent {
+    #[topic]
+    pub relayer: Address,
+    pub amount: i128,
+    pub total_deposited: i128,
+}
+
+/// Emitted when a relayer withdraws its performance bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerBondWithdrawnEvent {
+    #[topic]
+    pub relayer: Address,
+    pub amount: i128,
+}
+
+/// Emitted when an admin reports a failure incident against a relayer.
+///
+/// `reason` is the [`crate::types::RelayerFailureReason`] discriminant.
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerFailureRecordedEvent {
+    #[topic]
+    pub relayer: Address,
+    pub reason: u32,
+    pub failure_count: u32,
+}
+
+/// Emitted when a relayer's bond is slashed.
+#[contractevent]
+#[derive(Clone)]
+pub struct RelayerSlashedEvent {
+    #[topic]
+    pub relayer: Address,
+    pub slash_amount: i128,
+    pub remaining_bond: i128,
+    pub slash_percent: u32,
+}

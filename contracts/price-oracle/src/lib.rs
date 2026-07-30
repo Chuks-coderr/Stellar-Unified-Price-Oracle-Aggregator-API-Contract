@@ -35,6 +35,8 @@ mod prices;
 mod rate_limiting;
 mod reentrancy;
 mod relayer;
+mod relayer_bonds;
+mod relayer_dashboard;
 mod reputation;
 mod rotation;
 mod sources;
@@ -88,16 +90,23 @@ mod rbac_tests;
 #[cfg(test)]
 mod emergency_pause_tests;
 
+#[cfg(test)]
+mod relayer_batch_tests;
+
+#[cfg(test)]
+mod relayer_bond_tests;
+
+#[cfg(test)]
+mod relayer_dashboard_tests;
+
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
-    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
-    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
-    DisqualificationStatus, SourceDemeritState, DemeritConfig,
-    SourceGovernance, SourceProposal,
-    SourceGeoMetadata, DecentralizationReport,
-    GasRecord, StorageTtlEntry,
-    FrozenPrice, NotificationPreference,
+    DecentralizationReport, DemeritConfig, DisqualificationStatus, ErrorCode, FinalityStatus,
+    FinalizedPrice, FrozenPrice, GasRecord, HealthReport, MigrationState, NotificationPreference,
+    OracleSources, PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry,
+    PriceHistoryEntry, PriceOverrideEntry, RelayedSubmission, RelayerAssetStat, RelayerDashboard,
+    RelayerFailureReason, RelayerInfo, SourceDemeritState, SourceGeoMetadata, SourceGovernance,
+    SourceHealthStatus, SourceProposal, SourceVerification, StorageTtlEntry, SubscriptionPlans,
 };
 
 
@@ -2301,6 +2310,156 @@ impl PriceOracleContract {
     /// Submission count. `0` if no relayed submissions have been made.
     pub fn get_relayer_submission_count(env: Env, relayer: Address) -> u64 {
         relayer::get_relayer_submission_count(&env, relayer)
+    }
+
+    /// Submits prices for multiple (source, asset) legs on behalf of one or more oracle
+    /// sources in a single, atomic transaction (#264).
+    ///
+    /// `relayer` authorizes the batch once; each leg's `source` must additionally
+    /// authorize its own leg (per-source auth). Legs must be ordered by non-increasing
+    /// `priority_fee` — the on-chain enforcement of the relayer priority fee market
+    /// (#266): relayers process higher-fee submissions first, and because each
+    /// source's authorization entry covers the exact fee it signed, a relayer cannot
+    /// alter it after the fact without invalidating that source's signature. Because a
+    /// Soroban invocation is atomic, any leg that fails validation rolls back the
+    /// entire batch.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban execution environment.
+    /// * `relayer` - Approved relayer submitting the batch.
+    /// * `submissions` - Non-empty batch of [`RelayedSubmission`] legs (at most
+    ///   [`relayer::MAX_BATCH_SIZE`]), sorted by non-increasing `priority_fee`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::ContractPaused`] — contract is paused.
+    /// * [`ErrorCode::RelayerNotAuthorized`] — `relayer` is not admin-approved.
+    /// * [`ErrorCode::BatchEmpty`] — `submissions` is empty.
+    /// * [`ErrorCode::BatchTooLarge`] — `submissions` exceeds the maximum batch size.
+    /// * [`ErrorCode::BatchNotFeePrioritized`] — legs are not fee-ordered.
+    /// * Any error `submit_price_relayed` raises for an individual leg.
+    pub fn submit_prices_relayed(env: Env, relayer: Address, submissions: Vec<RelayedSubmission>) {
+        relayer::submit_prices_relayed(&env, relayer, submissions);
+    }
+
+    // --- Relayer performance bonds (#265) ---
+
+    /// Sets the required relayer performance bond amount (in stroops). Admin-only.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    pub fn set_relayer_bond_amount(env: Env, amount: i128) {
+        relayer_bonds::set_relayer_bond_amount(&env, amount);
+    }
+
+    /// Returns the currently configured required relayer bond amount. Defaults to `0`.
+    pub fn get_relayer_bond_amount(env: Env) -> i128 {
+        relayer_bonds::get_relayer_bond_amount(&env)
+    }
+
+    /// Deposits (tops up to) the required performance bond for `relayer`.
+    ///
+    /// The relayer must authorize this call. A no-op if no bond is required or the
+    /// relayer is already fully bonded.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::RelayerNotAuthorized`] — `relayer` is not admin-approved.
+    /// * [`ErrorCode::StakeTokenNotConfigured`] — no staking token has been configured.
+    pub fn deposit_relayer_bond(env: Env, relayer: Address) {
+        relayer_bonds::deposit_relayer_bond(&env, relayer);
+    }
+
+    /// Returns the currently deposited bond balance (in stroops) for `relayer`.
+    pub fn get_relayer_bond_balance(env: Env, relayer: Address) -> i128 {
+        relayer_bonds::get_relayer_bond_balance(&env, relayer)
+    }
+
+    /// Withdraws the entire deposited performance bond back to `relayer`.
+    ///
+    /// The relayer must authorize this call. A no-op if nothing is deposited.
+    pub fn withdraw_relayer_bond(env: Env, relayer: Address) {
+        relayer_bonds::withdraw_relayer_bond(&env, relayer);
+    }
+
+    /// Records a failure incident against `relayer` (unauthorized price, invalid
+    /// submission, or other operator-attested misbehavior), making it eligible for
+    /// slashing once the configured failure threshold is reached. Admin-only.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::RelayerNotAuthorized`] — `relayer` is not admin-approved.
+    pub fn record_relayer_failure(env: Env, relayer: Address, reason: RelayerFailureReason) {
+        relayer_bonds::record_relayer_failure(&env, relayer, reason);
+    }
+
+    /// Returns the number of reported failure incidents for `relayer`.
+    pub fn get_relayer_failure_count(env: Env, relayer: Address) -> u32 {
+        relayer_bonds::get_relayer_failure_count(&env, relayer)
+    }
+
+    /// Slashes a configured percentage of `relayer`'s deposited bond into the shared
+    /// treasury. Admin-only.
+    ///
+    /// Unless `force` is `true`, the relayer's reported failure count must be at or
+    /// above the configured failure threshold.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::RelayerFailureThresholdNotReached`] — not forced, and below the
+    ///   slash-eligibility threshold.
+    pub fn slash_relayer(env: Env, relayer: Address, force: bool) {
+        relayer_bonds::slash_relayer(&env, relayer, force);
+    }
+
+    /// Sets the slash percentage (0-100) applied to a relayer's bond. Admin-only.
+    pub fn set_relayer_slash_percent(env: Env, percent: u32) {
+        relayer_bonds::set_relayer_slash_percent(&env, percent);
+    }
+
+    /// Returns the current relayer slash percentage.
+    pub fn get_relayer_slash_percent(env: Env) -> u32 {
+        relayer_bonds::get_relayer_slash_percent(&env)
+    }
+
+    /// Sets the failure-count threshold at/above which a relayer becomes
+    /// slash-eligible. Admin-only.
+    pub fn set_relayer_failure_threshold(env: Env, threshold: u32) {
+        relayer_bonds::set_relayer_failure_threshold(&env, threshold);
+    }
+
+    /// Returns the current relayer failure threshold.
+    pub fn get_relayer_failure_threshold(env: Env) -> u32 {
+        relayer_bonds::get_relayer_failure_threshold(&env)
+    }
+
+    /// Sets the reward rate (in stroops) credited per accuracy-weighted relayed
+    /// submission. Admin-only. `0` disables reward accrual.
+    pub fn set_relayer_reward_rate(env: Env, rate: i128) {
+        relayer_bonds::set_relayer_reward_rate(&env, rate);
+    }
+
+    /// Returns the current relayer reward rate in stroops.
+    pub fn get_relayer_reward_rate(env: Env) -> i128 {
+        relayer_bonds::get_relayer_reward_rate(&env)
+    }
+
+    /// Returns the total accumulated reward balance (in stroops) owed to `relayer`.
+    pub fn get_relayer_reward_balance(env: Env, relayer: Address) -> i128 {
+        relayer_bonds::get_relayer_reward_balance(&env, relayer)
+    }
+
+    // --- Relayer dashboard (#267) ---
+
+    /// Returns an aggregated operational [`RelayerDashboard`] for `relayer`: submission
+    /// volume, success rate, average latency, fee/reward earnings, bond, per-asset
+    /// breakdown, and a comparative percentile rank against every approved relayer.
+    pub fn get_relayer_dashboard(env: Env, relayer: Address) -> RelayerDashboard {
+        relayer_dashboard::get_relayer_dashboard(&env, relayer)
     }
 
     // --- Cross-Reference Oracle ---
