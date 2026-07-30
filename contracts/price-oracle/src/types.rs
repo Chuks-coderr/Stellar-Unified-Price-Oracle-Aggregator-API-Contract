@@ -1814,3 +1814,19 @@ pub struct BatchSimulationResult {
     /// `true` when *all* operations would succeed (the batch is safe to submit).
     pub all_succeed: bool,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Operation {
+    pub id: String,
+    pub status: OperationStatus,
+    pub depends_on: Vec<String>,
+}
