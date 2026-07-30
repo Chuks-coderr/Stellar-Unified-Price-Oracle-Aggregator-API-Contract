@@ -1574,6 +1574,24 @@ pub struct MultiSigOperation {
     pub next_op_id: u32,
 }
 
+/// A guardian-initiated admin key recovery process (#245).
+///
+/// Stored under [`DataKey::PendingRecovery`] while a recovery is in flight.
+/// Removed once cancelled by the admin or executed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GuardianRecovery {
+    /// Address that guardians are proposing to install as the new admin.
+    pub new_admin: Address,
+    /// Guardians that have approved this recovery so far.
+    pub approvals: Vec<Address>,
+    /// Ledger sequence number when the initiating guardian first proposed this recovery.
+    pub initiated_ledger: u32,
+    /// Ledger sequence number when the N-of-M guardian threshold was reached and the
+    /// cancellation-window delay started. `0` means the threshold has not been reached yet.
+    pub ready_ledger: u32,
+}
+
 /// Per-asset decimal precision configuration (#227).
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
