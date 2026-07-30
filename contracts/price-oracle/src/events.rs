@@ -566,6 +566,21 @@ pub struct OperationCancelledEvent {
     pub cancelled_by: Address,
 }
 
+/// Emitted when the delay for a priority tier is changed by the admin.
+///
+/// Topics: `changed_by`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriorityDelayChangedEvent {
+    /// Priority tier discriminant (0 = Urgent, 1 = Normal, 2 = LongTerm).
+    pub priority: u32,
+    /// New delay in ledgers for this tier.
+    pub new_delay: u32,
+    /// Admin address that changed the delay.
+    #[topic]
+    pub changed_by: Address,
+}
+
 #[contractevent]
 #[derive(Clone)]
 pub struct PriceOverrideSetEvent {
