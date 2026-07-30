@@ -459,6 +459,43 @@ pub enum DataKey {
     AuditLogHead,
 
     // -------------------------------------------------------------------------
+    // Pre-existing keys referenced by storage.rs/sources.rs/cross_chain_verify.rs
+    // but missing from this enum (build-blocking gap, restored here).
+    // -------------------------------------------------------------------------
+    /// Assets a source is authorized to submit prices for (#226 support).
+    SourceAssets(Address),
+    /// Ledger sequence of a source's last key rotation (#226 support).
+    SourceRotationLedger(Address),
+    /// Verification metadata for a source (#226 support).
+    SourceVerification(Address),
+    /// Whether cross-chain price verification is globally enabled (#226).
+    CrossChainVerificationEnabled,
+    /// Maximum allowed deviation (bps) between this chain and a reference chain (#226).
+    CrossChainDeviationThreshold,
+    /// Stored cross-chain price observation for (asset, oracle_chain) (#226).
+    CrossChainPrice(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #216: Off-chain signature-verified price submission
+    // -------------------------------------------------------------------------
+    /// Ed25519 public key registered by a source for pre-signed submissions.
+    SignedSubmitPubKey(Address),
+    /// Last accepted (strictly increasing) nonce for a source's signed submissions.
+    SignedSubmitNonce(Address),
+
+    // -------------------------------------------------------------------------
+    // #218: Configurable aggregation triggers
+    // -------------------------------------------------------------------------
+    /// Minimum seconds between time-triggered aggregations for an asset (0 = disabled).
+    TriggerTimeInterval(Address),
+    /// Number of new submissions required to auto-trigger aggregation (0 = disabled).
+    TriggerSubmissionThreshold(Address),
+    /// Submissions accumulated since the last trigger-driven aggregation for an asset.
+    TriggerSubmissionCount(Address),
+    /// Deviation in basis points that auto-triggers aggregation (0 = disabled).
+    TriggerDeviationBps(Address),
+    /// Unix timestamp of the last trigger-driven aggregation for an asset.
+    TriggerLastAggTime(Address),
     // #223: Price freeze mechanism for market emergencies
     // -------------------------------------------------------------------------
     /// Frozen price snapshot for an asset, present only while frozen (#223).
@@ -1612,6 +1649,22 @@ pub struct CrossChainRelayConfig {
     pub quorum_threshold_pct: u32,
     /// Bit-vector encoding the Merkle path direction for proof verification.
     pub merkle_path_bits: u32,
+}
+
+/// A price observation for an asset fetched from the same oracle on another chain (#226).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CrossChainPriceEntry {
+    /// Raw price value scaled by `10^decimals`.
+    pub price: i128,
+    /// Decimal precision of `price`.
+    pub decimals: u32,
+    /// Identifier of the source chain (e.g. `"ethereum"`).
+    pub chain_id: String,
+    /// Local ledger sequence number when this observation was recorded.
+    pub ledger: u32,
+    /// Unix timestamp of the observation on the source chain.
+    pub timestamp: u64,
 }
 
 /// A batch item for state channel high-frequency updates.

@@ -37,6 +37,7 @@ mod reentrancy;
 mod relayer;
 mod reputation;
 mod rotation;
+mod signed_submission;
 mod sources;
 mod state_channel;
 mod storage;
@@ -44,6 +45,7 @@ mod gas_metering;
 mod submission_deadline;
 mod subscription;
 mod timelock;
+mod triggers;
 mod ttl_batching;
 mod types;
 mod vdf_sampler;
@@ -1357,6 +1359,36 @@ impl PriceOracleContract {
         optimistic::get_proposal(&env, proposal_id)
     }
 
+    /// Sets the dispute window (in ledgers) applied to new optimistic proposals.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `dispute_window_ledgers` is `0`.
+    pub fn set_optimistic_dispute_window(env: Env, dispute_window_ledgers: u32) {
+        admin::set_optimistic_dispute_window(&env, dispute_window_ledgers);
+    }
+
+    /// Returns the dispute window (in ledgers) applied to new optimistic proposals.
+    pub fn get_optimistic_dispute_window(env: Env) -> u32 {
+        admin::get_optimistic_dispute_window(&env)
+    }
+
+    /// Sets the minimum bond required to propose or dispute an optimistic price.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `min_bond` is `<= 0`.
+    pub fn set_optimistic_min_bond(env: Env, min_bond: i128) {
+        admin::set_optimistic_min_bond(&env, min_bond);
+    }
+
+    /// Returns the minimum bond required to propose or dispute an optimistic price.
+    pub fn get_optimistic_min_bond(env: Env) -> i128 {
+        admin::get_optimistic_min_bond(&env)
+    }
+
     // --- Prices ---
 
     /// Submits a price observation for an asset from an authorized oracle source.
@@ -1428,6 +1460,117 @@ impl PriceOracleContract {
     /// Same error conditions as `submit_price`, applied per entry.
     pub fn submit_prices(env: Env, source: Address, asset_prices: Vec<(Address, i128, u64)>) {
         prices::submit_prices(&env, source, asset_prices);
+    }
+
+    // --- Off-chain signature-verified price submission (#216) ---
+
+    /// Registers (or rotates) the Ed25519 public key `source` uses to sign
+    /// off-chain price proofs for [`submit_price_with_proof`]. Must be
+    /// authorized by `source`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::SourceNotFound`] — `source` is not a registered oracle source.
+    pub fn register_submission_key(env: Env, source: Address, public_key: BytesN<32>) {
+        signed_submission::register_submission_key(&env, source, public_key);
+    }
+
+    /// Submits a price on behalf of `source` using a pre-signed Ed25519 proof
+    /// instead of `source`'s Soroban transaction authorization. Callable by
+    /// anyone (typically a relayer bundling proofs from many sources).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::ContractPaused`] — the contract is currently paused.
+    /// * [`ErrorCode::SourceNotFound`] — `source` is not a registered oracle source.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    /// * [`ErrorCode::SigningKeyNotRegistered`] — `source` has no registered submission key.
+    /// * [`ErrorCode::SignatureExpired`] — `expiration_ledger` has already passed.
+    /// * [`ErrorCode::InvalidNonce`] — `nonce` does not exceed the source's last accepted nonce.
+    /// * [`ErrorCode::NotAuthorized`] — the Ed25519 signature is invalid, or `source` is suspended.
+    /// * [`ErrorCode::InvalidPrice`] / [`ErrorCode::PriceBelowMinimum`] / [`ErrorCode::InvalidTimestamp`]
+    pub fn submit_price_with_proof(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        nonce: u64,
+        expiration_ledger: u32,
+        signature: BytesN<64>,
+    ) {
+        signed_submission::submit_price_with_proof(
+            &env,
+            source,
+            asset,
+            price,
+            timestamp,
+            nonce,
+            expiration_ledger,
+            signature,
+        );
+    }
+
+    // --- Configurable aggregation triggers (#218) ---
+
+    /// Sets the minimum number of seconds between time-triggered
+    /// aggregations for `asset`. `0` disables the time-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn set_time_trigger(env: Env, asset: Address, interval_seconds: u64) {
+        triggers::set_time_trigger(&env, asset, interval_seconds);
+    }
+
+    /// Returns the configured time-trigger interval (seconds) for `asset`. `0` = disabled.
+    pub fn get_time_trigger(env: Env, asset: Address) -> u64 {
+        triggers::get_time_trigger(&env, asset)
+    }
+
+    /// Sets the number of new submissions that auto-trigger aggregation for
+    /// `asset`. `0` disables the threshold-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn set_submission_threshold_trigger(env: Env, asset: Address, threshold: u32) {
+        triggers::set_submission_threshold_trigger(&env, asset, threshold);
+    }
+
+    /// Returns the configured submission-count trigger threshold for `asset`. `0` = disabled.
+    pub fn get_submission_threshold_trigger(env: Env, asset: Address) -> u32 {
+        triggers::get_submission_threshold_trigger(&env, asset)
+    }
+
+    /// Sets the price deviation (in basis points) that auto-triggers
+    /// aggregation for `asset`. `0` disables the deviation-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    /// * [`ErrorCode::InvalidConfiguration`] — `deviation_bps` exceeds `100_000`.
+    pub fn set_deviation_trigger(env: Env, asset: Address, deviation_bps: u32) {
+        triggers::set_deviation_trigger(&env, asset, deviation_bps);
+    }
+
+    /// Returns the configured deviation trigger threshold (bps) for `asset`. `0` = disabled.
+    pub fn get_deviation_trigger(env: Env, asset: Address) -> u32 {
+        triggers::get_deviation_trigger(&env, asset)
+    }
+
+    /// Permissionless keeper endpoint: re-aggregates `asset` if at least the
+    /// configured time-trigger interval has elapsed since the last
+    /// trigger-driven aggregation. Returns `true` if aggregation ran.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn poke_time_trigger(env: Env, asset: Address) -> bool {
+        triggers::poke_time_trigger(&env, asset)
     }
 
     /// Returns current budget counters and the last recorded gas usage.
