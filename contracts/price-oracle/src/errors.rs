@@ -18,6 +18,7 @@ use soroban_sdk::contracterror;
 /// | 50–61  | Relayer & misc         |
 /// | 62–74  | Asset/price bounds     |
 /// | 75–98  | Advanced features      |
+/// | 99–101 | Signed submission (#216) |
 /// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
 /// | 103–107 | Relayer batch/bond/fee market (#264,#265,#266) |
 #[contracterror]
@@ -203,6 +204,13 @@ pub enum ErrorCode {
     /// ZK invalid public signals.
     ZkInvalidPublicSignals = 98,
 
+    // ── 99–101: Signed price submission (#216) ────────────────────────────────
+    /// A pre-signed price proof's `expiration_ledger` has already passed.
+    SignatureExpired = 99,
+    /// The provided nonce does not exceed the source's last accepted nonce.
+    InvalidNonce = 100,
+    /// `source` has not registered an Ed25519 key for signed submissions.
+    SigningKeyNotRegistered = 101,
     // ── 99–105: Freeze, pagination & notifications ────────────────────────────
     /// The asset's price is currently frozen (#223).
     PriceFrozen = 99,
@@ -213,16 +221,15 @@ pub enum ErrorCode {
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
 
-    // ── 103–107: Relayer batch / bond / fee market ────────────────────────────
-    /// `submit_prices_relayed` was called with an empty batch (#264).
-    BatchEmpty = 103,
-    /// `submit_prices_relayed` batch exceeds the maximum allowed size (#264).
-    BatchTooLarge = 104,
-    /// Batch legs are not ordered by non-increasing `priority_fee` (#266).
-    BatchNotFeePrioritized = 105,
-    /// The relayer's deposited bond is below the configured required amount (#265).
-    RelayerBondInsufficient = 106,
-    /// `slash_relayer` called without `force` while the relayer's failure count is
-    /// below the configured slash-eligibility threshold (#265).
-    RelayerFailureThresholdNotReached = 107,
+    // ── 103–109: History export ───────────────────────────────────────────────
+    /// The requested export limit is `0` or exceeds the configured maximum.
+    ExportLimitExceeded = 103,
+    /// No export snapshot was found for the given asset / range.
+    ExportNotFound = 104,
+
+    // ── 110–112: Timelock priority queues ────────────────────────────────────
+    /// The supplied priority discriminant is not a valid `OperationPriority` value.
+    InvalidPriority = 110,
+    /// The priority-specific timelock delay has not elapsed for this operation.
+    PriorityTimelockNotReady = 111,
 }

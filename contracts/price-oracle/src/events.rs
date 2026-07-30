@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, Bytes, String, Symbol};
+use soroban_sdk::{contractevent, Address, Bytes, BytesN, String, Symbol};
 
 /// Publishes a generic admin-action audit event.
 ///
@@ -564,6 +564,21 @@ pub struct OperationCancelledEvent {
     /// Address of the admin who cancelled the operation.
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when the delay for a priority tier is changed by the admin.
+///
+/// Topics: `changed_by`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriorityDelayChangedEvent {
+    /// Priority tier discriminant (0 = Urgent, 1 = Normal, 2 = LongTerm).
+    pub priority: u32,
+    /// New delay in ledgers for this tier.
+    pub new_delay: u32,
+    /// Admin address that changed the delay.
+    #[topic]
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -1472,6 +1487,74 @@ pub struct RateLimitTierChangedEvent {
 // Already defined elsewhere, but needed here as well.
 // Note: InvalidSubmissionRecordedEvent is already defined above; this is the canonical copy.
 
+// --- #217: Configurable optimistic-oracle parameters ---
+
+/// Emitted when the admin updates the optimistic proposal dispute window.
+#[contractevent]
+#[derive(Clone)]
+pub struct DisputeWindowChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub dispute_window_ledgers: u32,
+}
+
+/// Emitted when the admin updates the optimistic proposal minimum bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct OptimisticMinBondChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub min_bond: i128,
+}
+
+// --- #216: Off-chain signature-verified price submission ---
+
+/// Emitted when a source registers (or rotates) its Ed25519 submission key.
+#[contractevent]
+#[derive(Clone)]
+pub struct SubmissionKeyRegisteredEvent {
+    #[topic]
+    pub source: Address,
+    pub public_key: BytesN<32>,
+}
+
+/// Emitted when a price is accepted via a pre-signed Ed25519 proof.
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceSubmittedWithProofEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub source: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub nonce: u64,
+}
+
+// --- #218: Configurable aggregation triggers ---
+
+/// Emitted when the admin (re)configures a per-asset aggregation trigger.
+///
+/// `trigger_type`: `0` = time interval (seconds), `1` = submission threshold
+/// (count), `2` = deviation threshold (basis points).
+#[contractevent]
+#[derive(Clone)]
+pub struct TriggerConfigChangedEvent {
+    #[topic]
+    pub asset: Address,
+    pub trigger_type: u32,
+    pub value: i128,
+}
+
+/// Emitted when a configured trigger fires and aggregation is re-run.
+///
+/// `trigger_type` uses the same encoding as [`TriggerConfigChangedEvent`].
+#[contractevent]
+#[derive(Clone)]
+pub struct AutoTriggerFiredEvent {
+    #[topic]
+    pub asset: Address,
+    pub trigger_type: u32,
 /// Emitted when an admin freezes an asset's price during a market emergency (#223).
 #[contractevent]
 #[derive(Clone)]
@@ -1510,76 +1593,28 @@ pub struct NotifPrefsClearedEvent {
     pub event_type: u32,
 }
 
-// =============================================================================
-// #264 — Relayer batch submission
-// =============================================================================
-
-/// Emitted once per successful `submit_prices_relayed` batch invocation.
-///
-/// Topics: `relayer`
+/// Emitted when a core configuration snapshot is taken before a parameter change.
 #[contractevent]
 #[derive(Clone)]
-pub struct BatchPriceRelayedEvent {
-    /// Address of the relayer that submitted the batch.
-    #[topic]
-    pub relayer: Address,
-    /// Number of legs successfully relayed in this batch.
-    pub submission_count: u32,
-    /// Sum of `priority_fee` across every leg in the batch.
-    pub total_priority_fee: u128,
-}
-
-// =============================================================================
-// #265 — Relayer performance bonds
-// =============================================================================
-
-/// Emitted when the admin changes the required relayer bond amount.
-#[contractevent]
-#[derive(Clone)]
-pub struct RelayerBondConfigChangedEvent {
+pub struct ConfigSnapshotTakenEvent {
+    /// Address of the admin that triggered the snapshot.
     #[topic]
     pub admin: Address,
-    pub amount: i128,
+    /// Newly assigned snapshot version.
+    pub version: u32,
+    /// Ledger sequence when the snapshot was stored.
+    pub ledger: u32,
 }
 
-/// Emitted when a relayer deposits its performance bond.
+/// Emitted when an admin rolls configuration back to a previous snapshot.
 #[contractevent]
 #[derive(Clone)]
-pub struct RelayerBondDepositedEvent {
+pub struct ConfigRolledBackEvent {
+    /// Address of the admin that performed the rollback.
     #[topic]
-    pub relayer: Address,
-    pub amount: i128,
-    pub total_deposited: i128,
-}
-
-/// Emitted when a relayer withdraws its performance bond.
-#[contractevent]
-#[derive(Clone)]
-pub struct RelayerBondWithdrawnEvent {
-    #[topic]
-    pub relayer: Address,
-    pub amount: i128,
-}
-
-/// Emitted when an admin reports a failure incident against a relayer.
-///
-/// `reason` is the [`crate::types::RelayerFailureReason`] discriminant.
-#[contractevent]
-#[derive(Clone)]
-pub struct RelayerFailureRecordedEvent {
-    #[topic]
-    pub relayer: Address,
-    pub reason: u32,
-    pub failure_count: u32,
-}
-
-/// Emitted when a relayer's bond is slashed.
-#[contractevent]
-#[derive(Clone)]
-pub struct RelayerSlashedEvent {
-    #[topic]
-    pub relayer: Address,
-    pub slash_amount: i128,
-    pub remaining_bond: i128,
-    pub slash_percent: u32,
+    pub admin: Address,
+    /// Version that was restored as live config.
+    pub restored_version: u32,
+    /// Version created by snapshotting the pre-rollback live config.
+    pub saved_version: u32,
 }
