@@ -314,6 +314,7 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
     for i in 0..asset_prices.len() {
         let (ref asset, price, timestamp) = asset_prices.get_unchecked(i);
         check_registered_asset(env, asset);
+        crate::freeze::check_not_frozen(env, asset);
         check_source_asset(env, &source, asset);
 
         if price <= 0 {
@@ -792,6 +793,7 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     source.require_auth();
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    crate::freeze::check_not_frozen(env, &asset);
     check_source_asset(env, &source, &asset);
     check_source_asset(env, &source, &asset);
     enforce_commit_reveal_for_bft(env);
@@ -868,6 +870,7 @@ pub fn submit_price_with_volume(
     source.require_auth();
     check_source(env, &source);
     check_registered_asset(env, &asset);
+    crate::freeze::check_not_frozen(env, &asset);
     check_source_asset(env, &source, &asset);
     enforce_commit_reveal_for_bft(env);
 
@@ -1083,6 +1086,18 @@ pub fn get_price(env: &Env, asset: Address, max_age: u64) -> Option<AggregatePri
     check_registered_asset(env, &asset);
     let current_ledger = env.ledger().sequence();
     let ledger_time = env.ledger().timestamp();
+
+    // A freeze (#223) takes priority over overrides and the live aggregate: it
+    // locks the price in place regardless of any other activity.
+    if let Some(frozen) = crate::freeze::get_frozen_price(env, asset.clone()) {
+        return Some(AggregatePrice {
+            price: frozen.price,
+            timestamp: frozen.timestamp,
+            num_sources: 0,
+            decimals: frozen.decimals,
+            is_override: false,
+        });
+    }
 
     // Check for active price override
     let override_key = DataKey::PriceOverride(asset.clone());
