@@ -1203,6 +1203,89 @@ pub struct RelayerInfo {
     pub approved_at_ledger: u32,
 }
 
+/// A single (source, asset, price, timestamp) leg of a batch relayed submission (#264).
+///
+/// Each leg is independently authorized by its `source` — the relayer bundles one
+/// pre-signed authorization entry per leg alongside its own signature. `priority_fee`
+/// implements the relayer fee market (#266): legs must be ordered by non-increasing
+/// `priority_fee` within the batch, and the source's signature covers this exact value,
+/// so a relayer cannot alter it after the fact without invalidating the signature.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayedSubmission {
+    /// Address of the oracle source whose price is being relayed.
+    pub source: Address,
+    /// Contract address of the asset being priced.
+    pub asset: Address,
+    /// Raw price value scaled by `10^decimals`. Must be > 0.
+    pub price: i128,
+    /// Unix timestamp (seconds) of the price observation.
+    pub timestamp: u64,
+    /// Priority fee (in stroops) the source is willing to pay for prioritized processing.
+    pub priority_fee: u128,
+}
+
+// =============================================================================
+// #265 — Relayer Performance Bonds
+// =============================================================================
+
+/// Reasons a relayer failure incident may be recorded, used as slash grounds (#265).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum RelayerFailureReason {
+    /// Relayer submitted a price on behalf of a source without valid authorization.
+    UnauthorizedPrice = 0,
+    /// Relayer submitted an otherwise invalid/rejected price.
+    InvalidSubmission = 1,
+    /// Any other operator-attested misbehavior.
+    Other = 2,
+}
+
+// =============================================================================
+// #267 — Relayer Dashboard
+// =============================================================================
+
+/// Per-asset submission breakdown for a relayer, part of [`RelayerDashboard`] (#267).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayerAssetStat {
+    /// Asset contract address.
+    pub asset: Address,
+    /// Number of successful submissions relayed for this asset.
+    pub submissions: u64,
+}
+
+/// Aggregated operational dashboard for a relayer (#267).
+///
+/// Returned by `get_relayer_dashboard`. Combines volume, accuracy, latency, fee/reward
+/// earnings, and a comparative percentile rank against every other approved relayer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayerDashboard {
+    /// The relayer this dashboard describes.
+    pub relayer: Address,
+    /// Total successful relayed submissions (single + batch legs).
+    pub total_submissions: u64,
+    /// Total reported failure incidents (see [`RelayerFailureReason`]).
+    pub failed_submissions: u32,
+    /// Success rate in basis points: `10_000 * successful / (successful + failed)`.
+    pub success_rate_bps: u32,
+    /// Estimated submissions per day, averaged over the relayer's approved lifetime.
+    pub submissions_per_day: u64,
+    /// Average latency in seconds between observation timestamp and ledger close time.
+    pub avg_latency_seconds: u64,
+    /// Accumulated flat + priority fee earnings (in stroops).
+    pub fee_earnings: i128,
+    /// Accumulated accuracy-weighted reward earnings (in stroops).
+    pub reward_earnings: i128,
+    /// Currently deposited performance bond (in stroops).
+    pub bond_deposited: i128,
+    /// Percentile rank (0-100) of `total_submissions` among all approved relayers.
+    pub percentile_rank: u32,
+    /// Per-asset submission breakdown.
+    pub per_asset: Vec<RelayerAssetStat>,
+}
+
 // =============================================================================
 // Cross-reference oracle checks
 // =============================================================================

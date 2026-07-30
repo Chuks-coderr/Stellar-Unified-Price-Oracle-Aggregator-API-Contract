@@ -20,6 +20,7 @@ use soroban_sdk::contracterror;
 /// | 75–98  | Advanced features      |
 /// | 99–101 | Signed submission (#216) |
 /// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
+/// | 103–107 | Relayer batch/bond/fee market (#264,#265,#266) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
