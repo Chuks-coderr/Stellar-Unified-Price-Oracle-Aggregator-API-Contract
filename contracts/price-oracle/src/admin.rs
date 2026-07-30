@@ -6,8 +6,9 @@ use crate::events::{
     AssetResolutionSetEvent, ContractUpgradedEvent, DecimalsChangedEvent, DescriptionChangedEvent,
     EventsPerCallChangedEvent, HeartbeatIntervalChangedEvent, HistoryPerAssetChangedEvent,
     InterpolationChangedEvent, MaxAggSourcesChangedEvent, MaxHistoryChangedEvent,
-    MaxSourcesChangedEvent, MinSourcesChangedEvent, QueryRateLimitChangedEvent,
-    ResolutionChangedEvent, SubmitIntervalChangedEvent,
+    MaxSourcesChangedEvent, MinSourcesChangedEvent, DisputeWindowChangedEvent,
+    OptimisticMinBondChangedEvent, QueryRateLimitChangedEvent, ResolutionChangedEvent,
+    SubmitIntervalChangedEvent,
 };
 use crate::storage::{
     get_admin, read_oracle_sources, read_subscription_plans, write_subscription_plans,
@@ -588,6 +589,69 @@ pub fn get_aggregation_cooldown(env: &Env) -> u32 {
             .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
     }
     env.storage().persistent().get(&key).unwrap_or(10)
+}
+
+// --- #217: Configurable optimistic-oracle dispute window & minimum bond ---
+
+pub fn set_optimistic_dispute_window(env: &Env, dispute_window_ledgers: u32) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if dispute_window_ledgers == 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage().persistent().set(
+        &DataKey::CfgOptimisticDisputeWindow,
+        &dispute_window_ledgers,
+    );
+    DisputeWindowChangedEvent {
+        admin: admin.clone(),
+        dispute_window_ledgers,
+    }
+    .publish(env);
+    emit_admin_action(env, symbol_short!("set_odw"), admin, Bytes::new(env));
+}
+
+pub fn get_optimistic_dispute_window(env: &Env) -> u32 {
+    let key = DataKey::CfgOptimisticDisputeWindow;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_OPTIMISTIC_DISPUTE_WINDOW)
+}
+
+pub fn set_optimistic_min_bond(env: &Env, min_bond: i128) {
+    let admin = get_admin(env);
+    admin.require_auth();
+    if min_bond <= 0 {
+        panic_with_error!(env, ErrorCode::InvalidConfiguration);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::CfgOptimisticMinBond, &min_bond);
+    OptimisticMinBondChangedEvent {
+        admin: admin.clone(),
+        min_bond,
+    }
+    .publish(env);
+    emit_admin_action(env, symbol_short!("set_omb"), admin, Bytes::new(env));
+}
+
+pub fn get_optimistic_min_bond(env: &Env) -> i128 {
+    let key = DataKey::CfgOptimisticMinBond;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(DEFAULT_OPTIMISTIC_MIN_BOND)
 }
 
 // --- #70: Minimum submission interval ---

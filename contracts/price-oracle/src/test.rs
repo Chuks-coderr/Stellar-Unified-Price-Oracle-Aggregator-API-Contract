@@ -826,6 +826,67 @@ fn test_price_source_not_affected_by_other_assets() {
     assert!(client.get_price(&asset_b, &0u64).is_none());
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_operation_dependency_execution() {
+    let e = Env::default();
+    let client = create_contract(&e);
+
+    let op_a = String::from_str(&e, "opA");
+    let op_b = String::from_str(&e, "opB");
+
+    let mut deps: Vec<String> = Vec::new(&e);
+    deps.push_back(op_a.clone());
+
+    client.create_operation(&op_a, &Vec::new(&e));
+    client.create_operation(&op_b, &deps);
+
+    // executing B before A should fail with DependencyNotMet (#12)
+    client.execute_operation(&op_b);
+}
+
+#[test]
+fn test_operation_execute_after_dependency() {
+    let e = Env::default();
+    let client = create_contract(&e);
+
+    let op_a = String::from_str(&e, "opA2");
+    let op_b = String::from_str(&e, "opB2");
+
+    let mut deps: Vec<String> = Vec::new(&e);
+    deps.push_back(op_a.clone());
+
+    client.create_operation(&op_a, &Vec::new(&e));
+    client.create_operation(&op_b, &deps);
+
+    client.execute_operation(&op_a);
+    client.execute_operation(&op_b);
+
+    // statuses: 1 == Executed
+    assert_eq!(client.get_operation_status(&op_a), crate::types::OperationStatus::Executed);
+    assert_eq!(client.get_operation_status(&op_b), crate::types::OperationStatus::Executed);
+}
+
+#[test]
+fn test_auto_cancel_dependents() {
+    let e = Env::default();
+    let client = create_contract(&e);
+
+    let op_a = String::from_str(&e, "opC");
+    let op_b = String::from_str(&e, "opD");
+
+    let mut deps: Vec<String> = Vec::new(&e);
+    deps.push_back(op_a.clone());
+
+    client.create_operation(&op_a, &Vec::new(&e));
+    client.create_operation(&op_b, &deps);
+
+    client.cancel_operation(&op_a);
+
+    assert_eq!(client.get_operation_status(&op_a), crate::types::OperationStatus::Cancelled);
+    assert_eq!(client.get_operation_status(&op_b), crate::types::OperationStatus::Cancelled);
+}
+
 // ---- SEP-40 Oracle Interface Tests ----
 
 #[test]

@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, Bytes, String, Symbol};
+use soroban_sdk::{contractevent, Address, Bytes, BytesN, String, Symbol};
 
 /// Publishes a generic admin-action audit event.
 ///
@@ -564,6 +564,21 @@ pub struct OperationCancelledEvent {
     /// Address of the admin who cancelled the operation.
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when the delay for a priority tier is changed by the admin.
+///
+/// Topics: `changed_by`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriorityDelayChangedEvent {
+    /// Priority tier discriminant (0 = Urgent, 1 = Normal, 2 = LongTerm).
+    pub priority: u32,
+    /// New delay in ledgers for this tier.
+    pub new_delay: u32,
+    /// Admin address that changed the delay.
+    #[topic]
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -1472,6 +1487,74 @@ pub struct RateLimitTierChangedEvent {
 // Already defined elsewhere, but needed here as well.
 // Note: InvalidSubmissionRecordedEvent is already defined above; this is the canonical copy.
 
+// --- #217: Configurable optimistic-oracle parameters ---
+
+/// Emitted when the admin updates the optimistic proposal dispute window.
+#[contractevent]
+#[derive(Clone)]
+pub struct DisputeWindowChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub dispute_window_ledgers: u32,
+}
+
+/// Emitted when the admin updates the optimistic proposal minimum bond.
+#[contractevent]
+#[derive(Clone)]
+pub struct OptimisticMinBondChangedEvent {
+    #[topic]
+    pub admin: Address,
+    pub min_bond: i128,
+}
+
+// --- #216: Off-chain signature-verified price submission ---
+
+/// Emitted when a source registers (or rotates) its Ed25519 submission key.
+#[contractevent]
+#[derive(Clone)]
+pub struct SubmissionKeyRegisteredEvent {
+    #[topic]
+    pub source: Address,
+    pub public_key: BytesN<32>,
+}
+
+/// Emitted when a price is accepted via a pre-signed Ed25519 proof.
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceSubmittedWithProofEvent {
+    #[topic]
+    pub asset: Address,
+    #[topic]
+    pub source: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub nonce: u64,
+}
+
+// --- #218: Configurable aggregation triggers ---
+
+/// Emitted when the admin (re)configures a per-asset aggregation trigger.
+///
+/// `trigger_type`: `0` = time interval (seconds), `1` = submission threshold
+/// (count), `2` = deviation threshold (basis points).
+#[contractevent]
+#[derive(Clone)]
+pub struct TriggerConfigChangedEvent {
+    #[topic]
+    pub asset: Address,
+    pub trigger_type: u32,
+    pub value: i128,
+}
+
+/// Emitted when a configured trigger fires and aggregation is re-run.
+///
+/// `trigger_type` uses the same encoding as [`TriggerConfigChangedEvent`].
+#[contractevent]
+#[derive(Clone)]
+pub struct AutoTriggerFiredEvent {
+    #[topic]
+    pub asset: Address,
+    pub trigger_type: u32,
 /// Emitted when an admin freezes an asset's price during a market emergency (#223).
 #[contractevent]
 #[derive(Clone)]

@@ -21,6 +21,7 @@ mod deadline_rebate;
 mod errors;
 mod event_indexing;
 mod events;
+mod export_history;
 mod exotic_pricing;
 mod fee_market;
 mod finality;
@@ -37,13 +38,16 @@ mod reentrancy;
 mod relayer;
 mod reputation;
 mod rotation;
+mod signed_submission;
 mod sources;
 mod state_channel;
 mod storage;
 mod gas_metering;
+mod simulate_batch;
 mod submission_deadline;
 mod subscription;
 mod timelock;
+mod triggers;
 mod ttl_batching;
 mod types;
 mod vdf_sampler;
@@ -102,6 +106,12 @@ pub use types::{
     SourceGeoMetadata, DecentralizationReport,
     GasRecord, StorageTtlEntry,
     FrozenPrice, NotificationPreference,
+    // History export
+    ExportedEntry, ExportedHistorySnapshot,
+    // Timelock priority
+    OperationPriority,
+    // Batch dry-run simulation
+    SimulationWarning, OperationSimulationResult, BatchSimulationResult,
 };
 
 
@@ -850,6 +860,19 @@ impl PriceOracleContract {
         timelock::cancel_batch(&env, batch_id);
     }
 
+    /// Dry-runs `operations` and returns a [`BatchSimulationResult`] describing what
+    /// *would* happen if the batch were executed — **without committing any state changes**.
+    ///
+    /// Use this before calling [`propose_batch`] to catch misconfigured operations early.
+    ///
+    /// # Returns
+    ///
+    /// A [`BatchSimulationResult`] with per-operation results, warning counts, and an
+    /// `all_succeed` flag indicating whether the full batch is safe to submit.
+    pub fn simulate_batch(env: Env, operations: Vec<BatchOperation>) -> BatchSimulationResult {
+        simulate_batch::simulate_batch(&env, operations)
+    }
+
     // --- Sources ---
 
     /// Registers a new oracle source authorized to submit prices.
@@ -1376,6 +1399,36 @@ impl PriceOracleContract {
         optimistic::get_proposal(&env, proposal_id)
     }
 
+    /// Sets the dispute window (in ledgers) applied to new optimistic proposals.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `dispute_window_ledgers` is `0`.
+    pub fn set_optimistic_dispute_window(env: Env, dispute_window_ledgers: u32) {
+        admin::set_optimistic_dispute_window(&env, dispute_window_ledgers);
+    }
+
+    /// Returns the dispute window (in ledgers) applied to new optimistic proposals.
+    pub fn get_optimistic_dispute_window(env: Env) -> u32 {
+        admin::get_optimistic_dispute_window(&env)
+    }
+
+    /// Sets the minimum bond required to propose or dispute an optimistic price.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `min_bond` is `<= 0`.
+    pub fn set_optimistic_min_bond(env: Env, min_bond: i128) {
+        admin::set_optimistic_min_bond(&env, min_bond);
+    }
+
+    /// Returns the minimum bond required to propose or dispute an optimistic price.
+    pub fn get_optimistic_min_bond(env: Env) -> i128 {
+        admin::get_optimistic_min_bond(&env)
+    }
+
     // --- Prices ---
 
     /// Submits a price observation for an asset from an authorized oracle source.
@@ -1447,6 +1500,117 @@ impl PriceOracleContract {
     /// Same error conditions as `submit_price`, applied per entry.
     pub fn submit_prices(env: Env, source: Address, asset_prices: Vec<(Address, i128, u64)>) {
         prices::submit_prices(&env, source, asset_prices);
+    }
+
+    // --- Off-chain signature-verified price submission (#216) ---
+
+    /// Registers (or rotates) the Ed25519 public key `source` uses to sign
+    /// off-chain price proofs for [`submit_price_with_proof`]. Must be
+    /// authorized by `source`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::SourceNotFound`] — `source` is not a registered oracle source.
+    pub fn register_submission_key(env: Env, source: Address, public_key: BytesN<32>) {
+        signed_submission::register_submission_key(&env, source, public_key);
+    }
+
+    /// Submits a price on behalf of `source` using a pre-signed Ed25519 proof
+    /// instead of `source`'s Soroban transaction authorization. Callable by
+    /// anyone (typically a relayer bundling proofs from many sources).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::ContractPaused`] — the contract is currently paused.
+    /// * [`ErrorCode::SourceNotFound`] — `source` is not a registered oracle source.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    /// * [`ErrorCode::SigningKeyNotRegistered`] — `source` has no registered submission key.
+    /// * [`ErrorCode::SignatureExpired`] — `expiration_ledger` has already passed.
+    /// * [`ErrorCode::InvalidNonce`] — `nonce` does not exceed the source's last accepted nonce.
+    /// * [`ErrorCode::NotAuthorized`] — the Ed25519 signature is invalid, or `source` is suspended.
+    /// * [`ErrorCode::InvalidPrice`] / [`ErrorCode::PriceBelowMinimum`] / [`ErrorCode::InvalidTimestamp`]
+    pub fn submit_price_with_proof(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        nonce: u64,
+        expiration_ledger: u32,
+        signature: BytesN<64>,
+    ) {
+        signed_submission::submit_price_with_proof(
+            &env,
+            source,
+            asset,
+            price,
+            timestamp,
+            nonce,
+            expiration_ledger,
+            signature,
+        );
+    }
+
+    // --- Configurable aggregation triggers (#218) ---
+
+    /// Sets the minimum number of seconds between time-triggered
+    /// aggregations for `asset`. `0` disables the time-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn set_time_trigger(env: Env, asset: Address, interval_seconds: u64) {
+        triggers::set_time_trigger(&env, asset, interval_seconds);
+    }
+
+    /// Returns the configured time-trigger interval (seconds) for `asset`. `0` = disabled.
+    pub fn get_time_trigger(env: Env, asset: Address) -> u64 {
+        triggers::get_time_trigger(&env, asset)
+    }
+
+    /// Sets the number of new submissions that auto-trigger aggregation for
+    /// `asset`. `0` disables the threshold-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn set_submission_threshold_trigger(env: Env, asset: Address, threshold: u32) {
+        triggers::set_submission_threshold_trigger(&env, asset, threshold);
+    }
+
+    /// Returns the configured submission-count trigger threshold for `asset`. `0` = disabled.
+    pub fn get_submission_threshold_trigger(env: Env, asset: Address) -> u32 {
+        triggers::get_submission_threshold_trigger(&env, asset)
+    }
+
+    /// Sets the price deviation (in basis points) that auto-triggers
+    /// aggregation for `asset`. `0` disables the deviation-based trigger.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the current admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    /// * [`ErrorCode::InvalidConfiguration`] — `deviation_bps` exceeds `100_000`.
+    pub fn set_deviation_trigger(env: Env, asset: Address, deviation_bps: u32) {
+        triggers::set_deviation_trigger(&env, asset, deviation_bps);
+    }
+
+    /// Returns the configured deviation trigger threshold (bps) for `asset`. `0` = disabled.
+    pub fn get_deviation_trigger(env: Env, asset: Address) -> u32 {
+        triggers::get_deviation_trigger(&env, asset)
+    }
+
+    /// Permissionless keeper endpoint: re-aggregates `asset` if at least the
+    /// configured time-trigger interval has elapsed since the last
+    /// trigger-driven aggregation. Returns `true` if aggregation ran.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — `asset` is not registered.
+    pub fn poke_time_trigger(env: Env, asset: Address) -> bool {
+        triggers::poke_time_trigger(&env, asset)
     }
 
     /// Returns current budget counters and the last recorded gas usage.
@@ -1678,6 +1842,59 @@ impl PriceOracleContract {
     ) -> (Vec<PriceHistoryEntry>, Option<u32>) {
         enter_reentrancy_guard(&env);
         let result = history::get_historical_prices_paginated(&env, asset, cursor, limit);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
+    // --- History export ---
+
+    /// Exports up to `limit` price-history entries for `asset`, starting at `from_ledger`.
+    ///
+    /// Returns an [`ExportedHistorySnapshot`] containing the entries, a lightweight
+    /// `data_hash` for integrity verification, and a `next_cursor` for pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `asset`       — Registered asset address.
+    /// * `from_ledger` — Inclusive start ledger (pass `0` to start from the beginning).
+    /// * `limit`       — Maximum entries to return (1–200).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`]  — if `asset` is not registered.
+    /// * [`ErrorCode::ExportLimitExceeded`] — if `limit` is `0` or `> 200`.
+    pub fn export_history(
+        env: Env,
+        asset: Address,
+        from_ledger: u32,
+        limit: u32,
+    ) -> ExportedHistorySnapshot {
+        enter_reentrancy_guard(&env);
+        let result = export_history::export_history(&env, asset, from_ledger, limit);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
+    /// Verifies that `expected_data_hash` matches the XOR-fold hash of all history
+    /// entries for `asset` stored within `[from_ledger, to_ledger]`.
+    ///
+    /// Returns `true` when the hash matches (snapshot is consistent with on-chain state),
+    /// `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    /// * [`ErrorCode::ExportNotFound`]     — if no entries exist in the given range.
+    pub fn verify_export(
+        env: Env,
+        asset: Address,
+        from_ledger: u32,
+        to_ledger: u32,
+        expected_data_hash: u64,
+    ) -> bool {
+        enter_reentrancy_guard(&env);
+        let result =
+            export_history::verify_export(&env, asset, from_ledger, to_ledger, expected_data_hash);
         exit_reentrancy_guard(&env);
         result
     }
@@ -2161,6 +2378,85 @@ impl PriceOracleContract {
     pub fn set_timelock_duration(env: Env, duration: u32) {
         reentrancy::enter(&env);
         timelock::set_timelock_duration(&env, duration);
+        reentrancy::exit(&env);
+    }
+
+    // --- Timelock priority queues ---
+
+    /// Proposes a timelock operation with an explicit priority tier.
+    ///
+    /// * `priority` — `0` = Urgent (fast), `1` = Normal (default), `2` = LongTerm (slow)
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`]      — caller is not the admin.
+    /// * [`ErrorCode::InvalidOperationType`] — `op_type` is not in `0..=7`.
+    /// * [`ErrorCode::InvalidPriority`]    — `priority` is not in `0..=2`.
+    pub fn propose_operation_with_priority(
+        env: Env,
+        op_type: u32,
+        data: soroban_sdk::Bytes,
+        priority: u32,
+    ) -> u32 {
+        reentrancy::enter(&env);
+        let op_enum = match op_type {
+            0 => types::OperationType::Upgrade,
+            1 => types::OperationType::SetAdmin,
+            2 => types::OperationType::SetMinSources,
+            3 => types::OperationType::SetMaxHistory,
+            4 => types::OperationType::SetResolution,
+            5 => types::OperationType::SetDecimals,
+            6 => types::OperationType::SetDescription,
+            7 => types::OperationType::SetTimestampThreshold,
+            _ => panic_with_error!(&env, ErrorCode::InvalidOperationType),
+        };
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        let result =
+            timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the required delay (in ledgers) for a given priority tier.
+    ///
+    /// * `priority` — `0` = Urgent, `1` = Normal, `2` = LongTerm.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::InvalidPriority`] — `priority` is not in `0..=2`.
+    pub fn get_priority_delay(env: Env, priority: u32) -> u32 {
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        timelock::get_priority_delay(&env, &priority_enum)
+    }
+
+    /// Sets the required delay (in ledgers) for a given priority tier.  Admin-only.
+    ///
+    /// * `priority` — `0` = Urgent, `1` = Normal, `2` = LongTerm.
+    /// * `delay`    — New delay in ledgers.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`]   — caller is not the admin.
+    /// * [`ErrorCode::InvalidPriority`] — `priority` is not in `0..=2`.
+    pub fn set_priority_delay(env: Env, priority: u32, delay: u32) {
+        reentrancy::enter(&env);
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        timelock::set_priority_delay(&env, priority_enum, delay);
         reentrancy::exit(&env);
     }
 

@@ -18,6 +18,7 @@ use soroban_sdk::contracterror;
 /// | 50–61  | Relayer & misc         |
 /// | 62–74  | Asset/price bounds     |
 /// | 75–98  | Advanced features      |
+/// | 99–101 | Signed submission (#216) |
 /// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,6 +203,13 @@ pub enum ErrorCode {
     /// ZK invalid public signals.
     ZkInvalidPublicSignals = 98,
 
+    // ── 99–101: Signed price submission (#216) ────────────────────────────────
+    /// A pre-signed price proof's `expiration_ledger` has already passed.
+    SignatureExpired = 99,
+    /// The provided nonce does not exceed the source's last accepted nonce.
+    InvalidNonce = 100,
+    /// `source` has not registered an Ed25519 key for signed submissions.
+    SigningKeyNotRegistered = 101,
     // ── 99–105: Freeze, pagination & notifications ────────────────────────────
     /// The asset's price is currently frozen (#223).
     PriceFrozen = 99,
@@ -211,6 +219,16 @@ pub enum ErrorCode {
     InvalidPageSize = 101,
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
-    /// The requested config-snapshot version does not exist or has been pruned.
-    ConfigVersionNotFound = 103,
+
+    // ── 103–109: History export ───────────────────────────────────────────────
+    /// The requested export limit is `0` or exceeds the configured maximum.
+    ExportLimitExceeded = 103,
+    /// No export snapshot was found for the given asset / range.
+    ExportNotFound = 104,
+
+    // ── 110–112: Timelock priority queues ────────────────────────────────────
+    /// The supplied priority discriminant is not a valid `OperationPriority` value.
+    InvalidPriority = 110,
+    /// The priority-specific timelock delay has not elapsed for this operation.
+    PriorityTimelockNotReady = 111,
 }
