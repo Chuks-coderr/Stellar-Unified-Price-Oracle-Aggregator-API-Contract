@@ -476,6 +476,16 @@ pub enum DataKey {
     NotificationPrefs(u32),
     /// Every event-type discriminant that currently has at least one preference (#243).
     NotificationEventTypes,
+
+    // -------------------------------------------------------------------------
+    // History export
+    // -------------------------------------------------------------------------
+    /// Delay (ledgers) for Urgent priority operations.
+    TlUrgentDelay,
+    /// Delay (ledgers) for Normal priority operations (mirrors CfgTimelockDuration).
+    TlNormalDelay,
+    /// Delay (ledgers) for LongTerm priority operations.
+    TlLongTermDelay,
 }
 
 
@@ -817,6 +827,8 @@ pub struct PendingOperation {
     pub proposed_ledger: u32,
     /// Arbitrary encoded payload whose interpretation depends on `op_type`.
     pub data: Bytes,
+    /// Priority tier that determines the required delay before execution.
+    pub priority: OperationPriority,
 }
 
 /// A snapshot of the oracle's overall health, returned by `health_check()`.
@@ -1625,4 +1637,127 @@ pub struct BatchItem {
     pub price: u128,
     /// Unix timestamp of the price observation.
     pub timestamp: u64,
+}
+
+// =============================================================================
+// History Export (#export-history)
+// =============================================================================
+
+/// A single exported price history entry for off-chain archiving.
+///
+/// Mirrors [`PriceHistoryEntry`] but includes the asset address so the export
+/// bundle is self-contained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ExportedEntry {
+    /// Asset address.
+    pub asset: Address,
+    /// Aggregated price scaled by `10^decimals`.
+    pub price: i128,
+    /// Unix timestamp of the snapshot.
+    pub timestamp: u64,
+    /// Ledger sequence number of the snapshot.
+    pub ledger: u32,
+    /// Number of sources that contributed.
+    pub num_sources: u32,
+    /// Whether this entry was produced by interpolation.
+    pub is_interpolated: bool,
+}
+
+/// Result returned by `export_history`.
+///
+/// Contains the page of entries, a simple XOR-based data hash over all included
+/// entries (for quick integrity verification off-chain), and pagination state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ExportedHistorySnapshot {
+    /// The exported price history entries (up to `limit` entries).
+    pub entries: Vec<ExportedEntry>,
+    /// Simple XOR-fold hash of all entry prices — a lightweight integrity token.
+    /// Off-chain archivers can recompute this from the entries and compare.
+    pub data_hash: u64,
+    /// Ledger of the first entry in this page (0 when empty).
+    pub from_ledger: u32,
+    /// Ledger of the last entry in this page (0 when empty).
+    pub to_ledger: u32,
+    /// Total number of recorded ledgers available for this asset.
+    pub total_available: u32,
+    /// Cursor to pass as `from_ledger` to fetch the next page (`0` when no more pages).
+    pub next_cursor: u32,
+}
+
+// =============================================================================
+// Timelock Priority Queues
+// =============================================================================
+
+/// Priority tier for a timelock operation.
+///
+/// Each tier has its own configurable delay (in ledgers).  Lower discriminant
+/// values represent more urgent tiers so that numeric comparisons are intuitive.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationPriority {
+    /// Immediate-ish execution with multi-sig co-sign requirement.
+    /// Default delay: 1 ledger.
+    Urgent = 0,
+    /// Standard governance delay.
+    /// Default delay: 10 ledgers (matches the pre-existing default).
+    Normal = 1,
+    /// Extended delay for critical, protocol-level changes.
+    /// Default delay: 100 ledgers.
+    LongTerm = 2,
+}
+
+// =============================================================================
+// Batch Dry-Run Simulation
+// =============================================================================
+
+/// Warning flags that may be set on a simulated operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum SimulationWarning {
+    /// No warnings.
+    None = 0,
+    /// The operation would change a parameter to an extreme value.
+    ExtremeValue = 1,
+    /// The operation would set min_sources below 2, weakening security.
+    LowMinSources = 2,
+    /// The operation would set max_history to a very large value.
+    LargeHistory = 3,
+    /// The operation type is unrecognised in the simulator.
+    UnknownOpType = 4,
+    /// The operation data is too short to decode.
+    InvalidData = 5,
+}
+
+/// Result for a single operation in a simulated batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OperationSimulationResult {
+    /// Zero-based index of this operation in the batch.
+    pub index: u32,
+    /// Numeric `op_type` discriminant (mirrors [`OperationType`]).
+    pub op_type: u32,
+    /// Human-readable description of what the operation would change.
+    pub description: String,
+    /// `true` when the operation would succeed given current contract state.
+    pub would_succeed: bool,
+    /// Any warnings raised by the simulation.
+    pub warning: SimulationWarning,
+}
+
+/// Aggregate result of `simulate_batch`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BatchSimulationResult {
+    /// Per-operation simulation results.
+    pub results: Vec<OperationSimulationResult>,
+    /// Total number of operations in the batch.
+    pub total_ops: u32,
+    /// Number of operations that would succeed.
+    pub would_succeed_count: u32,
+    /// Number of operations that raised at least one warning.
+    pub warning_count: u32,
+    /// `true` when *all* operations would succeed (the batch is safe to submit).
+    pub all_succeed: bool,
 }
