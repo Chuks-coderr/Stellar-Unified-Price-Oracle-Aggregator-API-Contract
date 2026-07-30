@@ -1592,3 +1592,29 @@ pub struct NotifPrefsClearedEvent {
     #[topic]
     pub event_type: u32,
 }
+
+/// Emitted when a core configuration snapshot is taken before a parameter change.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConfigSnapshotTakenEvent {
+    /// Address of the admin that triggered the snapshot.
+    #[topic]
+    pub admin: Address,
+    /// Newly assigned snapshot version.
+    pub version: u32,
+    /// Ledger sequence when the snapshot was stored.
+    pub ledger: u32,
+}
+
+/// Emitted when an admin rolls configuration back to a previous snapshot.
+#[contractevent]
+#[derive(Clone)]
+pub struct ConfigRolledBackEvent {
+    /// Address of the admin that performed the rollback.
+    #[topic]
+    pub admin: Address,
+    /// Version that was restored as live config.
+    pub restored_version: u32,
+    /// Version created by snapshotting the pre-rollback live config.
+    pub saved_version: u32,
+}

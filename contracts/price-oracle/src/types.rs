@@ -1599,6 +1599,63 @@ pub struct ZkPriceAttestation {
     pub proof: Groth16Proof,
 }
 
+/// Snapshot of core global oracle configuration parameters.
+///
+/// Captured before each successful core-parameter mutation so an admin can
+/// roll back to a known-good state via `rollback_config`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ConfigSnapshot {
+    /// Monotonically increasing snapshot version (never reused).
+    pub version: u32,
+    /// Ledger sequence when this snapshot was taken.
+    pub ledger: u32,
+    /// Unix timestamp when this snapshot was taken.
+    pub timestamp: u64,
+    /// Minimum contributing sources required for aggregation.
+    pub min_sources_required: u32,
+    /// Maximum retained price-history entries per asset.
+    pub max_history_length: u32,
+    /// SEP-40 resolution window in seconds.
+    pub resolution: u32,
+    /// Global decimal precision.
+    pub decimals: u32,
+    /// Human-readable oracle description.
+    pub description: String,
+    /// Aggregation method discriminant.
+    pub aggregation_method: u32,
+    /// Maximum allowed submission timestamp skew in seconds.
+    pub timestamp_threshold: u64,
+    /// Maximum allowed price deviation in basis points.
+    pub max_price_deviation: u32,
+    /// Circuit-breaker trip threshold in basis points.
+    pub circuit_breaker_threshold: u32,
+    /// Heartbeat interval in seconds.
+    pub heartbeat_interval: u64,
+    /// Per-asset history cap.
+    pub max_history_per_asset: u32,
+    /// Maximum events emitted per call.
+    pub max_events_per_call: u32,
+    /// Maximum sources used during aggregation (`0` = unlimited).
+    pub max_aggregation_sources: u32,
+    /// Aggregation cooldown in ledgers.
+    pub aggregation_cooldown: u32,
+    /// Minimum submission interval in ledgers.
+    pub min_submission_interval: u32,
+    /// Whether historical price interpolation is enabled.
+    pub interpolation_enabled: bool,
+    /// Maximum registered oracle sources (`0` = unlimited).
+    pub max_sources: u32,
+    /// Query rate limit per ledger.
+    pub query_rate_limit: u32,
+    /// Maximum registered assets.
+    pub max_assets: u32,
+    /// Whether the contract is paused.
+    pub paused: bool,
+    /// Timelock delay in ledgers.
+    pub timelock_duration: u32,
+}
+
 /// Audit log entry for admin actions (#239).
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]

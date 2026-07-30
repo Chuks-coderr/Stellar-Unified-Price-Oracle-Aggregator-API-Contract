@@ -236,6 +236,7 @@ pub fn cancel_operation(env: &Env, op_id: u32) {
 pub fn set_timelock_duration(env: &Env, duration: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgTimelockDuration, &duration);
@@ -358,6 +359,7 @@ pub fn cancel_batch(env: &Env, batch_id: u32) {
 }
 
 fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
+    let admin = get_admin(env);
     match op_type {
         0 => {
             // Upgrade: data is a BytesN<32>
@@ -383,9 +385,10 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
+                crate::config_history::snapshot_before_change(env, &admin);
                 env.storage()
                     .persistent()
-                    .set(&DataKey::MinSourcesRequired, &val);
+                    .set(&DataKey::CfgMinSources, &val);
             }
         }
         3 => {
@@ -396,9 +399,10 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
+                crate::config_history::snapshot_before_change(env, &admin);
                 env.storage()
                     .persistent()
-                    .set(&DataKey::MaxHistoryLength, &val);
+                    .set(&DataKey::CfgMaxHistory, &val);
             }
         }
         4 => {
@@ -409,7 +413,10 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
-                env.storage().persistent().set(&DataKey::Resolution, &val);
+                crate::config_history::snapshot_before_change(env, &admin);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::CfgResolution, &val);
             }
         }
         5 => {
@@ -420,7 +427,8 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u32::from_be_bytes(arr);
-                env.storage().persistent().set(&DataKey::Decimals, &val);
+                crate::config_history::snapshot_before_change(env, &admin);
+                env.storage().persistent().set(&DataKey::CfgDecimals, &val);
             }
         }
         6 => {
@@ -435,9 +443,10 @@ fn execute_single_op(env: &Env, op_type: u32, data: &Bytes) {
                     arr[j as usize] = data.get_unchecked(j);
                 }
                 let val = u64::from_be_bytes(arr);
+                crate::config_history::snapshot_before_change(env, &admin);
                 env.storage()
                     .persistent()
-                    .set(&DataKey::TimestampThreshold, &val);
+                    .set(&DataKey::CfgTimestampThreshold, &val);
             }
         }
         _ => {
