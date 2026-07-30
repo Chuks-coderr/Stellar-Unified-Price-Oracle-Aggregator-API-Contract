@@ -2,36 +2,91 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-test:
+  contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
           components: rustfmt, clippy
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: make check
+      - name: Build
+        run: make build
+      - name: Run clippy
+        run: make lint
+      - name: Run tests
+        run: make test
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check dependencies (licenses, advisories, duplicates, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --config deny.toml
+
+  fuzz:
+    name: Coverage-guided fuzzing (1M iterations)
+    runs-on: ubuntu-latest
+    # Only run on main / PRs targeting main to keep CI fast on feature branches.
+    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust (required by cargo-fuzz / libfuzzer-sys)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --manifest-path contracts/price-oracle/Cargo.toml -- --check
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version "0.12.0"
 
-      - name: Build
-        run: cargo build --manifest-path contracts/price-oracle/Cargo.toml --verbose
+      # ── Fuzz target 1: differential aggregation ─────────────────────────────
+      - name: Fuzz fuzz_aggregation (1 000 000 iterations)
+        run: |
+          cargo fuzz run fuzz_aggregation \
+            fuzz/corpus/fuzz_aggregation \
+            -- \
+            -runs=1000000 \
+            -max_len=816 \
+            -timeout=30 \
+            -error_exitcode=1
+        # 816 bytes = 102 i64 words ≈ 51 prices + 51 weights (just over max sources)
 
-      - name: Run clippy
-        run: cargo clippy --manifest-path contracts/price-oracle/Cargo.toml -- -D warnings
+      # ── Fuzz target 2: quickselect invariants ───────────────────────────────
+      - name: Fuzz fuzz_quickselect (1 000 000 iterations)
+        run: |
+          cargo fuzz run fuzz_quickselect \
+            fuzz/corpus/fuzz_quickselect \
+            -- \
+            -runs=1000000 \
+            -max_len=809 \
+            -timeout=30 \
+            -error_exitcode=1
+        # 809 bytes = 100 i64 words (800) + 1 byte for k + extra room
 
-      - name: Run tests
-        run: cargo test --manifest-path contracts/price-oracle/Cargo.toml --verbose
+      # ── Upload any crash artifacts ───────────────────────────────────────────
+      - name: Upload fuzz artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/

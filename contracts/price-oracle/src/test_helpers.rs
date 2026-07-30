@@ -89,7 +89,6 @@ pub fn clear_auth(e: &Env) {
     use soroban_sdk::xdr::SorobanAuthorizationEntry;
     e.set_auths(&[] as &[SorobanAuthorizationEntry]);
 }
-
 /// Sets the ledger sequence number and timestamp.
 pub fn ledger_default(e: &Env, seq: u32, timestamp: u64) {
     e.ledger().set(LedgerInfo {
@@ -102,4 +101,25 @@ pub fn ledger_default(e: &Env, seq: u32, timestamp: u64) {
         min_persistent_entry_ttl: 10,
         max_entry_ttl: 4096,
     });
+}
+
+/// Initializes an already-created contract with the given admin address.
+pub fn init_admin(client: &PriceOracleContractClient<'_>, admin: &Address) {
+    client.initialize(
+        admin,
+        &1u32,
+        &100u32,
+        &18u32,
+        &String::from_str(&client.env, "Stellar Price Oracle Aggregator"),
+    );
+}
+
+/// Sets up a contract with one source and one asset for event testing.
+/// Returns (client, admin, source, asset).
+pub fn setup_basic(e: &Env) -> (PriceOracleContractClient<'_>, Address, Address, Address) {
+    let (client, admin) = setup_contract(e);
+    client.set_min_sources_required(&1u32);
+    let source = register_test_source(e, &client, "Source");
+    let asset = register_test_asset(e, &client);
+    (client, admin, source, asset)
 }
