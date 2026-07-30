@@ -21,6 +21,7 @@ mod deadline_rebate;
 mod errors;
 mod event_indexing;
 mod events;
+mod export_history;
 mod exotic_pricing;
 mod fee_market;
 mod finality;
@@ -41,6 +42,7 @@ mod sources;
 mod state_channel;
 mod storage;
 mod gas_metering;
+mod simulate_batch;
 mod submission_deadline;
 mod subscription;
 mod timelock;
@@ -98,6 +100,12 @@ pub use types::{
     SourceGeoMetadata, DecentralizationReport,
     GasRecord, StorageTtlEntry,
     FrozenPrice, NotificationPreference,
+    // History export
+    ExportedEntry, ExportedHistorySnapshot,
+    // Timelock priority
+    OperationPriority,
+    // Batch dry-run simulation
+    SimulationWarning, OperationSimulationResult, BatchSimulationResult,
 };
 
 
@@ -829,6 +837,19 @@ impl PriceOracleContract {
     /// Cancels a pending batch operation without executing it.
     pub fn cancel_batch(env: Env, batch_id: u32) {
         timelock::cancel_batch(&env, batch_id);
+    }
+
+    /// Dry-runs `operations` and returns a [`BatchSimulationResult`] describing what
+    /// *would* happen if the batch were executed — **without committing any state changes**.
+    ///
+    /// Use this before calling [`propose_batch`] to catch misconfigured operations early.
+    ///
+    /// # Returns
+    ///
+    /// A [`BatchSimulationResult`] with per-operation results, warning counts, and an
+    /// `all_succeed` flag indicating whether the full batch is safe to submit.
+    pub fn simulate_batch(env: Env, operations: Vec<BatchOperation>) -> BatchSimulationResult {
+        simulate_batch::simulate_batch(&env, operations)
     }
 
     // --- Sources ---
@@ -1663,6 +1684,59 @@ impl PriceOracleContract {
         result
     }
 
+    // --- History export ---
+
+    /// Exports up to `limit` price-history entries for `asset`, starting at `from_ledger`.
+    ///
+    /// Returns an [`ExportedHistorySnapshot`] containing the entries, a lightweight
+    /// `data_hash` for integrity verification, and a `next_cursor` for pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `asset`       — Registered asset address.
+    /// * `from_ledger` — Inclusive start ledger (pass `0` to start from the beginning).
+    /// * `limit`       — Maximum entries to return (1–200).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`]  — if `asset` is not registered.
+    /// * [`ErrorCode::ExportLimitExceeded`] — if `limit` is `0` or `> 200`.
+    pub fn export_history(
+        env: Env,
+        asset: Address,
+        from_ledger: u32,
+        limit: u32,
+    ) -> ExportedHistorySnapshot {
+        enter_reentrancy_guard(&env);
+        let result = export_history::export_history(&env, asset, from_ledger, limit);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
+    /// Verifies that `expected_data_hash` matches the XOR-fold hash of all history
+    /// entries for `asset` stored within `[from_ledger, to_ledger]`.
+    ///
+    /// Returns `true` when the hash matches (snapshot is consistent with on-chain state),
+    /// `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    /// * [`ErrorCode::ExportNotFound`]     — if no entries exist in the given range.
+    pub fn verify_export(
+        env: Env,
+        asset: Address,
+        from_ledger: u32,
+        to_ledger: u32,
+        expected_data_hash: u64,
+    ) -> bool {
+        enter_reentrancy_guard(&env);
+        let result =
+            export_history::verify_export(&env, asset, from_ledger, to_ledger, expected_data_hash);
+        exit_reentrancy_guard(&env);
+        result
+    }
+
     // --- Price freeze (#223) ---
 
     /// Freezes the current aggregate price for an asset during a market emergency.
@@ -2142,6 +2216,85 @@ impl PriceOracleContract {
     pub fn set_timelock_duration(env: Env, duration: u32) {
         reentrancy::enter(&env);
         timelock::set_timelock_duration(&env, duration);
+        reentrancy::exit(&env);
+    }
+
+    // --- Timelock priority queues ---
+
+    /// Proposes a timelock operation with an explicit priority tier.
+    ///
+    /// * `priority` — `0` = Urgent (fast), `1` = Normal (default), `2` = LongTerm (slow)
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`]      — caller is not the admin.
+    /// * [`ErrorCode::InvalidOperationType`] — `op_type` is not in `0..=7`.
+    /// * [`ErrorCode::InvalidPriority`]    — `priority` is not in `0..=2`.
+    pub fn propose_operation_with_priority(
+        env: Env,
+        op_type: u32,
+        data: soroban_sdk::Bytes,
+        priority: u32,
+    ) -> u32 {
+        reentrancy::enter(&env);
+        let op_enum = match op_type {
+            0 => types::OperationType::Upgrade,
+            1 => types::OperationType::SetAdmin,
+            2 => types::OperationType::SetMinSources,
+            3 => types::OperationType::SetMaxHistory,
+            4 => types::OperationType::SetResolution,
+            5 => types::OperationType::SetDecimals,
+            6 => types::OperationType::SetDescription,
+            7 => types::OperationType::SetTimestampThreshold,
+            _ => panic_with_error!(&env, ErrorCode::InvalidOperationType),
+        };
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        let result =
+            timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
+        reentrancy::exit(&env);
+        result
+    }
+
+    /// Returns the required delay (in ledgers) for a given priority tier.
+    ///
+    /// * `priority` — `0` = Urgent, `1` = Normal, `2` = LongTerm.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::InvalidPriority`] — `priority` is not in `0..=2`.
+    pub fn get_priority_delay(env: Env, priority: u32) -> u32 {
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        timelock::get_priority_delay(&env, &priority_enum)
+    }
+
+    /// Sets the required delay (in ledgers) for a given priority tier.  Admin-only.
+    ///
+    /// * `priority` — `0` = Urgent, `1` = Normal, `2` = LongTerm.
+    /// * `delay`    — New delay in ledgers.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`]   — caller is not the admin.
+    /// * [`ErrorCode::InvalidPriority`] — `priority` is not in `0..=2`.
+    pub fn set_priority_delay(env: Env, priority: u32, delay: u32) {
+        reentrancy::enter(&env);
+        let priority_enum = match priority {
+            0 => types::OperationPriority::Urgent,
+            1 => types::OperationPriority::Normal,
+            2 => types::OperationPriority::LongTerm,
+            _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
+        };
+        timelock::set_priority_delay(&env, priority_enum, delay);
         reentrancy::exit(&env);
     }
 

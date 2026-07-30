@@ -211,4 +211,16 @@ pub enum ErrorCode {
     InvalidPageSize = 101,
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
+
+    // ── 103–109: History export ───────────────────────────────────────────────
+    /// The requested export limit is `0` or exceeds the configured maximum.
+    ExportLimitExceeded = 103,
+    /// No export snapshot was found for the given asset / range.
+    ExportNotFound = 104,
+
+    // ── 110–112: Timelock priority queues ────────────────────────────────────
+    /// The supplied priority discriminant is not a valid `OperationPriority` value.
+    InvalidPriority = 110,
+    /// The priority-specific timelock delay has not elapsed for this operation.
+    PriorityTimelockNotReady = 111,
 }
