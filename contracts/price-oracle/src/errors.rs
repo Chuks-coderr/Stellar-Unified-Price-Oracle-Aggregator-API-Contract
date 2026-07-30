@@ -17,7 +17,8 @@ use soroban_sdk::contracterror;
 /// | 40–49  | Finality gadget (#188) |
 /// | 50–61  | Relayer & misc         |
 /// | 62–74  | Asset/price bounds     |
-/// | 75–99  | Advanced features      |
+/// | 75–98  | Advanced features      |
+/// | 99–101 | Signed submission (#216) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -200,4 +201,12 @@ pub enum ErrorCode {
     ZkVkNotSet = 97,
     /// ZK invalid public signals.
     ZkInvalidPublicSignals = 98,
+
+    // ── 99–101: Signed price submission (#216) ────────────────────────────────
+    /// A pre-signed price proof's `expiration_ledger` has already passed.
+    SignatureExpired = 99,
+    /// The provided nonce does not exceed the source's last accepted nonce.
+    InvalidNonce = 100,
+    /// `source` has not registered an Ed25519 key for signed submissions.
+    SigningKeyNotRegistered = 101,
 }

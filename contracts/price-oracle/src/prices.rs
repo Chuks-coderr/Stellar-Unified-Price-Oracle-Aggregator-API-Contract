@@ -751,6 +751,42 @@ pub(crate) fn do_aggregate(env: &Env, asset: &Address) {
     aggregate_asset(env, asset, current_ledger, decimals);
 }
 
+/// Records a successful submission for source performance bookkeeping.
+///
+/// Increments both the global and per-source submission counters used by
+/// downstream reporting.
+pub(crate) fn record_successful_submission(env: &Env, source: Address) {
+    let total_key = DataKey::TotalSubmissionCount;
+    let total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&total_key, &total.saturating_add(1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&total_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+    let src_key = DataKey::SourceSubmissionCount(source);
+    let count: u32 = env.storage().persistent().get(&src_key).unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&src_key, &count.saturating_add(1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&src_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+/// Guards a price submission against an asset whose circuit breaker has
+/// already tripped. Returns `true` when the caller should abort without
+/// storing or aggregating this submission.
+pub(crate) fn check_deviation_circuit_breaker(
+    env: &Env,
+    _source: &Address,
+    asset: &Address,
+    _price: i128,
+) -> bool {
+    is_circuit_breaker_tripped(env, asset)
+}
+
 pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
     check_not_paused(env);
     source.require_auth();
@@ -811,6 +847,8 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
 
     // Cross-asset correlation check: flags (source, asset) if ratio is out of band.
     crate::correlation::validate_correlation(env, &asset, price, &source);
+
+    crate::triggers::record_submission_for_triggers(env, &asset, price);
 
     if !maybe_aggregate_after_submission(env, &asset, current_ledger) {
         return;
@@ -875,6 +913,7 @@ pub fn submit_price_with_volume(
     }
     .publish(env);
     crate::correlation::validate_correlation(env, &asset, price, &source);
+    crate::triggers::record_submission_for_triggers(env, &asset, price);
     aggregate_asset(env, &asset, current_ledger, decimals);
 }
 
