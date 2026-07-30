@@ -7,6 +7,9 @@ pub const LEDGER_THRESHOLD: u32 = 10_000;
 pub const LEDGER_BUMP: u32 = 40_000;
 pub const DEFAULT_QUERY_RATE_LIMIT: u32 = 100;
 
+/// Alias used by public getter wrappers in `lib.rs`.
+pub use crate::reentrancy::{enter as enter_reentrancy_guard, exit as exit_reentrancy_guard};
+
 pub fn get_admin(env: &Env) -> Address {
     env.storage().persistent().get(&DataKey::Admin).unwrap()
 }

@@ -459,6 +459,43 @@ pub enum DataKey {
     AuditLogHead,
 
     // -------------------------------------------------------------------------
+    // Pre-existing keys referenced by storage.rs/sources.rs/cross_chain_verify.rs
+    // but missing from this enum (build-blocking gap, restored here).
+    // -------------------------------------------------------------------------
+    /// Assets a source is authorized to submit prices for (#226 support).
+    SourceAssets(Address),
+    /// Ledger sequence of a source's last key rotation (#226 support).
+    SourceRotationLedger(Address),
+    /// Verification metadata for a source (#226 support).
+    SourceVerification(Address),
+    /// Whether cross-chain price verification is globally enabled (#226).
+    CrossChainVerificationEnabled,
+    /// Maximum allowed deviation (bps) between this chain and a reference chain (#226).
+    CrossChainDeviationThreshold,
+    /// Stored cross-chain price observation for (asset, oracle_chain) (#226).
+    CrossChainPrice(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #216: Off-chain signature-verified price submission
+    // -------------------------------------------------------------------------
+    /// Ed25519 public key registered by a source for pre-signed submissions.
+    SignedSubmitPubKey(Address),
+    /// Last accepted (strictly increasing) nonce for a source's signed submissions.
+    SignedSubmitNonce(Address),
+
+    // -------------------------------------------------------------------------
+    // #218: Configurable aggregation triggers
+    // -------------------------------------------------------------------------
+    /// Minimum seconds between time-triggered aggregations for an asset (0 = disabled).
+    TriggerTimeInterval(Address),
+    /// Number of new submissions required to auto-trigger aggregation (0 = disabled).
+    TriggerSubmissionThreshold(Address),
+    /// Submissions accumulated since the last trigger-driven aggregation for an asset.
+    TriggerSubmissionCount(Address),
+    /// Deviation in basis points that auto-triggers aggregation (0 = disabled).
+    TriggerDeviationBps(Address),
+    /// Unix timestamp of the last trigger-driven aggregation for an asset.
+    TriggerLastAggTime(Address),
     // #223: Price freeze mechanism for market emergencies
     // -------------------------------------------------------------------------
     /// Frozen price snapshot for an asset, present only while frozen (#223).
@@ -478,17 +515,14 @@ pub enum DataKey {
     NotificationEventTypes,
 
     // -------------------------------------------------------------------------
-    // #245: Admin key social recovery
+    // History export
     // -------------------------------------------------------------------------
-    /// Registered guardian addresses eligible to approve admin recovery (#245).
-    RecoveryGuardians,
-    /// Number of guardian approvals required to reach recovery threshold (#245).
-    RecoveryThreshold,
-    /// Cancellation-window delay in ledgers between reaching threshold and
-    /// auto-execution of a recovery (#245).
-    RecoveryDelay,
-    /// The currently in-flight [`GuardianRecovery`], if any (#245).
-    PendingRecovery,
+    /// Delay (ledgers) for Urgent priority operations.
+    TlUrgentDelay,
+    /// Delay (ledgers) for Normal priority operations (mirrors CfgTimelockDuration).
+    TlNormalDelay,
+    /// Delay (ledgers) for LongTerm priority operations.
+    TlLongTermDelay,
 }
 
 
@@ -830,6 +864,8 @@ pub struct PendingOperation {
     pub proposed_ledger: u32,
     /// Arbitrary encoded payload whose interpretation depends on `op_type`.
     pub data: Bytes,
+    /// Priority tier that determines the required delay before execution.
+    pub priority: OperationPriority,
 }
 
 /// A snapshot of the oracle's overall health, returned by `health_check()`.
@@ -1165,6 +1201,89 @@ pub struct RelayerInfo {
     pub name: String,
     /// Ledger sequence number when the relayer was approved by the admin.
     pub approved_at_ledger: u32,
+}
+
+/// A single (source, asset, price, timestamp) leg of a batch relayed submission (#264).
+///
+/// Each leg is independently authorized by its `source` — the relayer bundles one
+/// pre-signed authorization entry per leg alongside its own signature. `priority_fee`
+/// implements the relayer fee market (#266): legs must be ordered by non-increasing
+/// `priority_fee` within the batch, and the source's signature covers this exact value,
+/// so a relayer cannot alter it after the fact without invalidating the signature.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayedSubmission {
+    /// Address of the oracle source whose price is being relayed.
+    pub source: Address,
+    /// Contract address of the asset being priced.
+    pub asset: Address,
+    /// Raw price value scaled by `10^decimals`. Must be > 0.
+    pub price: i128,
+    /// Unix timestamp (seconds) of the price observation.
+    pub timestamp: u64,
+    /// Priority fee (in stroops) the source is willing to pay for prioritized processing.
+    pub priority_fee: u128,
+}
+
+// =============================================================================
+// #265 — Relayer Performance Bonds
+// =============================================================================
+
+/// Reasons a relayer failure incident may be recorded, used as slash grounds (#265).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum RelayerFailureReason {
+    /// Relayer submitted a price on behalf of a source without valid authorization.
+    UnauthorizedPrice = 0,
+    /// Relayer submitted an otherwise invalid/rejected price.
+    InvalidSubmission = 1,
+    /// Any other operator-attested misbehavior.
+    Other = 2,
+}
+
+// =============================================================================
+// #267 — Relayer Dashboard
+// =============================================================================
+
+/// Per-asset submission breakdown for a relayer, part of [`RelayerDashboard`] (#267).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayerAssetStat {
+    /// Asset contract address.
+    pub asset: Address,
+    /// Number of successful submissions relayed for this asset.
+    pub submissions: u64,
+}
+
+/// Aggregated operational dashboard for a relayer (#267).
+///
+/// Returned by `get_relayer_dashboard`. Combines volume, accuracy, latency, fee/reward
+/// earnings, and a comparative percentile rank against every other approved relayer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RelayerDashboard {
+    /// The relayer this dashboard describes.
+    pub relayer: Address,
+    /// Total successful relayed submissions (single + batch legs).
+    pub total_submissions: u64,
+    /// Total reported failure incidents (see [`RelayerFailureReason`]).
+    pub failed_submissions: u32,
+    /// Success rate in basis points: `10_000 * successful / (successful + failed)`.
+    pub success_rate_bps: u32,
+    /// Estimated submissions per day, averaged over the relayer's approved lifetime.
+    pub submissions_per_day: u64,
+    /// Average latency in seconds between observation timestamp and ledger close time.
+    pub avg_latency_seconds: u64,
+    /// Accumulated flat + priority fee earnings (in stroops).
+    pub fee_earnings: i128,
+    /// Accumulated accuracy-weighted reward earnings (in stroops).
+    pub reward_earnings: i128,
+    /// Currently deposited performance bond (in stroops).
+    pub bond_deposited: i128,
+    /// Percentile rank (0-100) of `total_submissions` among all approved relayers.
+    pub percentile_rank: u32,
+    /// Per-asset submission breakdown.
+    pub per_asset: Vec<RelayerAssetStat>,
 }
 
 // =============================================================================
@@ -1581,6 +1700,63 @@ pub struct ZkPriceAttestation {
     pub proof: Groth16Proof,
 }
 
+/// Snapshot of core global oracle configuration parameters.
+///
+/// Captured before each successful core-parameter mutation so an admin can
+/// roll back to a known-good state via `rollback_config`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ConfigSnapshot {
+    /// Monotonically increasing snapshot version (never reused).
+    pub version: u32,
+    /// Ledger sequence when this snapshot was taken.
+    pub ledger: u32,
+    /// Unix timestamp when this snapshot was taken.
+    pub timestamp: u64,
+    /// Minimum contributing sources required for aggregation.
+    pub min_sources_required: u32,
+    /// Maximum retained price-history entries per asset.
+    pub max_history_length: u32,
+    /// SEP-40 resolution window in seconds.
+    pub resolution: u32,
+    /// Global decimal precision.
+    pub decimals: u32,
+    /// Human-readable oracle description.
+    pub description: String,
+    /// Aggregation method discriminant.
+    pub aggregation_method: u32,
+    /// Maximum allowed submission timestamp skew in seconds.
+    pub timestamp_threshold: u64,
+    /// Maximum allowed price deviation in basis points.
+    pub max_price_deviation: u32,
+    /// Circuit-breaker trip threshold in basis points.
+    pub circuit_breaker_threshold: u32,
+    /// Heartbeat interval in seconds.
+    pub heartbeat_interval: u64,
+    /// Per-asset history cap.
+    pub max_history_per_asset: u32,
+    /// Maximum events emitted per call.
+    pub max_events_per_call: u32,
+    /// Maximum sources used during aggregation (`0` = unlimited).
+    pub max_aggregation_sources: u32,
+    /// Aggregation cooldown in ledgers.
+    pub aggregation_cooldown: u32,
+    /// Minimum submission interval in ledgers.
+    pub min_submission_interval: u32,
+    /// Whether historical price interpolation is enabled.
+    pub interpolation_enabled: bool,
+    /// Maximum registered oracle sources (`0` = unlimited).
+    pub max_sources: u32,
+    /// Query rate limit per ledger.
+    pub query_rate_limit: u32,
+    /// Maximum registered assets.
+    pub max_assets: u32,
+    /// Whether the contract is paused.
+    pub paused: bool,
+    /// Timelock delay in ledgers.
+    pub timelock_duration: u32,
+}
+
 /// Audit log entry for admin actions (#239).
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
@@ -1645,6 +1821,22 @@ pub struct CrossChainRelayConfig {
     pub merkle_path_bits: u32,
 }
 
+/// A price observation for an asset fetched from the same oracle on another chain (#226).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CrossChainPriceEntry {
+    /// Raw price value scaled by `10^decimals`.
+    pub price: i128,
+    /// Decimal precision of `price`.
+    pub decimals: u32,
+    /// Identifier of the source chain (e.g. `"ethereum"`).
+    pub chain_id: String,
+    /// Local ledger sequence number when this observation was recorded.
+    pub ledger: u32,
+    /// Unix timestamp of the observation on the source chain.
+    pub timestamp: u64,
+}
+
 /// A batch item for state channel high-frequency updates.
 /// Each item carries a price update with strict nonce ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1656,4 +1848,143 @@ pub struct BatchItem {
     pub price: u128,
     /// Unix timestamp of the price observation.
     pub timestamp: u64,
+}
+
+// =============================================================================
+// History Export (#export-history)
+// =============================================================================
+
+/// A single exported price history entry for off-chain archiving.
+///
+/// Mirrors [`PriceHistoryEntry`] but includes the asset address so the export
+/// bundle is self-contained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ExportedEntry {
+    /// Asset address.
+    pub asset: Address,
+    /// Aggregated price scaled by `10^decimals`.
+    pub price: i128,
+    /// Unix timestamp of the snapshot.
+    pub timestamp: u64,
+    /// Ledger sequence number of the snapshot.
+    pub ledger: u32,
+    /// Number of sources that contributed.
+    pub num_sources: u32,
+    /// Whether this entry was produced by interpolation.
+    pub is_interpolated: bool,
+}
+
+/// Result returned by `export_history`.
+///
+/// Contains the page of entries, a simple XOR-based data hash over all included
+/// entries (for quick integrity verification off-chain), and pagination state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ExportedHistorySnapshot {
+    /// The exported price history entries (up to `limit` entries).
+    pub entries: Vec<ExportedEntry>,
+    /// Simple XOR-fold hash of all entry prices — a lightweight integrity token.
+    /// Off-chain archivers can recompute this from the entries and compare.
+    pub data_hash: u64,
+    /// Ledger of the first entry in this page (0 when empty).
+    pub from_ledger: u32,
+    /// Ledger of the last entry in this page (0 when empty).
+    pub to_ledger: u32,
+    /// Total number of recorded ledgers available for this asset.
+    pub total_available: u32,
+    /// Cursor to pass as `from_ledger` to fetch the next page (`0` when no more pages).
+    pub next_cursor: u32,
+}
+
+// =============================================================================
+// Timelock Priority Queues
+// =============================================================================
+
+/// Priority tier for a timelock operation.
+///
+/// Each tier has its own configurable delay (in ledgers).  Lower discriminant
+/// values represent more urgent tiers so that numeric comparisons are intuitive.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationPriority {
+    /// Immediate-ish execution with multi-sig co-sign requirement.
+    /// Default delay: 1 ledger.
+    Urgent = 0,
+    /// Standard governance delay.
+    /// Default delay: 10 ledgers (matches the pre-existing default).
+    Normal = 1,
+    /// Extended delay for critical, protocol-level changes.
+    /// Default delay: 100 ledgers.
+    LongTerm = 2,
+}
+
+// =============================================================================
+// Batch Dry-Run Simulation
+// =============================================================================
+
+/// Warning flags that may be set on a simulated operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum SimulationWarning {
+    /// No warnings.
+    None = 0,
+    /// The operation would change a parameter to an extreme value.
+    ExtremeValue = 1,
+    /// The operation would set min_sources below 2, weakening security.
+    LowMinSources = 2,
+    /// The operation would set max_history to a very large value.
+    LargeHistory = 3,
+    /// The operation type is unrecognised in the simulator.
+    UnknownOpType = 4,
+    /// The operation data is too short to decode.
+    InvalidData = 5,
+}
+
+/// Result for a single operation in a simulated batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OperationSimulationResult {
+    /// Zero-based index of this operation in the batch.
+    pub index: u32,
+    /// Numeric `op_type` discriminant (mirrors [`OperationType`]).
+    pub op_type: u32,
+    /// Human-readable description of what the operation would change.
+    pub description: String,
+    /// `true` when the operation would succeed given current contract state.
+    pub would_succeed: bool,
+    /// Any warnings raised by the simulation.
+    pub warning: SimulationWarning,
+}
+
+/// Aggregate result of `simulate_batch`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BatchSimulationResult {
+    /// Per-operation simulation results.
+    pub results: Vec<OperationSimulationResult>,
+    /// Total number of operations in the batch.
+    pub total_ops: u32,
+    /// Number of operations that would succeed.
+    pub would_succeed_count: u32,
+    /// Number of operations that raised at least one warning.
+    pub warning_count: u32,
+    /// `true` when *all* operations would succeed (the batch is safe to submit).
+    pub all_succeed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Operation {
+    pub id: String,
+    pub status: OperationStatus,
+    pub depends_on: Vec<String>,
 }
