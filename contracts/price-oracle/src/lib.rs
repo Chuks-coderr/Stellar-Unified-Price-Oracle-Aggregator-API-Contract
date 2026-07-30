@@ -54,6 +54,7 @@ mod rbac;
 mod emergency_pause;
 mod freeze;
 mod notifications;
+mod config_history;
 
 #[cfg(test)]
 mod circuit_breaker_tests;
@@ -88,9 +89,12 @@ mod rbac_tests;
 #[cfg(test)]
 mod emergency_pause_tests;
 
+#[cfg(test)]
+mod config_history_tests;
+
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
-    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
+    AggregatePrice, AggregationMethod, Asset, BatchOperation, ConfigSnapshot, CrossReferenceResult,
+    DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
@@ -568,16 +572,6 @@ impl PriceOracleContract {
         result
     }
 
-    pub fn set_aggregation_method(env: Env, method: u32) {
-        reentrancy::enter(&env);
-        admin::set_aggregation_method(&env, method);
-        reentrancy::exit(&env);
-    }
-
-    pub fn get_aggregation_method(env: Env) -> u32 {
-        admin::get_aggregation_method(&env)
-    }
-
     /// Sets the heartbeat interval — the period after which a silent source is considered
     /// inactive.
     ///
@@ -779,13 +773,38 @@ impl PriceOracleContract {
     ///
     /// Emits `AggregationMethodChangedEvent`.
     pub fn set_aggregation_method(env: Env, method: u32) {
+        reentrancy::enter(&env);
         admin::set_aggregation_method(&env, method);
+        reentrancy::exit(&env);
     }
 
     /// Returns the current aggregation method discriminant.
     /// * `0` = Median, `1` = Mean, `2` = TrimmedMean, `3` = WeightedMedian
     pub fn get_aggregation_method(env: Env) -> u32 {
         admin::get_aggregation_method(&env)
+    }
+
+    /// Returns the newest retained core-configuration snapshots.
+    ///
+    /// Ordering is newest-first. `count == 0` returns an empty vector. At most
+    /// 100 retained snapshots are ever returned.
+    pub fn get_config_history(env: Env, count: u32) -> Vec<ConfigSnapshot> {
+        config_history::get_config_history(&env, count)
+    }
+
+    /// Restores a previously captured core-configuration snapshot.
+    ///
+    /// Snapshots the current live config first (append-only), then applies the
+    /// selected version. Admin-only.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the current admin.
+    /// * [`ErrorCode::ConfigVersionNotFound`] — if `version` is missing or pruned.
+    pub fn rollback_config(env: Env, version: u32) {
+        reentrancy::enter(&env);
+        config_history::rollback_config(&env, version);
+        reentrancy::exit(&env);
     }
 
     // --- #70: Min submission interval ---

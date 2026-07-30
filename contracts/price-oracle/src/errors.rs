@@ -211,4 +211,6 @@ pub enum ErrorCode {
     InvalidPageSize = 101,
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
+    /// The requested config-snapshot version does not exist or has been pruned.
+    ConfigVersionNotFound = 103,
 }

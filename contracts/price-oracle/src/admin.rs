@@ -181,6 +181,7 @@ pub fn set_min_sources_required(env: &Env, new_min: u32) {
     if source_count > 0 && new_min > source_count {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgMinSources, &new_min);
@@ -207,6 +208,7 @@ pub fn set_max_history_length(env: &Env, new_max: u32) {
     if new_max == 0 {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgMaxHistory, &new_max);
@@ -230,6 +232,7 @@ pub fn get_max_history_length(env: &Env) -> u32 {
 pub fn set_resolution(env: &Env, new_resolution: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgResolution, &new_resolution);
@@ -259,6 +262,7 @@ pub fn set_decimals(env: &Env, new_decimals: u32) {
     if new_decimals > 18 {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgDecimals, &new_decimals);
@@ -288,6 +292,7 @@ pub fn set_description(env: &Env, new_description: String) {
     if new_description.len() > MAX_DESCRIPTION_LENGTH {
         panic_with_error!(env, ErrorCode::DescriptionTooLong);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgDescription, &new_description);
@@ -338,6 +343,7 @@ pub fn set_aggregation_method(env: &Env, method: u32) {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
     let old_method = get_aggregation_method(env);
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgAggregationMethod, &method);
@@ -353,9 +359,10 @@ pub fn set_aggregation_method(env: &Env, method: u32) {
 pub fn set_timestamp_threshold(env: &Env, threshold: u64) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
-        .set(&DataKey::TimestampThreshold, &threshold);
+        .set(&DataKey::CfgTimestampThreshold, &threshold);
     emit_timestamp_threshold_changed(env, admin.clone(), threshold);
     emit_admin_action(env, symbol_short!("set_ts"), admin, Bytes::new(env));
 }
@@ -379,9 +386,10 @@ pub fn set_max_price_deviation(env: &Env, deviation_basis_points: u32) {
     if deviation_basis_points > 100000 {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
-        .set(&DataKey::MaxPriceDeviation, &deviation_basis_points);
+        .set(&DataKey::CfgMaxDeviation, &deviation_basis_points);
     emit_max_price_deviation_changed(env, admin.clone(), deviation_basis_points);
     emit_admin_action(env, symbol_short!("set_dev"), admin, Bytes::new(env));
 }
@@ -405,6 +413,7 @@ pub fn set_circuit_breaker_threshold(env: &Env, threshold_bps: u32) {
     if threshold_bps > 100000 {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CircuitBreakerThreshold, &threshold_bps);
@@ -430,6 +439,7 @@ pub fn set_heartbeat_interval(env: &Env, interval: u64) {
     if interval == 0 {
         panic_with_error!(env, ErrorCode::InvalidConfiguration);
     }
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::CfgHeartbeatInterval, &interval);
@@ -455,6 +465,7 @@ pub fn get_heartbeat_interval(env: &Env) -> u64 {
 pub fn set_max_history_per_asset(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MaxHistoryPerAsset, &new_max);
@@ -479,6 +490,7 @@ pub fn get_max_history_per_asset(env: &Env) -> u32 {
 pub fn set_max_events_per_call(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MaxEventsPerCall, &new_max);
@@ -503,6 +515,7 @@ pub fn get_max_events_per_call(env: &Env) -> u32 {
 pub fn set_max_aggregation_sources(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MaxAggregationSources, &new_max);
@@ -559,6 +572,7 @@ pub fn get_asset_resolution(env: &Env, asset: Address) -> u32 {
 pub fn set_aggregation_cooldown(env: &Env, cooldown_ledgers: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::AggregationCooldown, &cooldown_ledgers);
@@ -581,6 +595,7 @@ pub fn get_aggregation_cooldown(env: &Env) -> u32 {
 pub fn set_min_submission_interval(env: &Env, interval_ledgers: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MinSubmissionInterval, &interval_ledgers);
@@ -603,6 +618,7 @@ pub fn get_min_submission_interval(env: &Env) -> u32 {
 pub fn set_interpolation_enabled(env: &Env, enabled: bool) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::InterpolationEnabled, &enabled);
@@ -625,6 +641,7 @@ pub fn get_interpolation_enabled(env: &Env) -> bool {
 pub fn set_max_sources(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MaxSources, &new_max);
@@ -645,6 +662,7 @@ pub fn get_max_sources(env: &Env) -> u32 {
 pub fn set_query_rate_limit(env: &Env, max_per_ledger: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::QueryRateLimit, &max_per_ledger);
@@ -670,6 +688,7 @@ pub fn get_query_rate_limit(env: &Env) -> u32 {
 pub fn set_max_assets(env: &Env, new_max: u32) {
     let admin = get_admin(env);
     admin.require_auth();
+    crate::config_history::snapshot_before_change(env, &admin);
     env.storage()
         .persistent()
         .set(&DataKey::MaxAssets, &new_max);
