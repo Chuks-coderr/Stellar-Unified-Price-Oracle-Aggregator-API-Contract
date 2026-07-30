@@ -34,6 +34,7 @@ mod per_asset_decimals;
 mod prices;
 mod rate_limiting;
 mod reentrancy;
+mod recovery;
 mod relayer;
 mod reputation;
 mod rotation;
@@ -88,9 +89,13 @@ mod rbac_tests;
 #[cfg(test)]
 mod emergency_pause_tests;
 
+#[cfg(test)]
+mod recovery_tests;
+
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, CrossReferenceResult, DataKey,
-    ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
+    ErrorCode, FinalityStatus, FinalizedPrice, GuardianRecovery, HealthReport, MigrationState,
+    OracleSources,
     PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
     PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
     DisqualificationStatus, SourceDemeritState, DemeritConfig,
@@ -3527,6 +3532,92 @@ impl PriceOracleContract {
     /// matches `header.expected_hash`.
     pub fn relay_verify_header(env: Env, header: StellarHeader) -> bool {
         cross_chain_relay::verify_header_consistency(&env, &header)
+    }
+
+    // =========================================================================
+    // #245 — Admin Key Social Recovery
+    // =========================================================================
+
+    /// Registers the guardian set and required approval threshold. Admin-only.
+    /// Replaces any previously configured guardian set.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidGuardianConfig`] — threshold is `0` or exceeds guardian count.
+    pub fn recovery_set_guardians(env: Env, guardians: Vec<Address>, threshold: u32) {
+        recovery::set_guardians(&env, guardians, threshold);
+    }
+
+    /// Returns the currently registered guardian addresses.
+    pub fn recovery_get_guardians(env: Env) -> Vec<Address> {
+        recovery::get_guardians(&env)
+    }
+
+    /// Returns the number of guardian approvals required to reach recovery threshold.
+    pub fn recovery_get_threshold(env: Env) -> u32 {
+        recovery::get_recovery_threshold(&env)
+    }
+
+    /// Sets the cancellation-window delay in ledgers between reaching guardian
+    /// threshold and a recovery becoming eligible for auto-execution. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `delay_ledgers` is `0`.
+    pub fn recovery_set_delay(env: Env, delay_ledgers: u32) {
+        recovery::set_recovery_delay(&env, delay_ledgers);
+    }
+
+    /// Returns the configured cancellation-window delay in ledgers. Default: ~1 day.
+    pub fn recovery_get_delay(env: Env) -> u32 {
+        recovery::get_recovery_delay(&env)
+    }
+
+    /// A guardian approves recovery, naming `new_admin` as the candidate replacement
+    /// admin. The first guardian to call this initiates the recovery; once the
+    /// configured threshold of distinct guardian approvals is reached, the
+    /// cancellation-window delay starts.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotGuardian`] — caller is not a registered guardian.
+    /// * [`ErrorCode::RecoveryAlreadyPending`] — a recovery is already pending for a
+    ///   different candidate; the admin must cancel it first.
+    /// * [`ErrorCode::RecoveryAlreadyApproved`] — this guardian already approved.
+    pub fn recovery_approve(env: Env, guardian: Address, new_admin: Address) {
+        reentrancy::enter(&env);
+        recovery::approve_recovery(&env, guardian, new_admin);
+        reentrancy::exit(&env);
+    }
+
+    /// Cancels the pending recovery. Admin-only — the cancellation window that lets
+    /// a still-in-control admin stop a recovery before it executes.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::RecoveryNotPending`] — no recovery is currently pending.
+    pub fn recovery_cancel(env: Env) {
+        reentrancy::enter(&env);
+        recovery::cancel_recovery(&env);
+        reentrancy::exit(&env);
+    }
+
+    /// Executes a ready recovery, installing its candidate as the new contract admin.
+    /// Callable by anyone once guardian threshold has been reached and the
+    /// cancellation-window delay has elapsed.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::RecoveryNotPending`] — no recovery is currently pending.
+    /// * [`ErrorCode::RecoveryDelayNotElapsed`] — threshold not yet reached, or the
+    ///   cancellation-window delay has not yet elapsed.
+    pub fn recovery_execute(env: Env) {
+        reentrancy::enter(&env);
+        recovery::execute_recovery(&env);
+        reentrancy::exit(&env);
+    }
+
+    /// Returns the currently pending recovery, if any.
+    pub fn recovery_get_pending(env: Env) -> Option<GuardianRecovery> {
+        recovery::get_pending_recovery(&env)
     }
 }
 

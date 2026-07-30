@@ -476,6 +476,19 @@ pub enum DataKey {
     NotificationPrefs(u32),
     /// Every event-type discriminant that currently has at least one preference (#243).
     NotificationEventTypes,
+
+    // -------------------------------------------------------------------------
+    // #245: Admin key social recovery
+    // -------------------------------------------------------------------------
+    /// Registered guardian addresses eligible to approve admin recovery (#245).
+    RecoveryGuardians,
+    /// Number of guardian approvals required to reach recovery threshold (#245).
+    RecoveryThreshold,
+    /// Cancellation-window delay in ledgers between reaching threshold and
+    /// auto-execution of a recovery (#245).
+    RecoveryDelay,
+    /// The currently in-flight [`GuardianRecovery`], if any (#245).
+    PendingRecovery,
 }
 
 
@@ -1440,6 +1453,24 @@ pub struct MultiSigOperation {
     pub timelock_start_ledger: u32,
     /// Linked-list next pointer (0 = tail).
     pub next_op_id: u32,
+}
+
+/// A guardian-initiated admin key recovery process (#245).
+///
+/// Stored under [`DataKey::PendingRecovery`] while a recovery is in flight.
+/// Removed once cancelled by the admin or executed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GuardianRecovery {
+    /// Address that guardians are proposing to install as the new admin.
+    pub new_admin: Address,
+    /// Guardians that have approved this recovery so far.
+    pub approvals: Vec<Address>,
+    /// Ledger sequence number when the initiating guardian first proposed this recovery.
+    pub initiated_ledger: u32,
+    /// Ledger sequence number when the N-of-M guardian threshold was reached and the
+    /// cancellation-window delay started. `0` means the threshold has not been reached yet.
+    pub ready_ledger: u32,
 }
 
 /// Per-asset decimal precision configuration (#227).

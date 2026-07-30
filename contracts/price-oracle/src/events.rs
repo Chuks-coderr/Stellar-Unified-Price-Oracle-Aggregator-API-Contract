@@ -1509,3 +1509,52 @@ pub struct NotifPrefsClearedEvent {
     #[topic]
     pub event_type: u32,
 }
+
+/// Emitted when the admin configures the guardian set and recovery threshold (#245).
+#[contractevent]
+#[derive(Clone)]
+pub struct GuardiansSetEvent {
+    #[topic]
+    pub admin: Address,
+    pub guardian_count: u32,
+    pub threshold: u32,
+}
+
+/// Emitted when a guardian approves a pending (or newly proposed) recovery (#245).
+#[contractevent]
+#[derive(Clone)]
+pub struct RecoveryApprovedEvent {
+    #[topic]
+    pub guardian: Address,
+    pub new_admin: Address,
+    pub approval_count: u32,
+    pub threshold: u32,
+}
+
+/// Emitted when guardian threshold is reached and the cancellation-window delay starts (#245).
+#[contractevent]
+#[derive(Clone)]
+pub struct RecoveryReadyEvent {
+    #[topic]
+    pub new_admin: Address,
+    pub ready_ledger: u32,
+    pub execute_after_ledger: u32,
+}
+
+/// Emitted when the admin cancels a pending recovery within the cancellation window (#245).
+#[contractevent]
+#[derive(Clone)]
+pub struct RecoveryCancelledEvent {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when a ready recovery auto-executes and the admin is replaced (#245).
+#[contractevent]
+#[derive(Clone)]
+pub struct RecoveryExecutedEvent {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}

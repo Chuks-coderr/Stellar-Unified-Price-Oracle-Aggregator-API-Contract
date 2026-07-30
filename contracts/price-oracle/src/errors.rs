@@ -19,6 +19,7 @@ use soroban_sdk::contracterror;
 /// | 62–74  | Asset/price bounds     |
 /// | 75–98  | Advanced features      |
 /// | 99–102 | Freeze/pagination/notify (#223,#229,#243) |
+/// | 103–108 | Guardian social recovery (#245) |
 #[contracterror]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -211,4 +212,20 @@ pub enum ErrorCode {
     InvalidPageSize = 101,
     /// A notification `channel` or `target` string exceeds the maximum allowed length (#243).
     NotificationConfigInvalid = 102,
+
+    // ── 103–108: Guardian social recovery (#245) ──────────────────────────────
+    /// The caller is not a registered guardian.
+    NotGuardian = 103,
+    /// No recovery is currently pending.
+    RecoveryNotPending = 104,
+    /// A recovery is already pending for a different candidate admin; it must be
+    /// cancelled before a new candidate can be proposed.
+    RecoveryAlreadyPending = 105,
+    /// The guardian has already approved the pending recovery.
+    RecoveryAlreadyApproved = 106,
+    /// The cancellation-window delay has not yet elapsed since threshold was reached.
+    RecoveryDelayNotElapsed = 107,
+    /// The guardian set/threshold configuration is invalid (threshold is `0` or exceeds
+    /// the number of guardians).
+    InvalidGuardianConfig = 108,
 }
