@@ -20,6 +20,8 @@ pub enum DataKey {
     Resolution,
     Decimals,
     Description,
+    Operation(String),
+    OperationDependents(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,4 +70,20 @@ pub enum Asset {
 pub struct PriceData {
     pub price: i128,
     pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Operation {
+    pub id: String,
+    pub status: OperationStatus,
+    pub depends_on: Vec<String>,
 }

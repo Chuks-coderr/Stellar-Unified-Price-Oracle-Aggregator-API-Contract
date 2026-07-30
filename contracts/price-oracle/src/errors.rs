@@ -13,4 +13,8 @@ pub enum ErrorCode {
     InvalidPrice = 7,
     NoData = 8,
     InvalidConfiguration = 9,
+    OperationNotFound = 10,
+    OperationAlreadyExists = 11,
+    DependencyNotMet = 12,
+    InvalidOperationState = 13,
 }

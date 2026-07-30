@@ -9,6 +9,7 @@ mod prices;
 mod sources;
 mod storage;
 mod types;
+mod operations;
 
 pub use types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
@@ -197,6 +198,28 @@ impl PriceOracleContract {
 
     pub fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
         prices::prices(&env, asset, records)
+    }
+
+    // --- Operations (dependency system) ---
+
+    pub fn create_operation(env: Env, op_id: String, depends_on: Vec<String>) {
+        operations::create_operation(&env, op_id, depends_on);
+    }
+
+    pub fn execute_operation(env: Env, op_id: String) {
+        operations::execute_operation(&env, op_id);
+    }
+
+    pub fn cancel_operation(env: Env, op_id: String) {
+        operations::cancel_operation(&env, op_id);
+    }
+
+    pub fn get_operation_dependencies(env: Env, op_id: String) -> Vec<String> {
+        operations::get_operation_dependencies(&env, op_id)
+    }
+
+    pub fn get_operation_status(env: Env, op_id: String) -> crate::types::OperationStatus {
+        operations::get_operation_status(&env, op_id)
     }
 }
 
