@@ -1988,3 +1988,57 @@ pub struct Operation {
     pub status: OperationStatus,
     pub depends_on: Vec<String>,
 }
+
+// ---- Pending operation types ----
+
+/// The kind of administrative action captured in a pending operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationKind {
+    AddSource,
+    RemoveSource,
+    RegisterAsset,
+    UnregisterAsset,
+    SetMinSources,
+    SetMaxHistory,
+    SetDecimals,
+    SetDescription,
+}
+
+/// A pending operation waiting to be executed or expired.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingOperation {
+    /// Unique monotonic id (ledger sequence at creation).
+    pub id: u64,
+    pub kind: OperationKind,
+    /// JSON-style serialized args stored as a String for simplicity.
+    pub args: String,
+    /// Ledger sequence at which this operation was created.
+    pub created_at_ledger: u32,
+    /// Ledger sequence after which this operation is expired and unexecutable.
+    pub expires_at_ledger: u32,
+    /// Whether this operation has been executed already.
+    pub executed: bool,
+}
+
+// ---- Template registry types ----
+
+/// A single parameterized step inside a template.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TemplateStep {
+    pub kind: OperationKind,
+    /// Human-readable description of this step.
+    pub description: String,
+}
+
+/// A named, reusable sequence of operation steps.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OperationTemplate {
+    pub name: Symbol,
+    pub description: String,
+    pub steps: Vec<TemplateStep>,
+    pub created_at_ledger: u32,
+}
