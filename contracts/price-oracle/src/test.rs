@@ -1086,3 +1086,359 @@ fn test_sep40_prices_unregistered_asset() {
     let result = client.prices(&Asset::Stellar(unregistered), &5u32);
     assert!(result.is_none());
 }
+
+// ============================================================
+// Operation Expiry Tests
+// ============================================================
+
+#[test]
+fn test_set_and_get_operation_expiry() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    // Default should be DEFAULT_EXPIRY_LEDGERS (17_280)
+    assert_eq!(client.get_operation_expiry(), 17_280u32);
+
+    client.set_operation_expiry(&1000u32);
+    assert_eq!(client.get_operation_expiry(), 1000u32);
+}
+
+#[test]
+fn test_queue_operation_and_get() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.set_operation_expiry(&500u32);
+
+    let id = client.queue_operation(
+        &crate::OperationKind::AddSource,
+        &String::from_str(&e, r#"{"address":"GABC","name":"NewFeed"}"#),
+    );
+
+    let op = client.get_operation(&id);
+    assert_eq!(op.id, id);
+    assert_eq!(op.created_at_ledger, 100u32);
+    assert_eq!(op.expires_at_ledger, 600u32);
+    assert!(!op.executed);
+}
+
+#[test]
+fn test_get_pending_operation_ids() {
+    let e = Env::default();
+    ledger_default(&e, 50, 500_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    assert_eq!(client.get_pending_operation_ids().len(), 0u32);
+
+    let id1 = client.queue_operation(
+        &crate::OperationKind::SetMinSources,
+        &String::from_str(&e, "3"),
+    );
+    let id2 = client.queue_operation(
+        &crate::OperationKind::SetDecimals,
+        &String::from_str(&e, "6"),
+    );
+
+    let ids = client.get_pending_operation_ids();
+    assert_eq!(ids.len(), 2u32);
+    assert_eq!(ids.get_unchecked(0), id1);
+    assert_eq!(ids.get_unchecked(1), id2);
+}
+
+#[test]
+fn test_execute_operation_success() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.set_operation_expiry(&500u32);
+
+    let id = client.queue_operation(
+        &crate::OperationKind::SetDescription,
+        &String::from_str(&e, "new desc"),
+    );
+
+    // Execute before expiry
+    ledger_default(&e, 200, 2_000_000);
+    client.execute_operation(&id);
+
+    // Should be removed from pending list
+    assert_eq!(client.get_pending_operation_ids().len(), 0u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_execute_expired_operation_panics() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.set_operation_expiry(&50u32); // expires at ledger 150
+
+    let id = client.queue_operation(
+        &crate::OperationKind::AddSource,
+        &String::from_str(&e, "{}"),
+    );
+
+    // Advance past expiry
+    ledger_default(&e, 200, 2_000_000);
+    client.execute_operation(&id); // should panic with OperationExpired = 9
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_get_nonexistent_operation_panics() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.get_operation(&999_999u64);
+}
+
+#[test]
+fn test_expire_stale_operations() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.set_operation_expiry(&100u32); // expires at ledger 200
+
+    client.queue_operation(
+        &crate::OperationKind::SetMinSources,
+        &String::from_str(&e, "2"),
+    );
+    client.queue_operation(
+        &crate::OperationKind::SetMaxHistory,
+        &String::from_str(&e, "50"),
+    );
+
+    // One still-fresh operation at ledger 250
+    ledger_default(&e, 250, 2_500_000);
+    client.set_operation_expiry(&500u32);
+    client.queue_operation(
+        &crate::OperationKind::SetDecimals,
+        &String::from_str(&e, "8"),
+    );
+
+    // First two are now expired (250 > 200); third expires at 750
+    let swept = client.expire_stale_operations();
+    assert_eq!(swept, 2u32);
+    assert_eq!(client.get_pending_operation_ids().len(), 1u32);
+}
+
+#[test]
+fn test_expire_stale_nothing_to_expire() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    let swept = client.expire_stale_operations();
+    assert_eq!(swept, 0u32);
+}
+
+// ============================================================
+// Template Registry Tests
+// ============================================================
+
+#[test]
+fn test_create_and_get_template() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    let steps: soroban_sdk::Vec<crate::TemplateStep> = {
+        let mut v = soroban_sdk::Vec::new(&e);
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::AddSource,
+            description: String::from_str(&e, "Add the new source"),
+        });
+        v
+    };
+
+    client.create_template(
+        &Symbol::new(&e, "my_tmpl"),
+        &String::from_str(&e, "My Template"),
+        &steps,
+    );
+
+    let tmpl = client.get_template(&Symbol::new(&e, "my_tmpl"));
+    assert_eq!(tmpl.name, Symbol::new(&e, "my_tmpl"));
+    assert_eq!(tmpl.steps.len(), 1u32);
+}
+
+#[test]
+fn test_get_template_names() {
+    let e = Env::default();
+    ledger_default(&e, 50, 500_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    assert_eq!(client.get_template_names().len(), 0u32);
+
+    let single_step = {
+        let mut v = soroban_sdk::Vec::new(&e);
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::SetMinSources,
+            description: String::from_str(&e, "step"),
+        });
+        v
+    };
+
+    client.create_template(
+        &Symbol::new(&e, "alpha"),
+        &String::from_str(&e, "Alpha"),
+        &single_step,
+    );
+    client.create_template(
+        &Symbol::new(&e, "beta"),
+        &String::from_str(&e, "Beta"),
+        &single_step,
+    );
+
+    let names = client.get_template_names();
+    assert_eq!(names.len(), 2u32);
+    assert_eq!(names.get_unchecked(0), Symbol::new(&e, "alpha"));
+    assert_eq!(names.get_unchecked(1), Symbol::new(&e, "beta"));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_create_duplicate_template_panics() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    let steps = {
+        let mut v = soroban_sdk::Vec::new(&e);
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::AddSource,
+            description: String::from_str(&e, "step"),
+        });
+        v
+    };
+
+    client.create_template(
+        &Symbol::new(&e, "dup"),
+        &String::from_str(&e, "Dup"),
+        &steps,
+    );
+    client.create_template(
+        &Symbol::new(&e, "dup"),
+        &String::from_str(&e, "Dup"),
+        &steps,
+    ); // should panic with TemplateAlreadyExists = 12
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_create_empty_template_panics() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    let empty: soroban_sdk::Vec<crate::TemplateStep> = soroban_sdk::Vec::new(&e);
+    client.create_template(
+        &Symbol::new(&e, "empty"),
+        &String::from_str(&e, "Empty"),
+        &empty,
+    ); // should panic with InvalidTemplate = 13
+}
+
+#[test]
+fn test_remove_template() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    let steps = {
+        let mut v = soroban_sdk::Vec::new(&e);
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::RemoveSource,
+            description: String::from_str(&e, "remove"),
+        });
+        v
+    };
+    client.create_template(
+        &Symbol::new(&e, "torem"),
+        &String::from_str(&e, "To Remove"),
+        &steps,
+    );
+    assert_eq!(client.get_template_names().len(), 1u32);
+
+    client.remove_template(&Symbol::new(&e, "torem"));
+    assert_eq!(client.get_template_names().len(), 0u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_remove_nonexistent_template_panics() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.remove_template(&Symbol::new(&e, "ghost")); // TemplateNotFound = 11
+}
+
+#[test]
+fn test_apply_template_creates_pending_ops() {
+    let e = Env::default();
+    ledger_default(&e, 100, 1_000_000);
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.set_operation_expiry(&1000u32);
+
+    let steps = {
+        let mut v = soroban_sdk::Vec::new(&e);
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::AddSource,
+            description: String::from_str(&e, "Add source A"),
+        });
+        v.push_back(crate::TemplateStep {
+            kind: crate::OperationKind::SetMinSources,
+            description: String::from_str(&e, "Bump min sources"),
+        });
+        v
+    };
+    client.create_template(
+        &Symbol::new(&e, "onboard"),
+        &String::from_str(&e, "Source Onboarding"),
+        &steps,
+    );
+
+    let ids = client.apply_template(&Symbol::new(&e, "onboard"));
+    assert_eq!(ids.len(), 2u32);
+
+    // All queued
+    assert_eq!(client.get_pending_operation_ids().len(), 2u32);
+
+    // Inspect first op
+    let op0 = client.get_operation(&ids.get_unchecked(0));
+    assert_eq!(op0.expires_at_ledger, 1100u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_apply_nonexistent_template_panics() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+    client.apply_template(&Symbol::new(&e, "ghost")); // TemplateNotFound = 11
+}
+
+#[test]
+fn test_seed_builtin_templates() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    client.seed_builtin_templates();
+
+    let names = client.get_template_names();
+    assert_eq!(names.len(), 3u32);
+
+    let new_source = client.get_template(&Symbol::new(&e, "new_source"));
+    assert_eq!(new_source.steps.len(), 2u32);
+
+    let remove_source = client.get_template(&Symbol::new(&e, "remove_source"));
+    assert_eq!(remove_source.steps.len(), 2u32);
+
+    let param_tune = client.get_template(&Symbol::new(&e, "param_tune"));
+    assert_eq!(param_tune.steps.len(), 3u32);
+}
+
+#[test]
+fn test_seed_builtin_templates_idempotent() {
+    let e = Env::default();
+    let (client, _admin, _source1, _asset1) = setup_basic(&e);
+
+    client.seed_builtin_templates();
+    client.seed_builtin_templates(); // second call should not panic or duplicate
+
+    assert_eq!(client.get_template_names().len(), 3u32);
+}

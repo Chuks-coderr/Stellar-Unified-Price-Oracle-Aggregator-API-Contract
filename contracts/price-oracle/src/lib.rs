@@ -5,8 +5,8 @@ mod storage;
 mod types;
 
 pub use types::{
-    AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
-    PriceHistoryEntry,
+    AggregatePrice, Asset, DataKey, ErrorCode, OperationKind, OperationTemplate, OracleSources,
+    PendingOperation, PriceData, PriceEntry, PriceHistoryEntry, TemplateStep,
 };
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String, Symbol, Vec};
@@ -222,6 +222,125 @@ impl PriceOracleContract {
             .persistent()
             .get(&key)
             .unwrap_or(String::from_str(&env, "Stellar Price Oracle"))
+    }
+
+    // ---- Operation expiry configuration ----
+
+    /// Set how many ledgers a pending operation lives before it expires.
+    /// Admin-only. Default is DEFAULT_EXPIRY_LEDGERS (~24 h at 5 s/ledger).
+    pub fn set_operation_expiry(env: Env, ledgers: u32) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        write_expiry_ledgers(&env, ledgers);
+        ExpiryWindowChangedEvent { ledgers }.publish(&env);
+    }
+
+    /// Return the current expiry window in ledgers.
+    pub fn get_operation_expiry(env: Env) -> u32 {
+        read_expiry_ledgers(&env)
+    }
+
+    // ---- Pending operations ----
+
+    /// Enqueue a new pending operation. Admin-only.
+    /// `kind`  — the type of governance action.
+    /// `args`  — serialized arguments string for off-chain executor reference.
+    /// Returns the new operation id.
+    pub fn queue_operation(env: Env, kind: OperationKind, args: String) -> u64 {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        let created_at_ledger = env.ledger().sequence();
+        let expiry_window = read_expiry_ledgers(&env);
+        let expires_at_ledger = created_at_ledger + expiry_window;
+        // Use current ledger + a counter stored in the id list length as unique id.
+        let mut ids = read_pending_ids(&env);
+        let id: u64 = (created_at_ledger as u64) * 100_000 + (ids.len() as u64);
+        let op = PendingOperation {
+            id,
+            kind,
+            args,
+            created_at_ledger,
+            expires_at_ledger,
+            executed: false,
+        };
+        write_pending_operation(&env, &op);
+        ids.push_back(id);
+        write_pending_ids(&env, &ids);
+        OperationQueuedEvent {
+            operation_id: id,
+            expires_at_ledger,
+        }
+        .publish(&env);
+        id
+    }
+
+    /// Mark a pending operation as executed. Admin-only.
+    /// Panics if the operation is not found or has already expired.
+    pub fn execute_operation(env: Env, operation_id: u64) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        let mut op = match read_pending_operation(&env, operation_id) {
+            Some(o) => o,
+            None => panic_with_error!(env, ErrorCode::OperationNotFound),
+        };
+        let current_ledger = env.ledger().sequence();
+        if current_ledger > op.expires_at_ledger {
+            // Auto-expire and surface the appropriate error.
+            remove_pending_operation(&env, operation_id);
+            OperationExpiredEvent {
+                operation_id,
+                expired_at_ledger: current_ledger,
+            }
+            .publish(&env);
+            panic_with_error!(env, ErrorCode::OperationExpired);
+        }
+        op.executed = true;
+        write_pending_operation(&env, &op);
+        remove_pending_operation(&env, operation_id);
+        OperationExecutedEvent { operation_id }.publish(&env);
+    }
+
+    /// Get a pending operation by id.
+    pub fn get_operation(env: Env, operation_id: u64) -> PendingOperation {
+        match read_pending_operation(&env, operation_id) {
+            Some(op) => op,
+            None => panic_with_error!(env, ErrorCode::OperationNotFound),
+        }
+    }
+
+    /// Return all currently pending (non-expired, non-executed) operation ids.
+    pub fn get_pending_operation_ids(env: Env) -> Vec<u64> {
+        read_pending_ids(&env)
+    }
+
+    /// Maintenance endpoint: sweep and expire all operations whose `expires_at_ledger`
+    /// has passed. Anyone may call this to keep storage clean.
+    /// Returns the number of operations expired.
+    pub fn expire_stale_operations(env: Env) -> u32 {
+        let current_ledger = env.ledger().sequence();
+        let ids = read_pending_ids(&env);
+        let mut expired_count: u32 = 0;
+        let mut surviving_ids: Vec<u64> = Vec::new(&env);
+        for i in 0..ids.len() {
+            let id = ids.get_unchecked(i);
+            if let Some(op) = read_pending_operation(&env, id) {
+                if current_ledger > op.expires_at_ledger {
+                    // Remove from persistent storage and emit event.
+                    let key = DataKey::PendingOperation(id);
+                    env.storage().persistent().remove(&key);
+                    OperationExpiredEvent {
+                        operation_id: id,
+                        expired_at_ledger: current_ledger,
+                    }
+                    .publish(&env);
+                    expired_count += 1;
+                } else {
+                    surviving_ids.push_back(id);
+                }
+            }
+        }
+        write_pending_ids(&env, &surviving_ids);
+        expired_count
     }
 
     pub fn register_asset(env: Env, asset: Address) {
@@ -567,6 +686,195 @@ impl PriceOracleContract {
 
     pub fn get_latest_ledger(env: Env) -> u32 {
         env.ledger().sequence()
+    }
+
+    // ---- Template registry ----
+
+    /// Create a named reusable operation template. Admin-only.
+    /// `name`        — short Symbol identifier (≤ 32 chars).
+    /// `description` — human-readable purpose.
+    /// `steps`       — ordered list of TemplateStep values.
+    pub fn create_template(
+        env: Env,
+        name: Symbol,
+        description: String,
+        steps: Vec<TemplateStep>,
+    ) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        if steps.is_empty() {
+            panic_with_error!(env, ErrorCode::InvalidTemplate);
+        }
+        if read_template(&env, &name).is_some() {
+            panic_with_error!(env, ErrorCode::TemplateAlreadyExists);
+        }
+        let num_steps = steps.len();
+        let template = OperationTemplate {
+            name: name.clone(),
+            description,
+            steps,
+            created_at_ledger: env.ledger().sequence(),
+        };
+        write_template(&env, &template);
+        let mut names = read_template_names(&env);
+        names.push_back(name.clone());
+        write_template_names(&env, &names);
+        TemplateCreatedEvent { name, num_steps }.publish(&env);
+    }
+
+    /// Apply a template: enqueue one pending operation per step and return their ids.
+    /// Each step's `description` is forwarded as the `args` string of the operation.
+    /// Admin-only.
+    pub fn apply_template(env: Env, name: Symbol) -> Vec<u64> {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        let template = match read_template(&env, &name) {
+            Some(t) => t,
+            None => panic_with_error!(env, ErrorCode::TemplateNotFound),
+        };
+        let mut created_ids: Vec<u64> = Vec::new(&env);
+        let num_steps = template.steps.len();
+        for i in 0..num_steps {
+            let step = template.steps.get_unchecked(i);
+            let created_at_ledger = env.ledger().sequence();
+            let expiry_window = read_expiry_ledgers(&env);
+            let expires_at_ledger = created_at_ledger + expiry_window;
+            let mut ids = read_pending_ids(&env);
+            let id: u64 = (created_at_ledger as u64) * 100_000 + (ids.len() as u64);
+            let op = PendingOperation {
+                id,
+                kind: step.kind,
+                args: step.description,
+                created_at_ledger,
+                expires_at_ledger,
+                executed: false,
+            };
+            write_pending_operation(&env, &op);
+            ids.push_back(id);
+            write_pending_ids(&env, &ids);
+            OperationQueuedEvent {
+                operation_id: id,
+                expires_at_ledger,
+            }
+            .publish(&env);
+            created_ids.push_back(id);
+        }
+        TemplateAppliedEvent {
+            name,
+            operations_created: num_steps,
+        }
+        .publish(&env);
+        created_ids
+    }
+
+    /// Remove a template. Admin-only.
+    pub fn remove_template(env: Env, name: Symbol) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        if read_template(&env, &name).is_none() {
+            panic_with_error!(env, ErrorCode::TemplateNotFound);
+        }
+        remove_template(&env, &name);
+        TemplateRemovedEvent { name }.publish(&env);
+    }
+
+    /// Get a template by name.
+    pub fn get_template(env: Env, name: Symbol) -> OperationTemplate {
+        match read_template(&env, &name) {
+            Some(t) => t,
+            None => panic_with_error!(env, ErrorCode::TemplateNotFound),
+        }
+    }
+
+    /// List all template names.
+    pub fn get_template_names(env: Env) -> Vec<Symbol> {
+        read_template_names(&env)
+    }
+
+    /// Seed built-in templates for common workflows. Admin-only.
+    /// Idempotent — skips any template that already exists.
+    pub fn seed_builtin_templates(env: Env) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        Self::seed_template_if_missing(
+            &env,
+            Symbol::new(&env, "new_source"),
+            String::from_str(&env, "New Source Onboarding"),
+            &[
+                (
+                    OperationKind::AddSource,
+                    String::from_str(&env, "Register new oracle source address and name"),
+                ),
+                (
+                    OperationKind::SetMinSources,
+                    String::from_str(&env, "Adjust min_sources_required if needed"),
+                ),
+            ],
+        );
+        Self::seed_template_if_missing(
+            &env,
+            Symbol::new(&env, "remove_source"),
+            String::from_str(&env, "Emergency Source Removal"),
+            &[
+                (
+                    OperationKind::RemoveSource,
+                    String::from_str(&env, "Remove compromised or stale oracle source"),
+                ),
+                (
+                    OperationKind::SetMinSources,
+                    String::from_str(&env, "Lower min_sources_required to maintain quorum"),
+                ),
+            ],
+        );
+        Self::seed_template_if_missing(
+            &env,
+            Symbol::new(&env, "param_tune"),
+            String::from_str(&env, "Parameter Tuning"),
+            &[
+                (
+                    OperationKind::SetMinSources,
+                    String::from_str(&env, "Update minimum sources required for aggregation"),
+                ),
+                (
+                    OperationKind::SetMaxHistory,
+                    String::from_str(&env, "Update maximum history length retained on-chain"),
+                ),
+                (
+                    OperationKind::SetDecimals,
+                    String::from_str(&env, "Update price decimal precision"),
+                ),
+            ],
+        );
+    }
+
+    fn seed_template_if_missing(
+        env: &Env,
+        name: Symbol,
+        description: String,
+        steps: &[(OperationKind, String)],
+    ) {
+        if read_template(env, &name).is_some() {
+            return;
+        }
+        let mut step_vec: Vec<TemplateStep> = Vec::new(env);
+        for (kind, desc) in steps {
+            step_vec.push_back(TemplateStep {
+                kind: kind.clone(),
+                description: desc.clone(),
+            });
+        }
+        let num_steps = step_vec.len();
+        let template = OperationTemplate {
+            name: name.clone(),
+            description,
+            steps: step_vec,
+            created_at_ledger: env.ledger().sequence(),
+        };
+        write_template(env, &template);
+        let mut names = read_template_names(env);
+        names.push_back(name.clone());
+        write_template_names(env, &names);
+        TemplateCreatedEvent { name, num_steps }.publish(env);
     }
 
     // ---- SEP-40 Oracle Interface ----

@@ -1,8 +1,11 @@
-use crate::types::{DataKey, ErrorCode, OracleSources};
-use soroban_sdk::{panic_with_error, Address, Env, Vec};
+use crate::types::{DataKey, ErrorCode, OperationTemplate, OracleSources, PendingOperation};
+use soroban_sdk::{panic_with_error, Address, Env, Symbol, Vec};
 
 pub const LEDGER_THRESHOLD: u32 = 1000;
 pub const LEDGER_BUMP: u32 = 4000;
+
+/// Default number of ledgers after creation before a pending operation expires (~24 h at 5 s/ledger).
+pub const DEFAULT_EXPIRY_LEDGERS: u32 = 17_280;
 
 pub fn get_admin(env: &Env) -> Address {
     env.storage().persistent().get(&DataKey::Admin).unwrap()
@@ -117,4 +120,137 @@ pub fn read_oracle_sources(env: &Env) -> OracleSources {
             sources: soroban_sdk::Vec::new(env),
             metadata: soroban_sdk::Map::new(env),
         })
+}
+
+// ---- Expiry window helpers ----
+
+/// Read the configured expiry window in ledgers (defaults to DEFAULT_EXPIRY_LEDGERS).
+pub fn read_expiry_ledgers(env: &Env) -> u32 {
+    let key = DataKey::OperationExpiry;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key).unwrap()
+    } else {
+        DEFAULT_EXPIRY_LEDGERS
+    }
+}
+
+pub fn write_expiry_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OperationExpiry, &ledgers);
+}
+
+// ---- Pending operation helpers ----
+
+pub fn read_pending_ids(env: &Env) -> Vec<u64> {
+    let key = DataKey::PendingOperationIds;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key).unwrap()
+    } else {
+        Vec::new(env)
+    }
+}
+
+pub fn write_pending_ids(env: &Env, ids: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingOperationIds, ids);
+}
+
+pub fn read_pending_operation(env: &Env, id: u64) -> Option<PendingOperation> {
+    let key = DataKey::PendingOperation(id);
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key)
+    } else {
+        None
+    }
+}
+
+pub fn write_pending_operation(env: &Env, op: &PendingOperation) {
+    let key = DataKey::PendingOperation(op.id);
+    env.storage().persistent().set(&key, op);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+pub fn remove_pending_operation(env: &Env, id: u64) {
+    let key = DataKey::PendingOperation(id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+    let ids = read_pending_ids(env);
+    let mut new_ids: Vec<u64> = Vec::new(env);
+    for i in 0..ids.len() {
+        let existing = ids.get_unchecked(i);
+        if existing != id {
+            new_ids.push_back(existing);
+        }
+    }
+    write_pending_ids(env, &new_ids);
+}
+
+// ---- Template registry helpers ----
+
+pub fn read_template_names(env: &Env) -> Vec<Symbol> {
+    let key = DataKey::TemplateNames;
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key).unwrap()
+    } else {
+        Vec::new(env)
+    }
+}
+
+pub fn write_template_names(env: &Env, names: &Vec<Symbol>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::TemplateNames, names);
+}
+
+pub fn read_template(env: &Env, name: &Symbol) -> Option<OperationTemplate> {
+    let key = DataKey::Template(name.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().get(&key)
+    } else {
+        None
+    }
+}
+
+pub fn write_template(env: &Env, template: &OperationTemplate) {
+    let key = DataKey::Template(template.name.clone());
+    env.storage().persistent().set(&key, template);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+pub fn remove_template(env: &Env, name: &Symbol) {
+    let key = DataKey::Template(name.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+    let names = read_template_names(env);
+    let mut new_names: Vec<Symbol> = Vec::new(env);
+    for i in 0..names.len() {
+        let n = names.get_unchecked(i);
+        if n != *name {
+            new_names.push_back(n);
+        }
+    }
+    write_template_names(env, &new_names);
 }

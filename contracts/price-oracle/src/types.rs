@@ -16,6 +16,13 @@ pub enum DataKey {
     Resolution,
     Decimals,
     Description,
+    // Operation expiry
+    OperationExpiry,
+    PendingOperation(u64),
+    PendingOperationIds,
+    // Template registry
+    Template(Symbol),
+    TemplateNames,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +71,13 @@ pub enum ErrorCode {
     InsufficientSources = 6,
     InvalidPrice = 7,
     NoData = 8,
+    // Expiry errors
+    OperationExpired = 9,
+    OperationNotFound = 10,
+    // Template errors
+    TemplateNotFound = 11,
+    TemplateAlreadyExists = 12,
+    InvalidTemplate = 13,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,4 +92,58 @@ pub enum Asset {
 pub struct PriceData {
     pub price: i128,
     pub timestamp: u64,
+}
+
+// ---- Pending operation types ----
+
+/// The kind of administrative action captured in a pending operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum OperationKind {
+    AddSource,
+    RemoveSource,
+    RegisterAsset,
+    UnregisterAsset,
+    SetMinSources,
+    SetMaxHistory,
+    SetDecimals,
+    SetDescription,
+}
+
+/// A pending operation waiting to be executed or expired.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingOperation {
+    /// Unique monotonic id (ledger sequence at creation).
+    pub id: u64,
+    pub kind: OperationKind,
+    /// JSON-style serialized args stored as a String for simplicity.
+    pub args: String,
+    /// Ledger sequence at which this operation was created.
+    pub created_at_ledger: u32,
+    /// Ledger sequence after which this operation is expired and unexecutable.
+    pub expires_at_ledger: u32,
+    /// Whether this operation has been executed already.
+    pub executed: bool,
+}
+
+// ---- Template registry types ----
+
+/// A single parameterized step inside a template.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TemplateStep {
+    pub kind: OperationKind,
+    /// Human-readable description of this step.
+    pub description: String,
+}
+
+/// A named, reusable sequence of operation steps.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OperationTemplate {
+    pub name: Symbol,
+    pub description: String,
+    pub steps: Vec<TemplateStep>,
+    pub created_at_ledger: u32,
 }
