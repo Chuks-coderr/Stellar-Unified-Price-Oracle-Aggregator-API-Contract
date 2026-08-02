@@ -204,3 +204,18 @@ pub fn mark_source_active(env: &Env, source: &Address) {
     let key = DataKey::InactiveSource(source.clone());
     env.storage().persistent().remove(&key);
 }
+
+/// Returns the last accepted nonce for a source, or 0 if none has been submitted yet.
+pub fn read_nonce(env: &Env, source: &Address) -> u64 {
+    let key = DataKey::SourceNonce(source.clone());
+    env.storage().persistent().get(&key).unwrap_or(0u64)
+}
+
+/// Stores the latest accepted nonce for a source and extends its TTL.
+pub fn write_nonce(env: &Env, source: &Address, nonce: u64) {
+    let key = DataKey::SourceNonce(source.clone());
+    env.storage().persistent().set(&key, &nonce);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+}

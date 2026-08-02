@@ -11,14 +11,14 @@ use crate::events::{
 use crate::pause::check_not_paused;
 use crate::storage::{
     check_registered_asset, check_source, compute_mean, compute_median, compute_trimmed_mean,
-    read_oracle_sources, LEDGER_BUMP, LEDGER_THRESHOLD,
+    read_nonce, read_oracle_sources, write_nonce, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
 use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
     PriceHistoryEntry,
 };
 
-pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64, nonce: u64) {
     check_not_paused(env);
     source.require_auth();
     check_source(env, &source);
@@ -27,6 +27,13 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
     if crate::sources::is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::NotAuthorized);
     }
+
+    // Validate nonce: must be strictly greater than the last accepted nonce
+    let last_nonce = read_nonce(env, &source);
+    if nonce <= last_nonce {
+        panic_with_error!(env, ErrorCode::InvalidNonce);
+    }
+    write_nonce(env, &source, nonce);
 
     if price <= 0 {
         crate::sources::record_invalid_submission(env, source.clone());
@@ -407,9 +414,9 @@ pub fn get_price_change(env: &Env, asset: Address, ledgers_back: u32) -> Option<
     let hist_key = DataKey::PriceHistory(asset.clone(), target_ledger);
     let historical_entry: Option<PriceHistoryEntry> = env.storage().temporary().get(&hist_key);
 
-    let old_price = match historical_entry {
-        Some(entry) => entry.price,
-        None => return None,
+    let old_price = {
+        let entry = historical_entry?;
+        entry.price
     };
 
     if old_price == 0 {

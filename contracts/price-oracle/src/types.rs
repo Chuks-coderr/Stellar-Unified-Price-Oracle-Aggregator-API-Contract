@@ -34,6 +34,7 @@ pub enum DataKey {
     PendingOpCount,
     PendingOp(u32),
     TimelockDuration,
+    SourceNonce(Address),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

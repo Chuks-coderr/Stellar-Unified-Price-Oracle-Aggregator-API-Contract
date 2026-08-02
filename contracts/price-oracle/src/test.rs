@@ -427,19 +427,19 @@ fn test_historical_prices_multiple() {
     let asset = register_test_asset(&e, &client);
 
     ledger_default(&e, 100, 1234567890);
-    submit_test_price(&client, &source1, &asset, 100i128, 1234567890);
-    submit_test_price(&client, &source2, &asset, 200i128, 1234567890);
-    submit_test_price(&client, &source3, &asset, 300i128, 1234567890);
+    submit_test_price_n(&client, &source1, &asset, 100i128, 1234567890, 1);
+    submit_test_price_n(&client, &source2, &asset, 200i128, 1234567890, 1);
+    submit_test_price_n(&client, &source3, &asset, 300i128, 1234567890, 1);
 
     ledger_default(&e, 101, 1234567891);
-    submit_test_price(&client, &source1, &asset, 110i128, 1234567891);
-    submit_test_price(&client, &source2, &asset, 210i128, 1234567891);
-    submit_test_price(&client, &source3, &asset, 310i128, 1234567891);
+    submit_test_price_n(&client, &source1, &asset, 110i128, 1234567891, 2);
+    submit_test_price_n(&client, &source2, &asset, 210i128, 1234567891, 2);
+    submit_test_price_n(&client, &source3, &asset, 310i128, 1234567891, 2);
 
     ledger_default(&e, 102, 1234567892);
-    submit_test_price(&client, &source1, &asset, 120i128, 1234567892);
-    submit_test_price(&client, &source2, &asset, 220i128, 1234567892);
-    submit_test_price(&client, &source3, &asset, 320i128, 1234567892);
+    submit_test_price_n(&client, &source1, &asset, 120i128, 1234567892, 3);
+    submit_test_price_n(&client, &source2, &asset, 220i128, 1234567892, 3);
+    submit_test_price_n(&client, &source3, &asset, 320i128, 1234567892, 3);
 
     let history_range = client.get_historical_prices(&asset, &100u32, &102u32);
     assert_eq!(history_range.len(), 3);
@@ -565,14 +565,14 @@ fn test_multiple_assets() {
     let eth = register_test_asset(&e, &client);
     let btc = register_test_asset(&e, &client);
 
-    submit_test_price(&client, &source1, &xlm, 100i128, 1234567890);
-    submit_test_price(&client, &source2, &xlm, 102i128, 1234567890);
+    submit_test_price_n(&client, &source1, &xlm, 100i128, 1234567890, 1);
+    submit_test_price_n(&client, &source2, &xlm, 102i128, 1234567890, 1);
 
-    submit_test_price(&client, &source1, &eth, 180000i128, 1234567890);
-    submit_test_price(&client, &source2, &eth, 181000i128, 1234567890);
+    submit_test_price_n(&client, &source1, &eth, 180000i128, 1234567890, 2);
+    submit_test_price_n(&client, &source2, &eth, 181000i128, 1234567890, 2);
 
-    submit_test_price(&client, &source1, &btc, 30000000i128, 1234567890);
-    submit_test_price(&client, &source2, &btc, 31000000i128, 1234567890);
+    submit_test_price_n(&client, &source1, &btc, 30000000i128, 1234567890, 3);
+    submit_test_price_n(&client, &source2, &btc, 31000000i128, 1234567890, 3);
 
     let xlm_price = client.get_price(&xlm, &0u64).unwrap();
     assert_eq!(xlm_price.price, 101i128);
@@ -601,7 +601,7 @@ fn test_submit_price_updates_timestamp() {
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.timestamp, 2000u64);
 
-    submit_test_price(&client, &source2, &asset, 120i128, 3000);
+    submit_test_price_n(&client, &source2, &asset, 120i128, 3000, 2);
 
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.timestamp, 3000u64);
@@ -865,7 +865,7 @@ fn test_submit_price_current_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp equal to ledger time — accepted
-    client.submit_price(&source, &asset, &100i128, &1000u64);
+    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
 }
 
 #[test]
@@ -875,7 +875,7 @@ fn test_submit_price_past_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp in the past — accepted
-    client.submit_price(&source, &asset, &100i128, &500u64);
+    client.submit_price(&source, &asset, &100i128, &500u64, &1u64);
 }
 
 #[test]
@@ -885,7 +885,7 @@ fn test_submit_price_slightly_future_timestamp_accepted() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp within threshold (default 300s) — accepted
-    client.submit_price(&source, &asset, &100i128, &1299u64);
+    client.submit_price(&source, &asset, &100i128, &1299u64, &1u64);
 }
 
 #[test]
@@ -896,7 +896,7 @@ fn test_submit_price_far_future_timestamp_rejected() {
     let (client, _admin, source, asset) = setup_basic(&e);
 
     // Timestamp more than 5 minutes (300s) in the future — rejected
-    client.submit_price(&source, &asset, &100i128, &1301u64);
+    client.submit_price(&source, &asset, &100i128, &1301u64, &1u64);
 }
 
 #[test]
@@ -922,7 +922,7 @@ fn test_timestamp_threshold_configurable() {
     client.set_timestamp_threshold(&600u64);
 
     // Now 1599 should be accepted (within 600s)
-    client.submit_price(&source, &asset, &100i128, &1599u64);
+    client.submit_price(&source, &asset, &100i128, &1599u64, &1u64);
 }
 
 #[test]
@@ -935,7 +935,7 @@ fn test_timestamp_threshold_custom_rejects_beyond() {
     client.set_timestamp_threshold(&60u64);
 
     // 1061 is 61s in future — beyond custom threshold of 60s
-    client.submit_price(&source, &asset, &100i128, &1061u64);
+    client.submit_price(&source, &asset, &100i128, &1061u64, &1u64);
 }
 
 // ---- Asset Lifecycle Tests ----
@@ -951,7 +951,7 @@ fn test_asset_lifecycle_register_submit_unregister_reregister() {
     let asset = register_test_asset(&e, &client);
 
     // Submit a price
-    submit_test_price(&client, &source, &asset, 500i128, 1000);
+    submit_test_price_n(&client, &source, &asset, 500i128, 1000, 1);
     let price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(price.price, 500i128);
 
@@ -979,7 +979,7 @@ fn test_asset_lifecycle_register_submit_unregister_reregister() {
     assert!(client.get_price(&asset, &0u64).is_none());
 
     // Submit new price after re-registration
-    submit_test_price(&client, &source, &asset, 600i128, 1000);
+    submit_test_price_n(&client, &source, &asset, 600i128, 1000, 2);
     let new_price = client.get_price(&asset, &0u64).unwrap();
     assert_eq!(new_price.price, 600i128);
 }
@@ -1006,7 +1006,7 @@ fn test_asset_reregister_after_unregister() {
 
     let asset_addr = Address::generate(&e);
     client.register_asset(&asset_addr);
-    submit_test_price(&client, &source, &asset_addr, 100i128, 1000);
+    submit_test_price_n(&client, &source, &asset_addr, 100i128, 1000, 1);
 
     client.unregister_asset(&asset_addr);
 
@@ -1015,7 +1015,7 @@ fn test_asset_reregister_after_unregister() {
     assert!(client.is_asset_registered(&asset_addr));
 
     // Submit fresh price
-    submit_test_price(&client, &source, &asset_addr, 200i128, 1000);
+    submit_test_price_n(&client, &source, &asset_addr, 200i128, 1000, 2);
     let p = client.get_price(&asset_addr, &0u64).unwrap();
     assert_eq!(p.price, 200i128);
 }
@@ -1037,7 +1037,7 @@ fn test_removed_source_cannot_submit_prices() {
 
     // Removed source cannot submit
     assert!(client
-        .try_submit_price(&source, &asset, &200i128, &1000u64)
+        .try_submit_price(&source, &asset, &200i128, &1000u64, &2u64)
         .is_err());
 }
 
@@ -1102,4 +1102,163 @@ fn test_removed_source_is_no_longer_source() {
     assert!(client.is_source(&source));
     client.remove_source(&source);
     assert!(!client.is_source(&source));
+}
+
+// ---- Nonce Tests ----
+
+#[test]
+fn test_nonce_first_submission_any_positive_nonce_accepted() {
+    // A fresh source can use any nonce > 0 for its first submission.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    // nonce=42 is fine as the very first submission (last_nonce starts at 0)
+    client.submit_price(&source, &asset, &100i128, &1000u64, &42u64);
+}
+
+#[test]
+fn test_nonce_increments_accepted() {
+    // Sequential increasing nonces from the same source are all accepted.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
+    client.submit_price(&source, &asset, &101i128, &1000u64, &2u64);
+    client.submit_price(&source, &asset, &102i128, &1000u64, &3u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_nonce_replay_same_nonce_rejected() {
+    // Replaying the exact same nonce must be rejected.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &5u64);
+    // Replay with same nonce — must panic with InvalidNonce (#16)
+    client.submit_price(&source, &asset, &200i128, &1000u64, &5u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_nonce_lower_nonce_rejected() {
+    // A nonce lower than the last accepted nonce is rejected.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &10u64);
+    // nonce=9 < last_nonce=10 → InvalidNonce
+    client.submit_price(&source, &asset, &200i128, &1000u64, &9u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_nonce_zero_rejected_on_second_submission() {
+    // After first submission with nonce=1, nonce=0 must be rejected.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
+    client.submit_price(&source, &asset, &200i128, &1000u64, &0u64);
+}
+
+#[test]
+fn test_nonce_independent_per_source() {
+    // Each source tracks its own nonce independently.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    let source1 = register_test_source(&e, &client, "Source1");
+    let source2 = register_test_source(&e, &client, "Source2");
+    client.set_min_sources_required(&1u32);
+    let asset = register_test_asset(&e, &client);
+
+    // source1 uses nonce 1, 2, 3
+    client.submit_price(&source1, &asset, &100i128, &1000u64, &1u64);
+    client.submit_price(&source1, &asset, &110i128, &1000u64, &2u64);
+    client.submit_price(&source1, &asset, &120i128, &1000u64, &3u64);
+
+    // source2 independently starts from nonce 1
+    client.submit_price(&source2, &asset, &200i128, &1000u64, &1u64);
+    client.submit_price(&source2, &asset, &210i128, &1000u64, &2u64);
+}
+
+#[test]
+fn test_nonce_non_contiguous_gaps_accepted() {
+    // Nonces don't need to be contiguous — gaps are allowed as long as they increase.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
+    // Skip nonces 2-99, jump to 100
+    client.submit_price(&source, &asset, &200i128, &1000u64, &100u64);
+    // Jump to 9999
+    client.submit_price(&source, &asset, &300i128, &1000u64, &9999u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_nonce_replay_after_gap_rejected() {
+    // After submitting with nonce=100, replaying nonce=50 is still rejected.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &100u64);
+    // nonce=50 < last_nonce=100 → InvalidNonce
+    client.submit_price(&source, &asset, &200i128, &1000u64, &50u64);
+}
+
+#[test]
+fn test_nonce_price_value_correct_after_update() {
+    // Verify the price stored is from the latest (highest nonce) submission.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _admin, source, asset) = setup_basic(&e);
+
+    client.submit_price(&source, &asset, &100i128, &1000u64, &1u64);
+    client.submit_price(&source, &asset, &999i128, &1000u64, &2u64);
+
+    let entry = client.get_source_price(&asset, &source);
+    assert_eq!(entry.price, 999i128);
+}
+
+#[test]
+fn test_nonce_different_assets_same_source_share_nonce() {
+    // Nonce is global per-source, not per (source, asset) pair.
+    // Submitting to asset A with nonce=1 means submitting to asset B also needs nonce > 1.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Source");
+    client.set_min_sources_required(&1u32);
+    let asset_a = register_test_asset(&e, &client);
+    let asset_b = register_test_asset(&e, &client);
+
+    client.submit_price(&source, &asset_a, &100i128, &1000u64, &1u64);
+    // Must use nonce > 1 even for a different asset
+    client.submit_price(&source, &asset_b, &200i128, &1000u64, &2u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn test_nonce_cross_asset_replay_rejected() {
+    // Reusing nonce=1 for a second asset after already using it for another asset is rejected.
+    let e = Env::default();
+    ledger_default(&e, 100, 1000);
+    let (client, _) = setup_contract(&e);
+    let source = register_test_source(&e, &client, "Source");
+    client.set_min_sources_required(&1u32);
+    let asset_a = register_test_asset(&e, &client);
+    let asset_b = register_test_asset(&e, &client);
+
+    client.submit_price(&source, &asset_a, &100i128, &1000u64, &1u64);
+    // Replay nonce=1 for a different asset — must fail
+    client.submit_price(&source, &asset_b, &200i128, &1000u64, &1u64);
 }
