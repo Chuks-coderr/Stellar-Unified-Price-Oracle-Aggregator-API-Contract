@@ -63,6 +63,26 @@ mod freeze;
 mod notifications;
 mod config_history;
 
+// =============================================================================
+// #283 — Stellar DID Integration
+// =============================================================================
+mod did;
+
+// =============================================================================
+// #282 — Bridge Oracle for Non-Stellar Assets
+// =============================================================================
+mod bridge_oracle;
+
+// =============================================================================
+// #285 — Ecosystem Metadata Registration
+// =============================================================================
+mod ecosystem_metadata;
+
+// =============================================================================
+// #284 — Event Streaming to External Databases
+// =============================================================================
+mod event_streaming;
+
 #[cfg(test)]
 mod circuit_breaker_tests;
 
@@ -115,6 +135,16 @@ pub use types::{
     OperationPriority,
     // Batch dry-run simulation
     SimulationWarning, OperationSimulationResult, BatchSimulationResult,
+    // State introspection
+    StateDump, StateAnalysis, StateDiff, StateDiffEntry,
+    // DEX / AMM integration
+    DexPrice, AmmWeightConfig, SoroswapPool,
+    // #283 Stellar DID Integration
+    SourceDidLink, DidVerification,
+    // #282 Bridge Oracle
+    BridgeOracleConfig, BridgedPrice,
+    // #285 Ecosystem Metadata
+    EcosystemMetadata, FeedMetadata,
 };
 
 
@@ -4082,6 +4112,115 @@ impl PriceOracleContract {
     pub fn recovery_get_pending(env: Env) -> Option<GuardianRecovery> {
         recovery::get_pending_recovery(&env)
     }
+
+    // =========================================================================
+    // #283 — Stellar DID Integration
+    // =========================================================================
+
+    /// Registers a DID document under `did_address`. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — document exceeds length limit.
+    pub fn did_register(env: Env, did_address: Address, document: String) {
+        did::register_did(&env, did_address, document);
+    }
+
+    /// Links an oracle source to a DID address. Admin-only.
+    pub fn did_link_source(env: Env, source: Address, did: Address, verified: bool) {
+        did::link_source_did(&env, source, did, verified);
+    }
+
+    /// Verifies a DID document exists on-chain.
+    pub fn did_verify(env: Env, did_address: Address) -> bool {
+        did::verify_did(&env, did_address)
+    }
+
+    /// Returns the DID document for a given DID address, or `None`.
+    pub fn did_get_document(env: Env, did_address: Address) -> Option<String> {
+        did::get_did_document(&env, did_address)
+    }
+
+    /// Returns the DID link for a source, or `None`.
+    pub fn did_get_source_link(env: Env, source: Address) -> Option<SourceDidLink> {
+        did::get_source_did(&env, source)
+    }
+
+    /// Returns all source-DID links.
+    pub fn did_get_all_source_links(env: Env) -> Vec<SourceDidLink> {
+        did::get_all_source_dids(&env)
+    }
+
+    // =========================================================================
+    // #282 — Bridge Oracle for Non-Stellar Assets
+    // =========================================================================
+
+    /// Registers a bridge oracle contract for a non-Stellar asset pair. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — validation fails.
+    pub fn bridge_register_oracle(env: Env, config: BridgeOracleConfig) {
+        bridge_oracle::register_bridge_oracle(&env, config);
+    }
+
+    /// Returns the bridge oracle configuration for an asset pair, or `None`.
+    pub fn bridge_get_oracle(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgeOracleConfig> {
+        bridge_oracle::get_bridge_oracle(&env, source_asset, target_asset)
+    }
+
+    /// Submits a bridged price observation. Must be called by the bridge oracle contract.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the bridge oracle.
+    /// * [`ErrorCode::InvalidConfiguration`] — price is non-positive.
+    pub fn bridge_submit_price(env: Env, source_asset: Address, target_asset: Address, price: i128, timestamp: u64) {
+        bridge_oracle::submit_bridged_price(&env, source_asset, target_asset, price, timestamp);
+    }
+
+    /// Returns the latest bridged price for an asset pair, or `None`.
+    pub fn bridge_get_price(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgedPrice> {
+        bridge_oracle::get_bridged_price(&env, source_asset, target_asset)
+    }
+
+    /// Normalizes a raw bridge price into the oracle decimal scale.
+    pub fn bridge_normalize_price(env: Env, raw_price: i128, target_decimals: u32, config: BridgeOracleConfig) -> i128 {
+        bridge_oracle::normalize_bridged_price(&env, raw_price, target_decimals, &config)
+    }
+
+    // =========================================================================
+    // #285 — Ecosystem Metadata Registration
+    // =========================================================================
+
+    /// Registers the oracle contract in the Stellar ecosystem metadata registry. Admin-only.
+    pub fn metadata_register(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::register_ecosystem_metadata(&env, metadata);
+    }
+
+    /// Updates the ecosystem metadata. Admin-only.
+    pub fn metadata_update(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::update_ecosystem_metadata(&env, metadata);
+    }
+
+    /// Returns the ecosystem metadata, or `None`.
+    pub fn metadata_get(env: Env) -> Option<EcosystemMetadata> {
+        ecosystem_metadata::get_ecosystem_metadata(&env)
+    }
+
+    /// Registers a price feed in the ecosystem metadata directory. Admin-only.
+    pub fn metadata_register_feed(env: Env, feed: FeedMetadata) {
+        ecosystem_metadata::register_feed_metadata(&env, feed);
+    }
+
+    /// Returns all registered feed metadata.
+    pub fn metadata_list_feeds(env: Env) -> Vec<FeedMetadata> {
+        ecosystem_metadata::list_feed_metadata(&env)
+    }
+
+    /// Returns feed metadata for a specific asset, or `None`.
+    pub fn metadata_get_feed(env: Env, asset: Address) -> Option<FeedMetadata> {
+        ecosystem_metadata::get_feed_metadata(&env, asset)
+    }
 }
 
 #[cfg(test)]
@@ -4110,3 +4249,6 @@ mod finality_tests;
 
 #[cfg(test)]
 mod correlation_feature_tests;
+
+#[cfg(test)]
+mod did_bridge_metadata_tests;

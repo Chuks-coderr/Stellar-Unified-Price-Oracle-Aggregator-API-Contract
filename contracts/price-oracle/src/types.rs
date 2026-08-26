@@ -523,6 +523,28 @@ pub enum DataKey {
     TlNormalDelay,
     /// Delay (ledgers) for LongTerm priority operations.
     TlLongTermDelay,
+
+    // -------------------------------------------------------------------------
+    // #283: Stellar DID Integration
+    // -------------------------------------------------------------------------
+    /// Stored DID document for a decentralized identity address.
+    DidDocument(Address),
+    /// Source address mapped to a DID address for identity verification.
+    SourceDid(Address),
+
+    // -------------------------------------------------------------------------
+    // #282: Bridge Oracle for Non-Stellar Assets
+    // -------------------------------------------------------------------------
+    /// Bridge oracle configuration for a (source_asset, target_asset) pair.
+    BridgeOracle(Address, Address),
+    /// Latest bridged price observation for an asset pair.
+    BridgedPrice(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #285: Ecosystem Metadata Registration
+    // -------------------------------------------------------------------------
+    /// Stellar ecosystem metadata registry entry.
+    EcosystemMetadata,
 }
 
 
@@ -2041,4 +2063,81 @@ pub struct OperationTemplate {
     pub description: String,
     pub steps: Vec<TemplateStep>,
     pub created_at_ledger: u32,
+}
+
+// =============================================================================
+// #283 — Stellar DID Integration
+// =============================================================================
+
+/// Link between an oracle source address and a Stellar DID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SourceDidLink {
+    pub source: Address,
+    pub did: Address,
+    pub verified: bool,
+    pub verified_at: u64,
+}
+
+/// DID verification metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DidVerification {
+    pub did: Address,
+    pub verified: bool,
+    pub verified_at: u64,
+    pub verifier: Address,
+}
+
+// =============================================================================
+// #282 — Bridge Oracle for Non-Stellar Assets
+// =============================================================================
+
+/// Configuration for a bridge oracle contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BridgeOracleConfig {
+    pub source_asset: Address,
+    pub target_asset: Address,
+    pub oracle_contract: Address,
+    pub decimals: u32,
+    pub enabled: bool,
+}
+
+/// A price observation read from a bridge oracle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BridgedPrice {
+    pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub decimals: u32,
+    pub source_contract: Address,
+}
+
+// =============================================================================
+// #285 — Ecosystem Metadata Registration
+// =============================================================================
+
+/// Top-level ecosystem metadata registry entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EcosystemMetadata {
+    pub contract_id: Address,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub feeds: Vec<FeedMetadata>,
+    pub registered_at: u64,
+}
+
+/// Metadata for a single price feed in the ecosystem directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FeedMetadata {
+    pub asset: Address,
+    pub symbol: String,
+    pub description: String,
+    pub decimals: u32,
+    pub updated_at: u64,
 }
