@@ -1150,10 +1150,6 @@ pub struct SourceBondReturnedEvent {
     pub amount: i128,
 }
 
-
-
-
-
 // =============================================================================
 // Missing events for feature modules
 // =============================================================================
@@ -1555,6 +1551,8 @@ pub struct AutoTriggerFiredEvent {
     #[topic]
     pub asset: Address,
     pub trigger_type: u32,
+}
+
 /// Emitted when an admin freezes an asset's price during a market emergency (#223).
 #[contractevent]
 #[derive(Clone)]
