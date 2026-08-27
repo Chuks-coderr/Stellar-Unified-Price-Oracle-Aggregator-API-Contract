@@ -68,6 +68,23 @@ pub enum DataKey {
     /// Number of ledgers that must pass between proposing and executing a timelock operation.
     TimelockDuration,
     PriceOverride(Address),
+
+    // ── Issue #288: Timestamp-based pruning ──────────────────────────────
+    /// Per-asset timestamp-based retention window in seconds.
+    /// When set, history entries older than `now - window` are pruned.
+    AssetRetentionWindow(Address),
+
+    // ── Issue #289: Subscription auto-renewal ───────────────────────────
+    /// Active subscription record for a consumer address.
+    Subscription(Address),
+    /// Pre-approved auto-renewal configuration for a subscriber.
+    RenewalApproval(Address),
+
+    // ── Issue #290: Price submission scheduling ──────────────────────────
+    /// Submission schedule registered by a source for a specific asset.
+    SubmissionSchedule(Address, Address),
+    /// Record of the last scheduled submission for liveness tracking.
+    LastScheduledSubmission(Address, Address),
 }
 
 /// A price submission from a single oracle source for a specific asset.

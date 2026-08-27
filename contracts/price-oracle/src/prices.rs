@@ -1,11 +1,11 @@
 use soroban_sdk::{panic_with_error, Address, Env, String, Vec};
 
 use crate::admin::{
-    get_aggregation_method, get_decimals, get_max_history_length, get_min_sources_required,
-    get_resolution, get_timestamp_threshold,
+    get_aggregation_method, get_decimals, get_min_sources_required, get_resolution,
+    get_timestamp_threshold,
 };
 use crate::events::{
-    HistoryPrunedEvent, PriceAggregatedEvent, PriceOverrideExpiredEvent, PriceOverrideRemovedEvent,
+    PriceAggregatedEvent, PriceOverrideExpiredEvent, PriceOverrideRemovedEvent,
     PriceOverrideSetEvent, PriceStaleEvent, PriceSubmittedEvent, SourcesInsufficientEvent,
 };
 use crate::pause::check_not_paused;
@@ -17,6 +17,10 @@ use crate::types::{
     AggregatePrice, Asset, DataKey, ErrorCode, OracleSources, PriceData, PriceEntry,
     PriceHistoryEntry, PriceOverrideEntry,
 };
+// Issue #290 — record submission against schedule (liveness check)
+use crate::scheduling;
+// Issue #288 — combined timestamp + ledger-count pruning
+use crate::pruning;
 
 pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
     check_not_paused(env);
@@ -67,6 +71,9 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         timestamp,
     }
     .publish(env);
+
+    // Issue #290: record submission for liveness / schedule enforcement
+    scheduling::record_submission(env, &source, &asset);
 
     let min_required = get_min_sources_required(env);
     let oracle_sources: OracleSources = read_oracle_sources(env);
@@ -151,21 +158,13 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
                 .unwrap_or(soroban_sdk::Vec::new(env));
             ledger_list.push_back(current_ledger);
 
-            let max_history = get_max_history_length(env);
-            while ledger_list.len() > max_history {
-                let oldest_ledger = ledger_list.get_unchecked(0);
-                ledger_list.remove(0);
-                env.storage()
-                    .temporary()
-                    .remove(&DataKey::PriceHistory(asset.clone(), oldest_ledger));
-                HistoryPrunedEvent {
-                    asset: asset.clone(),
-                    pruned_ledger: oldest_ledger,
-                    remaining: ledger_list.len(),
-                }
-                .publish(env);
-            }
+            // Issue #288: combined timestamp + ledger-count pruning
+            // First write the updated index so pruning sees the new entry
             env.storage().persistent().set(&ledgers_key, &ledger_list);
+            env.storage()
+                .persistent()
+                .extend_ttl(&ledgers_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            pruning::prune_combined(env, &asset);
         }
 
         PriceAggregatedEvent {
@@ -508,9 +507,9 @@ pub fn get_price_change(env: &Env, asset: Address, ledgers_back: u32) -> Option<
     let hist_key = DataKey::PriceHistory(asset.clone(), target_ledger);
     let historical_entry: Option<PriceHistoryEntry> = env.storage().temporary().get(&hist_key);
 
-    let old_price = match historical_entry {
-        Some(entry) => entry.price,
-        None => return None,
+    let old_price = {
+        let entry = historical_entry?;
+        entry.price
     };
 
     if old_price == 0 {

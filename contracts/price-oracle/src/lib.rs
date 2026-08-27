@@ -7,10 +7,14 @@ mod events;
 mod history;
 mod pause;
 mod prices;
+mod pruning;
+mod scheduling;
 mod sources;
 mod storage;
+mod subscription;
 mod timelock;
 mod types;
+mod verification;
 
 #[cfg(test)]
 mod override_tests;
@@ -18,6 +22,8 @@ mod override_tests;
 #[cfg(test)]
 mod prop_tests;
 
+pub use scheduling::{LastSubmissionRecord, ScheduleKind, SubmissionSchedule};
+pub use subscription::{RenewalApprovalRecord, SubscriptionRecord};
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, DataKey, ErrorCode, OracleSources, PriceData,
     PriceEntry, PriceHistoryEntry, PriceOverrideEntry,
@@ -1022,9 +1028,289 @@ impl PriceOracleContract {
     pub fn set_timelock_duration(env: Env, duration: u32) {
         timelock::set_timelock_duration(&env, duration);
     }
+
+    // ── Issue #287 — SEP-40 Price Verification Helpers ────────────────────
+
+    /// Verifies that the latest aggregate price for `asset` is no older than `max_age` seconds.
+    ///
+    /// Emits a [`PriceFreshnessVerifiedEvent`](crate::events::PriceFreshnessVerifiedEvent).
+    ///
+    /// # Returns
+    ///
+    /// `true` if the price is fresh; `false` if stale or absent.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    pub fn verify_price_freshness(env: Env, asset: Address, max_age: u64) -> bool {
+        verification::verify_price_freshness(&env, asset, max_age)
+    }
+
+    /// Verifies that the deviation between `price_a` and `price_b` does not exceed
+    /// `max_deviation_bps` basis points (100 bp = 1 %).
+    ///
+    /// Emits a [`PriceDeviationVerifiedEvent`](crate::events::PriceDeviationVerifiedEvent).
+    ///
+    /// # Returns
+    ///
+    /// `true` if within tolerance; `false` otherwise.
+    pub fn verify_price_deviation(
+        env: Env,
+        price_a: i128,
+        price_b: i128,
+        max_deviation_bps: u32,
+    ) -> bool {
+        verification::verify_price_deviation(&env, price_a, price_b, max_deviation_bps)
+    }
+
+    /// Compares this oracle's current aggregate price for `asset` against a
+    /// `reference_price` (from another oracle) and verifies the deviation is within
+    /// `max_deviation_bps` basis points.
+    ///
+    /// Emits a [`CrossOracleDeviationEvent`](crate::events::CrossOracleDeviationEvent).
+    ///
+    /// # Returns
+    ///
+    /// `true` if within tolerance; `false` if out-of-tolerance or no aggregate exists.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    pub fn verify_cross_oracle(
+        env: Env,
+        asset: Address,
+        reference_price: i128,
+        max_deviation_bps: u32,
+    ) -> bool {
+        verification::verify_cross_oracle(&env, asset, reference_price, max_deviation_bps)
+    }
+
+    /// Returns the decimal precision configured in this oracle.
+    ///
+    /// Convenience wrapper for callers that need to normalise prices before calling
+    /// the deviation helpers.
+    pub fn get_oracle_decimals(env: Env) -> u32 {
+        verification::get_oracle_decimals(&env)
+    }
+
+    // ── Issue #288 — Timestamp-Based Price Pruning ────────────────────────
+
+    /// Sets the timestamp-based retention window for `asset` in seconds.
+    ///
+    /// History entries whose `timestamp < current_time - retention_seconds` are
+    /// pruned on the next aggregation. Pass `0` to disable timestamp pruning for
+    /// this asset.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    pub fn set_asset_retention_window(env: Env, asset: Address, retention_seconds: u64) {
+        pruning::set_asset_retention_window(&env, asset, retention_seconds);
+    }
+
+    /// Returns the timestamp-based retention window for `asset` in seconds.
+    ///
+    /// Returns `0` when not configured (no timestamp pruning).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    pub fn get_asset_retention_window(env: Env, asset: Address) -> u64 {
+        pruning::get_asset_retention_window(&env, asset)
+    }
+
+    /// Manually triggers timestamp-based pruning for `asset`.
+    ///
+    /// Returns the number of history entries pruned.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    pub fn prune_history_by_timestamp(env: Env, asset: Address) -> u32 {
+        pruning::prune_by_timestamp(&env, asset)
+    }
+
+    /// Removes the timestamp-based retention window configuration for `asset`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::AssetNotRegistered`] — if `asset` is not registered.
+    /// * [`ErrorCode::NoData`] — if no retention window is configured.
+    pub fn remove_asset_retention_window(env: Env, asset: Address) {
+        pruning::remove_asset_retention_window(&env, asset);
+    }
+
+    // ── Issue #289 — Subscription Auto-Renewal ───────────────────────────
+
+    /// Creates or extends a subscription for `subscriber`.
+    ///
+    /// The subscriber must authorize this call.
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - Address creating or renewing the subscription.
+    /// * `period_seconds` - Duration of one subscription period in seconds (≥ 1).
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::InvalidConfiguration`] — if `period_seconds` is `0`.
+    pub fn subscribe(env: Env, subscriber: Address, period_seconds: u64) {
+        subscription::subscribe(&env, subscriber, period_seconds);
+    }
+
+    /// Pre-approves automatic renewal for `subscriber`.
+    ///
+    /// The subscriber must authorize this call and must already hold an active subscription.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_renewals` - Maximum auto-renewals allowed (`0` = unlimited).
+    /// * `renewal_threshold_seconds` - Seconds before expiry that trigger a renewal.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NoData`] — if no subscription exists for `subscriber`.
+    pub fn approve_renewal(
+        env: Env,
+        subscriber: Address,
+        max_renewals: u32,
+        renewal_threshold_seconds: u64,
+    ) {
+        subscription::approve_renewal(&env, subscriber, max_renewals, renewal_threshold_seconds);
+    }
+
+    /// Revokes the auto-renewal approval for `subscriber`.
+    ///
+    /// The subscriber must authorize this call.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NoData`] — if no approval exists.
+    pub fn revoke_renewal(env: Env, subscriber: Address) {
+        subscription::revoke_renewal(&env, subscriber);
+    }
+
+    /// Returns the subscription record for `subscriber`, or `None`.
+    pub fn get_subscription(env: Env, subscriber: Address) -> Option<SubscriptionRecord> {
+        subscription::get_subscription(&env, subscriber)
+    }
+
+    /// Returns the auto-renewal approval for `subscriber`, or `None`.
+    pub fn get_renewal_approval(env: Env, subscriber: Address) -> Option<RenewalApprovalRecord> {
+        subscription::get_renewal_approval(&env, subscriber)
+    }
+
+    /// Returns whether `subscriber` currently holds a valid (non-expired) subscription.
+    pub fn is_subscription_active(env: Env, subscriber: Address) -> bool {
+        subscription::is_subscription_active(&env, subscriber)
+    }
+
+    /// Admin function: remove an expired subscription to reclaim storage.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::NoData`] — if no subscription exists.
+    /// * [`ErrorCode::InvalidConfiguration`] — if the subscription has not yet expired.
+    pub fn admin_remove_subscription(env: Env, subscriber: Address) {
+        subscription::admin_remove_subscription(&env, subscriber);
+    }
+
+    /// Checks whether the subscription for `subscriber` is due for auto-renewal and,
+    /// if so, performs the renewal using the pre-approved configuration.
+    ///
+    /// Returns `true` if the subscription is valid after this call; `false` if expired
+    /// and could not be renewed.
+    pub fn check_and_renew(env: Env, subscriber: Address) -> bool {
+        subscription::check_and_renew(&env, &subscriber)
+    }
+
+    // ── Issue #290 — Price Submission Scheduling ──────────────────────────
+
+    /// Registers a submission schedule for a (source, asset) pair.
+    ///
+    /// The source must authorize this call.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - Oracle source address (must be registered).
+    /// * `asset` - Asset address (must be registered).
+    /// * `kind` - Schedule kind: `0` = every-N-ledgers, `1` = every-N-seconds.
+    /// * `interval` - Target submission interval (≥ 1).
+    /// * `deadline_multiplier` - Allowed lateness factor (≥ 1); e.g. `2` means the
+    ///   source may be up to `2 × interval` late before a violation is emitted.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the source is not registered.
+    /// * [`ErrorCode::AssetNotRegistered`] — if the asset is not registered.
+    /// * [`ErrorCode::InvalidConfiguration`] — if `interval` or `deadline_multiplier` is `0`,
+    ///   or if `kind` is not `0` or `1`.
+    pub fn register_schedule(
+        env: Env,
+        source: Address,
+        asset: Address,
+        kind: u32,
+        interval: u64,
+        deadline_multiplier: u32,
+    ) {
+        scheduling::register_schedule(&env, source, asset, kind, interval, deadline_multiplier);
+    }
+
+    /// Removes the submission schedule for a (source, asset) pair.
+    ///
+    /// The source must authorize this call.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NoData`] — if no schedule exists.
+    pub fn remove_schedule(env: Env, source: Address, asset: Address) {
+        scheduling::remove_schedule(&env, source, asset);
+    }
+
+    /// Admin variant: forcibly removes a (source, asset) schedule.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
+    /// * [`ErrorCode::NoData`] — if no schedule exists.
+    pub fn admin_remove_schedule(env: Env, source: Address, asset: Address) {
+        scheduling::admin_remove_schedule(&env, source, asset);
+    }
+
+    /// Returns the submission schedule for a (source, asset) pair, or `None`.
+    pub fn get_schedule(env: Env, source: Address, asset: Address) -> Option<SubmissionSchedule> {
+        scheduling::get_schedule(&env, source, asset)
+    }
+
+    /// Checks whether `source` is currently on schedule for `asset`.
+    ///
+    /// Emits a [`ScheduleViolationEvent`](crate::events::ScheduleViolationEvent) if the
+    /// source is overdue.
+    ///
+    /// # Returns
+    ///
+    /// `true` if on schedule (or no schedule registered); `false` if overdue.
+    pub fn check_source_liveness(env: Env, source: Address, asset: Address) -> bool {
+        scheduling::check_liveness(&env, source, asset)
+    }
+
+    /// Returns the last-submission record for a (source, asset) pair, or `None`.
+    pub fn get_last_submission(
+        env: Env,
+        source: Address,
+        asset: Address,
+    ) -> Option<LastSubmissionRecord> {
+        scheduling::get_last_submission(&env, source, asset)
+    }
 }
 
 #[cfg(test)]
 mod test_helpers;
 
 mod test;
+
+#[cfg(test)]
+mod issues_287_290_tests;

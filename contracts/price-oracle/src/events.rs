@@ -455,3 +455,229 @@ pub struct PriceOverrideExpiredEvent {
     pub expiry_ledger: u32,
     pub current_ledger: u32,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #287 — SEP-40 Price Verification Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when `verify_price_freshness` is called.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `asset`
+/// Data: `(is_fresh, max_age, price_age)`
+#[allow(deprecated)]
+pub fn emit_price_freshness_verified(
+    env: &soroban_sdk::Env,
+    asset: Address,
+    is_fresh: bool,
+    max_age: u64,
+    price_age: u64,
+) {
+    let sym = soroban_sdk::symbol_short!("fresh");
+    env.events()
+        .publish((sym, asset), (is_fresh, max_age, price_age));
+}
+
+/// Emitted when `verify_price_deviation` is called.
+///
+/// Topics: `deviation_check`
+/// Data: `(price_a, price_b, deviation_bps, max_deviation_bps, within_tolerance)`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceDeviationVerifiedEvent {
+    /// First price value.
+    pub price_a: i128,
+    /// Second price value.
+    pub price_b: i128,
+    /// Computed deviation in basis points.
+    pub deviation_bps: u32,
+    /// Maximum allowed deviation in basis points.
+    pub max_deviation_bps: u32,
+    /// Whether the deviation is within the allowed tolerance.
+    pub within_tolerance: bool,
+}
+
+/// Emitted when `verify_cross_oracle` is called.
+///
+/// Topics: `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct CrossOracleDeviationEvent {
+    /// Address of the asset being compared.
+    #[topic]
+    pub asset: Address,
+    /// This oracle's current aggregate price.
+    pub oracle_price: i128,
+    /// The reference price from the other oracle.
+    pub reference_price: i128,
+    /// Computed deviation in basis points.
+    pub deviation_bps: u32,
+    /// Maximum allowed deviation in basis points.
+    pub max_deviation_bps: u32,
+    /// Whether the two oracle prices are within tolerance.
+    pub within_tolerance: bool,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #288 — Timestamp-Based Price Pruning
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a history entry is pruned because its timestamp predates the
+/// asset's configured retention window.
+///
+/// Uses manual event publishing because `u64` fields in `#[contractevent]` trigger
+/// a macro limitation in soroban-sdk 26.
+///
+/// Topics: `asset`
+/// Data: `(pruned_ledger, pruned_timestamp, cutoff_timestamp)`
+#[allow(deprecated)]
+pub fn emit_history_pruned_by_timestamp(
+    env: &soroban_sdk::Env,
+    asset: Address,
+    pruned_ledger: u32,
+    pruned_timestamp: u64,
+    cutoff_timestamp: u64,
+) {
+    let sym = soroban_sdk::symbol_short!("htprune");
+    env.events().publish(
+        (sym, asset),
+        (pruned_ledger, pruned_timestamp, cutoff_timestamp),
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #289 — Subscription Auto-Renewal
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a new subscription is created or extended.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `subscriber`
+/// Data: `(expires_at, period_seconds)`
+#[allow(deprecated)]
+pub fn emit_subscribed(
+    env: &soroban_sdk::Env,
+    subscriber: Address,
+    expires_at: u64,
+    period_seconds: u64,
+) {
+    let sym = soroban_sdk::symbol_short!("subscrd");
+    env.events()
+        .publish((sym, subscriber), (expires_at, period_seconds));
+}
+
+/// Emitted when an auto-renewal approval is granted.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `subscriber`
+/// Data: `(max_renewals, renewal_threshold_seconds)`
+#[allow(deprecated)]
+pub fn emit_renewal_approved(
+    env: &soroban_sdk::Env,
+    subscriber: Address,
+    max_renewals: u32,
+    renewal_threshold_seconds: u64,
+) {
+    let sym = soroban_sdk::symbol_short!("renew_ok");
+    env.events()
+        .publish((sym, subscriber), (max_renewals, renewal_threshold_seconds));
+}
+
+/// Emitted when an auto-renewal approval is revoked.
+///
+/// Topics: `subscriber`
+#[contractevent]
+#[derive(Clone)]
+pub struct RenewalRevokedEvent {
+    /// Subscriber revoking the approval.
+    #[topic]
+    pub subscriber: Address,
+}
+
+/// Emitted when a subscription is successfully auto-renewed.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `subscriber`
+/// Data: `(new_expires_at, renewals_used)`
+#[allow(deprecated)]
+pub fn emit_subscription_renewed(
+    env: &soroban_sdk::Env,
+    subscriber: Address,
+    new_expires_at: u64,
+    renewals_used: u32,
+) {
+    let sym = soroban_sdk::symbol_short!("sub_rnw");
+    env.events()
+        .publish((sym, subscriber), (new_expires_at, renewals_used));
+}
+
+/// Emitted when an auto-renewal attempt fails.
+///
+/// Topics: `subscriber`
+#[contractevent]
+#[derive(Clone)]
+pub struct RenewalAttemptFailedEvent {
+    /// Address whose renewal failed.
+    #[topic]
+    pub subscriber: Address,
+    /// Failure reason code:
+    /// - `1` = no approval on file
+    /// - `2` = renewal budget exhausted
+    pub reason_code: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #290 — Price Submission Scheduling
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emitted when a source registers a submission schedule for an asset.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `source`, `asset`
+/// Data: `(kind, interval, deadline_multiplier)`
+#[allow(deprecated)]
+pub fn emit_schedule_registered(
+    env: &soroban_sdk::Env,
+    source: Address,
+    asset: Address,
+    kind: u64,
+    interval: u64,
+    deadline_multiplier: u32,
+) {
+    let sym = soroban_sdk::symbol_short!("sched_r");
+    env.events()
+        .publish((sym, source, asset), (kind, interval, deadline_multiplier));
+}
+
+/// Emitted when a submission schedule is removed.
+///
+/// Topics: `source`, `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct ScheduleRemovedEvent {
+    /// Address of the oracle source.
+    #[topic]
+    pub source: Address,
+    /// Address of the asset.
+    #[topic]
+    pub asset: Address,
+}
+
+/// Emitted when a source submits a price that is overdue relative to its schedule.
+///
+/// Uses manual publish due to `u64` fields in soroban-sdk 26.
+/// Topics: `source`, `asset`
+/// Data: `(expected_interval, actual_gap, kind)`
+#[allow(deprecated)]
+pub fn emit_schedule_violation(
+    env: &soroban_sdk::Env,
+    source: Address,
+    asset: Address,
+    expected_interval: u64,
+    actual_gap: u64,
+    kind: u32,
+) {
+    let sym = soroban_sdk::symbol_short!("sched_v");
+    env.events()
+        .publish((sym, source, asset), (expected_interval, actual_gap, kind));
+}
