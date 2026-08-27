@@ -523,6 +523,45 @@ pub enum DataKey {
     TlNormalDelay,
     /// Delay (ledgers) for LongTerm priority operations.
     TlLongTermDelay,
+
+    // -------------------------------------------------------------------------
+    // #304 — Consumer Contract Authorization
+    // -------------------------------------------------------------------------
+    /// Authorization record for a consumer address: `true` = explicitly authorized.
+    ConsumerAuthorized(Address),
+    /// Block record for a consumer address: `true` = explicitly blocked.
+    ConsumerBlocked(Address),
+    /// Global consumer access mode discriminant (0=Public, 1=AllowedOnly, 2=BlockedOnly).
+    ConsumerAccessMode,
+
+    // -------------------------------------------------------------------------
+    // #303 — Per-Source Deviation History
+    // -------------------------------------------------------------------------
+    /// Ring-buffer of recent deviation records for a (source, asset) pair.
+    /// Key: (source, asset) → Vec<DeviationRecord>.
+    SourceDeviationHistory(Address, Address),
+    /// Number of deviation records stored for a (source, asset) pair.
+    SourceDeviationHistoryLen(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #305 — Price Update Subscription Registry
+    // -------------------------------------------------------------------------
+    /// Presence flag for a (consumer, asset) subscription: `true` = subscribed.
+    PriceUpdateSubscription(Address, Address),
+    /// Ordered list of consumer addresses subscribed to price updates for an asset.
+    AssetSubscriberList(Address),
+
+    // -------------------------------------------------------------------------
+    // #306 — SAC Token Integration for Subscriptions
+    // -------------------------------------------------------------------------
+    /// Address of the SAC token contract used for subscription payments.
+    SubscriptionToken,
+    /// Token amount paid per subscription plan duration (mirrors SubscriptionPlans).
+    SubscriptionPlanAmount(u32),
+    /// Token amount deposited by a consumer for an active subscription (for refunds).
+    SubscriptionTokenDeposit(Address),
+    /// Timestamp when the subscription was last started/renewed (for pro-rata refunds).
+    SubscriptionStartTime(Address),
 }
 
 
@@ -2041,4 +2080,75 @@ pub struct OperationTemplate {
     pub description: String,
     pub steps: Vec<TemplateStep>,
     pub created_at_ledger: u32,
+}
+
+// =============================================================================
+// #304 — Consumer Contract Authorization
+// =============================================================================
+
+/// Global access mode controlling which consumer contracts may query prices.
+///
+/// Stored under [`DataKey::ConsumerAccessMode`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum ConsumerAccessMode {
+    /// No restriction — all callers may query prices (default).
+    Public = 0,
+    /// Only consumers explicitly added via `add_authorized_consumer` are allowed.
+    AllowedOnly = 1,
+    /// All consumers are allowed except those explicitly added via `block_consumer`.
+    BlockedOnly = 2,
+}
+
+// =============================================================================
+// #303 — Per-Source Deviation History
+// =============================================================================
+
+/// A single deviation record captured at submission time.
+///
+/// Stored as part of the ring-buffer under [`DataKey::SourceDeviationHistory`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DeviationRecord {
+    /// Deviation from the aggregate at submission time, expressed in basis points
+    /// (1 bps = 0.01 %).
+    pub deviation_bps: i128,
+    /// Ledger sequence number when the submission was made.
+    pub ledger: u32,
+}
+
+/// Statistical summary of a source's recent price deviations.
+///
+/// Returned by `get_source_deviation_report`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DeviationReport {
+    /// Arithmetic mean deviation over the requested rounds, in basis points.
+    pub avg_deviation_bps: i128,
+    /// Maximum single-round deviation over the requested rounds, in basis points.
+    pub max_deviation_bps: i128,
+    /// Number of rounds where the deviation exceeded the outlier threshold (200 bps).
+    pub outlier_count: u32,
+    /// Linear regression slope (bps/round). Positive = deviations trending up.
+    pub trend: i32,
+    /// Number of rounds actually used (may be less than requested if history is short).
+    pub num_rounds: u32,
+}
+
+// =============================================================================
+// #306 — SAC Token Integration for Subscriptions
+// =============================================================================
+
+/// Record tracking a consumer's token-backed subscription details.
+///
+/// Stored under [`DataKey::SubscriptionTokenDeposit`] keyed by consumer address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TokenSubscriptionRecord {
+    /// Amount of tokens deposited when the subscription was created.
+    pub deposited_amount: i128,
+    /// Unix timestamp when the subscription was created (for pro-rata refund).
+    pub start_timestamp: u64,
+    /// Unix timestamp when the subscription expires.
+    pub expiry_timestamp: u64,
 }

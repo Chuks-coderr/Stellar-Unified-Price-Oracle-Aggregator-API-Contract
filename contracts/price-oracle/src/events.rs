@@ -1682,3 +1682,110 @@ pub struct TemplateRemovedEvent {
     #[topic]
     pub name: Symbol,
 }
+
+// =============================================================================
+// #304 — Consumer Contract Authorization Events
+// =============================================================================
+
+/// Emitted when a consumer is explicitly authorized by the admin.
+///
+/// Topics: `consumer`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerAuthorizedEvent {
+    /// Consumer address that was authorized.
+    #[topic]
+    pub consumer: Address,
+    /// Admin who performed the action.
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when a consumer's authorization is revoked (or the consumer is blocked).
+///
+/// Topics: `consumer`, `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerDeauthorizedEvent {
+    /// Consumer address whose authorization was revoked.
+    #[topic]
+    pub consumer: Address,
+    /// Admin who performed the action.
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when the global consumer access mode is changed.
+///
+/// Topics: `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct ConsumerAccessModeChangedEvent {
+    /// Admin who changed the mode.
+    #[topic]
+    pub admin: Address,
+    /// New mode discriminant (0=Public, 1=AllowedOnly, 2=BlockedOnly).
+    pub new_mode: u32,
+}
+
+// =============================================================================
+// #305 — Price Update Subscription Events
+// =============================================================================
+
+/// Emitted when a consumer subscribes to price updates for an asset.
+///
+/// Topics: `consumer`, `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceUpdateSubscribedEvent {
+    /// Consumer that registered interest.
+    #[topic]
+    pub consumer: Address,
+    /// Asset for which the consumer registered interest.
+    #[topic]
+    pub asset: Address,
+}
+
+/// Emitted when a consumer unsubscribes from price updates for an asset.
+///
+/// Topics: `consumer`, `asset`
+#[contractevent]
+#[derive(Clone)]
+pub struct PriceUpdateUnsubscribedEvent {
+    /// Consumer that removed their interest registration.
+    #[topic]
+    pub consumer: Address,
+    /// Asset from which the consumer unsubscribed.
+    #[topic]
+    pub asset: Address,
+}
+
+// =============================================================================
+// #306 — SAC Token Integration for Subscriptions Events
+// =============================================================================
+
+/// Emitted when the admin configures the SAC token for subscription payments.
+///
+/// Topics: `admin`
+#[contractevent]
+#[derive(Clone)]
+pub struct SubscriptionTokenSetEvent {
+    /// Admin who set the token.
+    #[topic]
+    pub admin: Address,
+    /// Address of the SAC token contract (or zero-equivalent when cleared).
+    pub token: Address,
+}
+
+/// Emitted when a consumer cancels their subscription and receives a pro-rated refund.
+///
+/// Topics: `consumer`
+#[contractevent]
+#[derive(Clone)]
+pub struct SubscriptionCancelledEvent {
+    /// Consumer whose subscription was cancelled.
+    #[topic]
+    pub consumer: Address,
+    /// Pro-rated token refund amount (0 when no token is configured).
+    pub refund_amount: i128,
+}
