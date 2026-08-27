@@ -18,6 +18,7 @@ mod assets;
 pub(crate) mod core;
 mod cross_reference;
 mod deadline_rebate;
+mod dex;
 mod errors;
 mod event_indexing;
 mod events;
@@ -44,6 +45,7 @@ mod rotation;
 mod signed_submission;
 mod sources;
 mod state_channel;
+mod state_introspection;
 mod storage;
 mod gas_metering;
 mod simulate_batch;
@@ -119,6 +121,15 @@ mod emergency_pause_tests;
 #[cfg(test)]
 mod config_history_tests;
 
+#[cfg(test)]
+mod state_introspection_tests;
+
+#[cfg(test)]
+mod dex_tests;
+
+#[cfg(test)]
+mod amm_integration_tests;
+
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, ConfigSnapshot, CrossReferenceResult,
     DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
@@ -139,12 +150,6 @@ pub use types::{
     StateDump, StateAnalysis, StateDiff, StateDiffEntry,
     // DEX / AMM integration
     DexPrice, AmmWeightConfig, SoroswapPool,
-    // #283 Stellar DID Integration
-    SourceDidLink, DidVerification,
-    // #282 Bridge Oracle
-    BridgeOracleConfig, BridgedPrice,
-    // #285 Ecosystem Metadata
-    EcosystemMetadata, FeedMetadata,
 };
 
 
@@ -3909,6 +3914,83 @@ impl PriceOracleContract {
     /// Returns the current AMM max-deviation setting (basis points). Default: 500.
     pub fn amm_get_max_deviation_bps(env: Env) -> u32 {
         amm::get_amm_max_deviation_bps(&env)
+    }
+
+    /// Sets the AMM weight for an asset used during aggregation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `weight_bps > 10_000`.
+    pub fn amm_set_weight(env: Env, asset: Address, weight_bps: u32, enabled: bool) {
+        amm::set_amm_weight(&env, asset, weight_bps, enabled);
+    }
+
+    /// Returns the AMM weight configuration for an asset, or `None` if not set.
+    pub fn amm_get_weight(env: Env, asset: Address) -> Option<AmmWeightConfig> {
+        amm::get_amm_weight(&env, asset)
+    }
+
+    /// Registers a Soroswap pool for price derivation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn soroswap_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+        fee_bps: u32,
+    ) {
+        amm::register_soroswap_pool(&env, asset_a, asset_b, reserve_a, reserve_b, fee_bps);
+    }
+
+    /// Returns the Soroswap pool configuration, or `None` if not found.
+    pub fn soroswap_get_pool(env: Env, asset_a: Address, asset_b: Address) -> Option<SoroswapPool> {
+        amm::get_soroswap_pool(&env, asset_a, asset_b)
+    }
+
+    /// Enables or disables a Soroswap pool. Admin-only.
+    pub fn soroswap_set_pool_status(env: Env, asset_a: Address, asset_b: Address, enabled: bool) {
+        amm::set_soroswap_pool_status(&env, asset_a, asset_b, enabled);
+    }
+
+    /// Reads the Soroswap spot price for an asset pair.
+    ///
+    /// Returns `None` if the pool is disabled or unregistered.
+    pub fn get_soroswap_price(env: Env, asset_a: Address, asset_b: Address) -> Option<i128> {
+        amm::read_soroswap_price(&env, asset_a, asset_b)
+    }
+
+    /// Registers a Stellar DEX pool pair. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn dex_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+    ) {
+        dex::register_dex_pool(&env, asset_a, asset_b, reserve_a, reserve_b);
+    }
+
+    /// Returns the DEX price for `asset` against its paired asset, or `None`.
+    pub fn get_dex_price(env: Env, asset: Address) -> Option<DexPrice> {
+        dex::get_dex_price(&env, asset)
+    }
+
+    /// Returns a serialized state dump for off-chain inspection.
+    pub fn oracle_state_dump(env: Env) -> StateDump {
+        state_introspection::build_state_dump(&env)
+    }
+
+    /// Returns aggregated state analysis statistics.
+    pub fn oracle_state_analyze(env: Env) -> StateAnalysis {
+        state_introspection::build_state_analysis(&env)
     }
 
     // =========================================================================

@@ -42,8 +42,27 @@ Thumbs.db
 *.log
 logs/
 
-# Generated docs / summaries (do not commit generated docs)
+# Cargo artifacts (keep Cargo.lock committed)
+# /Cargo.lock
+
+# Terraform
+infrastructure/.terraform.lock.hcl
+**/.terraform.lock.hcl
+
+# IDE
+.kiro/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated docs / summaries
 CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+README.md
 TODO.md
 IMPLEMENTATION_SUMMARY.md
 FEATURE_IMPLEMENTATION.md
@@ -66,3 +85,15 @@ TRANSACTION_HISTORY_FEATURE.md
 TRANSACTION_INTEGRATION_GUIDE.md
 PR_DESCRIPTIONS.md
 ALLOWED_ORIGINS/
+
+# Generated build/output directories
+grafana/
+observability/
+frontend/
+backend/
+tests/
+
+# OpenAPI specs
+openapi-*.yaml
+cargo_out.txt
+

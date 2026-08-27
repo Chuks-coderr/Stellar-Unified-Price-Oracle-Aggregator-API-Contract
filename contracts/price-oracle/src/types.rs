@@ -362,6 +362,12 @@ pub enum DataKey {
     AmmPool(Address),
     /// AMM maximum deviation basis points for an asset.
     AmmMaxDeviationBps(Address),
+    /// AMM weight configuration for aggregation inclusion.
+    AmmWeight(Address),
+    /// Stellar DEX pool reserves for an asset pair.
+    DexPool(Address, Address),
+    /// Soroswap pool configuration for an asset pair.
+    SoroswapPool(Address, Address),
 
     /// Challenge entries keyed by ID (#235).
     Challenge(u32),
@@ -2066,78 +2072,93 @@ pub struct OperationTemplate {
 }
 
 // =============================================================================
-// #283 — Stellar DID Integration
+// #278 — Contract State Introspection
 // =============================================================================
 
-/// Link between an oracle source address and a Stellar DID.
+/// Serializable contract configuration snapshot for `oracle-state-dump`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct SourceDidLink {
-    pub source: Address,
-    pub did: Address,
-    pub verified: bool,
-    pub verified_at: u64,
-}
-
-/// DID verification metadata.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct DidVerification {
-    pub did: Address,
-    pub verified: bool,
-    pub verified_at: u64,
-    pub verifier: Address,
-}
-
-// =============================================================================
-// #282 — Bridge Oracle for Non-Stellar Assets
-// =============================================================================
-
-/// Configuration for a bridge oracle contract.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct BridgeOracleConfig {
-    pub source_asset: Address,
-    pub target_asset: Address,
-    pub oracle_contract: Address,
+pub struct StateDump {
+    pub admin: Address,
+    pub description: String,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
     pub decimals: u32,
+    pub resolution: u32,
+    pub timestamp_threshold: u64,
+    pub max_deviation_bps: u32,
+    pub heartbeat_interval: u64,
+}
+
+/// Statistics computed from live contract state for `oracle-state-analyze`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateAnalysis {
+    pub admin: Address,
+    pub decimals: u32,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
+    pub registered_assets: u32,
+    pub registered_sources: u32,
+    pub aggregate_count: u32,
+    pub history_depth_avg: u32,
+}
+
+/// Field-level diff between two contract snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateDiffEntry {
+    pub field: String,
+    pub left: String,
+    pub right: String,
+}
+
+/// Top-level diff container returned by `oracle-state-diff`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateDiff {
+    pub contract_a: String,
+    pub contract_b: String,
+    pub entries: Vec<StateDiffEntry>,
+}
+
+// =============================================================================
+// #280 — Stellar DEX Integration
+// =============================================================================
+
+/// A price observation read from a Stellar DEX liquidity pool.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DexPrice {
+    pub asset: Address,
+    pub price: i128,
+    pub reserve_x: i128,
+    pub reserve_y: i128,
+    pub timestamp: u64,
+}
+
+// =============================================================================
+// #281 — Soroswap / AMM Integration
+// =============================================================================
+
+/// AMM pool weight configuration for aggregation inclusion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AmmWeightConfig {
+    pub asset: Address,
+    pub weight_bps: u32,
     pub enabled: bool,
 }
 
-/// A price observation read from a bridge oracle.
+/// Soroswap pool metadata used to derive a price feed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct BridgedPrice {
-    pub asset: Address,
-    pub price: i128,
-    pub timestamp: u64,
-    pub decimals: u32,
-    pub source_contract: Address,
+pub struct SoroswapPool {
+    pub asset_a: Address,
+    pub asset_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub fee_bps: u32,
+    pub enabled: bool,
 }
 
-// =============================================================================
-// #285 — Ecosystem Metadata Registration
-// =============================================================================
-
-/// Top-level ecosystem metadata registry entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct EcosystemMetadata {
-    pub contract_id: Address,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub feeds: Vec<FeedMetadata>,
-    pub registered_at: u64,
-}
-
-/// Metadata for a single price feed in the ecosystem directory.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct FeedMetadata {
-    pub asset: Address,
-    pub symbol: String,
-    pub description: String,
-    pub decimals: u32,
-    pub updated_at: u64,
-}
