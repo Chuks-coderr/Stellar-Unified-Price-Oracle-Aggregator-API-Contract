@@ -232,4 +232,12 @@ pub enum ErrorCode {
     InvalidPriority = 110,
     /// The priority-specific timelock delay has not elapsed for this operation.
     PriorityTimelockNotReady = 111,
+
+    // ── 112–115: Consumer auth & subscriptions ────────────────────────────────
+    /// The consumer is not authorized to query prices in the current access mode (#304).
+    ConsumerNotAuthorized = 112,
+    /// The subscription token contract has not been configured (#306).
+    SubscriptionTokenNotConfigured = 113,
+    /// The consumer has no active token-backed subscription to cancel (#306).
+    NoActiveSubscription = 114,
 }

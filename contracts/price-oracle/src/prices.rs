@@ -838,6 +838,10 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
 
     record_successful_submission(env, source.clone());
 
+    // #303: Record this source's deviation from the current aggregate for the
+    // deviation report feature.  Must be called after storing the entry but
+    // before aggregate_asset() overwrites the stored aggregate.
+    crate::source_deviation::record_deviation(env, &source, &asset, price);
 
     PriceSubmittedEvent {
         asset: asset.clone(),
