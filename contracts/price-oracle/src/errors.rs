@@ -232,4 +232,14 @@ pub enum ErrorCode {
     InvalidPriority = 110,
     /// The priority-specific timelock delay has not elapsed for this operation.
     PriorityTimelockNotReady = 111,
+
+    // ── 112–115: Issues #295–#298 ─────────────────────────────────────────────
+    /// The submitted external proof failed format validation (#296).
+    InvalidProof = 112,
+    /// The proof type does not satisfy the asset's configured proof requirement (#296).
+    ProofTypeMismatch = 113,
+    /// The per-asset callback limit has been reached (#297).
+    TooManyCallbacks = 114,
+    /// No callback registration found for the given (consumer, asset) pair (#297).
+    CallbackNotFound = 115,
 }
