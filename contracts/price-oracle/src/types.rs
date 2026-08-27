@@ -78,6 +78,8 @@ pub enum DataKey {
     SrcHeartbeat(Address),
     /// Inactive flag for a source.
     SrcInactive(Address),
+    /// Per-source deviation tolerance in basis points. Overrides global when set.
+    SrcDeviationTolerance(Address),
 
     // --- Asset registry (prefix: Asset) ---
     /// Existence flag for a registered asset (`true` when present).
@@ -108,6 +110,16 @@ pub enum DataKey {
     AssetCircuitBreakerLog(Address, u32),
     /// Configurable maximum number of assets that can be registered.
     MaxAssets,
+
+    // -------------------------------------------------------------------------
+    // #301: Automatic asset deregistration on inactivity
+    // -------------------------------------------------------------------------
+    /// Last ledger sequence number when a price was submitted for this asset.
+    AssetLastActivity(Address),
+    /// Inactivity timeout in ledgers for a specific asset (0 = use global default).
+    AssetInactivityTimeout(Address),
+    /// Global default inactivity timeout in ledgers (0 = disabled).
+    CfgInactivityTimeout,
 
     /// Boolean flag indicating whether the contract is paused.
     PauseFlag,
@@ -337,7 +349,6 @@ pub enum DataKey {
     // -------------------------------------------------------------------------
     // Additional keys for feature modules
     // -------------------------------------------------------------------------
-
     /// Per-asset minimum submission interval override.
     AssetMinSubmissionInterval(Address),
 
@@ -552,7 +563,6 @@ pub enum DataKey {
     /// Stellar ecosystem metadata registry entry.
     EcosystemMetadata,
 }
-
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -946,7 +956,6 @@ pub struct AssetMetadataUpdate {
     pub decimals: Option<u32>,
     pub logo_uri: String,
 }
-
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1424,9 +1433,6 @@ pub struct DecentralizationReport {
     pub jurisdiction_hhi: u32,
     pub overall_score: u32,
 }
-
-
-
 
 // =============================================================================
 // Missing types required by feature modules

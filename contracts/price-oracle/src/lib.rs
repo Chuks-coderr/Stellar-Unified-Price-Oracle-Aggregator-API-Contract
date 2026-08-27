@@ -10,10 +10,13 @@ mod admin;
 mod admin_op_limits;
 mod alerts;
 mod amm;
+mod asset_inactivity;
 mod assets;
 // The core module is always compiled (it has no Env deps).
 // When the `fuzz` feature is enabled it is also re-exported so that the
 // fuzz crate can call `price_oracle::core::*` directly.
+mod audit_log;
+mod config_history;
 #[cfg_attr(feature = "fuzz", allow(dead_code))]
 pub(crate) mod core;
 mod cross_reference;
@@ -22,33 +25,37 @@ mod dex;
 mod errors;
 mod event_indexing;
 mod events;
-mod export_history;
 mod exotic_pricing;
+mod export_history;
 mod fee_market;
 mod finality;
+mod freeze;
+mod gas_metering;
 mod health;
 mod history;
 mod migration;
 mod multisig;
+mod notifications;
 mod optimistic;
 mod pause;
 mod per_asset_decimals;
 mod prices;
 mod rate_limiting;
-mod reentrancy;
+mod rbac;
 mod recovery;
+mod reentrancy;
 mod relayer;
 mod relayer_bonds;
 mod relayer_dashboard;
 mod reputation;
 mod rotation;
 mod signed_submission;
+mod simulate_batch;
+mod source_deviation;
 mod sources;
 mod state_channel;
 mod state_introspection;
 mod storage;
-mod gas_metering;
-mod simulate_batch;
 mod submission_deadline;
 mod subscription;
 mod timelock;
@@ -135,19 +142,40 @@ mod dex_tests;
 mod amm_integration_tests;
 
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, ConfigSnapshot, CrossReferenceResult,
-    DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
-    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
-    DisqualificationStatus, SourceDemeritState, DemeritConfig,
-    SourceGovernance, SourceProposal,
-    SourceGeoMetadata, DecentralizationReport,
-    GasRecord, StorageTtlEntry,
-    FrozenPrice, NotificationPreference,
+    AggregatePrice,
+    AggregationMethod,
+    Asset,
+    BatchOperation,
+    BatchSimulationResult,
+    ConfigSnapshot,
+    CrossReferenceResult,
+    DataKey,
+    DecentralizationReport,
+    DemeritConfig,
+    DisqualificationStatus,
+    ErrorCode,
     // History export
-    ExportedEntry, ExportedHistorySnapshot,
+    ExportedEntry,
+    ExportedHistorySnapshot,
+    FinalityStatus,
+    FinalizedPrice,
+    FrozenPrice,
+    GasRecord,
+    HealthReport,
+    MigrationState,
+    NotificationPreference,
     // Timelock priority
     OperationPriority,
+    OperationSimulationResult,
+    OracleSources,
+    PendingBatch,
+    PendingFinalityEntry,
+    PriceCommit,
+    PriceData,
+    PriceEntry,
+    PriceHistoryEntry,
+    PriceOverrideEntry,
+    RelayerInfo,
     // Batch dry-run simulation
     SimulationWarning, OperationSimulationResult, BatchSimulationResult,
     // State introspection
@@ -156,11 +184,8 @@ pub use types::{
     DexPrice, AmmWeightConfig, SoroswapPool,
 };
 
-
-
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol,
-    Vec,
+    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 use crate::storage::{enter_reentrancy_guard, exit_reentrancy_guard, read_registered_assets};
@@ -316,7 +341,14 @@ impl PriceOracleContract {
         max_ratio: u128,
         enabled: bool,
     ) {
-        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+        correlation::set_correlation_pair(
+            &env,
+            base_asset,
+            quote_asset,
+            min_ratio,
+            max_ratio,
+            enabled,
+        );
     }
 
     pub fn is_correlation_flagged(env: Env, source: Address, asset: Address) -> bool {
@@ -335,7 +367,11 @@ impl PriceOracleContract {
         challenger::resolve_challenge(&env, challenge_id, is_valid);
     }
 
-    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<crate::types::Challenge> {
+    pub fn get_challenge_history(
+        env: Env,
+        asset: Address,
+        limit: u32,
+    ) -> Vec<crate::types::Challenge> {
         challenger::get_challenge_history(&env, asset, limit)
     }
 
@@ -347,7 +383,11 @@ impl PriceOracleContract {
         audit_log::get_audit_log_count(&env)
     }
 
-    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<crate::types::AuditEntry> {
+    pub fn get_admin_audit_log(
+        env: Env,
+        from_id: u32,
+        limit: u32,
+    ) -> Vec<crate::types::AuditEntry> {
         audit_log::get_admin_audit_log(&env, from_id, limit)
     }
 
@@ -1060,13 +1100,7 @@ impl PriceOracleContract {
         verifier: Address,
     ) {
         reentrancy::enter(&env);
-        sources::set_source_verification(
-            &env,
-            source,
-            verified,
-            verification_method,
-            verifier,
-        );
+        sources::set_source_verification(&env, source, verified, verification_method, verifier);
         reentrancy::exit(&env);
     }
 
@@ -1292,9 +1326,16 @@ impl PriceOracleContract {
         crate::reputation::get_stake_token_contract(&env)
     }
 
+    /// Sets per-source deviation tolerance in basis points (admin only).
+    /// Set to 0 to clear and fall back to global tolerance.
+    pub fn set_source_deviation_tolerance(env: Env, source: Address, tolerance_bps: u32) {
+        source_deviation::set_source_deviation_tolerance(&env, source, tolerance_bps);
+    }
 
-
-
+    /// Returns per-source deviation tolerance in bps, or None if global is used.
+    pub fn get_source_deviation_tolerance(env: Env, source: Address) -> Option<u32> {
+        source_deviation::get_source_deviation_tolerance(&env, &source)
+    }
 
     // --- Assets ---
 
@@ -1372,6 +1413,36 @@ impl PriceOracleContract {
         let result = assets::is_asset_registered(&env, asset);
         exit_reentrancy_guard(&env);
         result
+    }
+
+    // --- Asset Inactivity (#301) ---
+
+    /// Sets the global default inactivity timeout in ledgers (admin only, 0 = disabled).
+    pub fn set_inactivity_timeout(env: Env, timeout_ledgers: u32) {
+        asset_inactivity::set_inactivity_timeout(&env, timeout_ledgers);
+    }
+
+    pub fn get_inactivity_timeout(env: Env) -> u32 {
+        asset_inactivity::get_inactivity_timeout(&env)
+    }
+
+    /// Sets per-asset inactivity timeout override (admin only, 0 = use global).
+    pub fn set_asset_inactivity_timeout(env: Env, asset: Address, timeout_ledgers: u32) {
+        asset_inactivity::set_asset_inactivity_timeout(&env, asset, timeout_ledgers);
+    }
+
+    pub fn get_asset_inactivity_timeout(env: Env, asset: Address) -> u32 {
+        asset_inactivity::get_asset_inactivity_timeout(&env, &asset)
+    }
+
+    /// Returns true if the asset is considered inactive (past its timeout).
+    pub fn is_asset_inactive(env: Env, asset: Address) -> bool {
+        asset_inactivity::is_asset_inactive(&env, &asset)
+    }
+
+    /// Admin: check an asset and deregister it if it exceeds inactivity threshold.
+    pub fn check_and_deregister_if_inactive(env: Env, asset: Address) {
+        asset_inactivity::check_and_deregister_if_inactive(&env, asset);
     }
 
     pub fn set_price_bounds(
@@ -1508,7 +1579,12 @@ impl PriceOracleContract {
         let after_mem = env.budget().memory_bytes_count();
         let cpu_delta = after_cpu.saturating_sub(before_cpu);
         let mem_delta = after_mem.saturating_sub(before_mem);
-        crate::gas_metering::write_last_gas(&env, String::from_str(&env, "submit_price"), cpu_delta, mem_delta);
+        crate::gas_metering::write_last_gas(
+            &env,
+            String::from_str(&env, "submit_price"),
+            cpu_delta,
+            mem_delta,
+        );
         reentrancy::exit(&env);
     }
 
@@ -1988,20 +2064,12 @@ impl PriceOracleContract {
     ///
     /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
     /// * [`ErrorCode::NotificationConfigInvalid`] — if `channel` or `target` exceeds 256 chars.
-    pub fn set_notification_preference(
-        env: Env,
-        event_type: u32,
-        channel: String,
-        target: String,
-    ) {
+    pub fn set_notification_preference(env: Env, event_type: u32, channel: String, target: String) {
         notifications::set_notification_preference(&env, event_type, channel, target);
     }
 
     /// Returns all notification preferences registered for a given event type.
-    pub fn list_notification_preferences(
-        env: Env,
-        event_type: u32,
-    ) -> Vec<NotificationPreference> {
+    pub fn list_notification_preferences(env: Env, event_type: u32) -> Vec<NotificationPreference> {
         notifications::list_notification_preferences(&env, event_type)
     }
 
@@ -2458,8 +2526,7 @@ impl PriceOracleContract {
             2 => types::OperationPriority::LongTerm,
             _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
         };
-        let result =
-            timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
+        let result = timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
         reentrancy::exit(&env);
         result
     }
@@ -3055,7 +3122,13 @@ impl PriceOracleContract {
         timestamp: u64,
     ) {
         cross_chain_verify::submit_cross_chain_price(
-            &env, asset, oracle_chain, price, decimals, chain_id, timestamp,
+            &env,
+            asset,
+            oracle_chain,
+            price,
+            decimals,
+            chain_id,
+            timestamp,
         );
     }
 
@@ -3885,7 +3958,9 @@ impl PriceOracleContract {
         min_return: i128,
     ) -> i128 {
         reentrancy::enter(&env);
-        let result = amm::swap(&env, caller, asset, from_asset, to_asset, amount_in, min_return);
+        let result = amm::swap(
+            &env, caller, asset, from_asset, to_asset, amount_in, min_return,
+        );
         reentrancy::exit(&env);
         result
     }

@@ -17,8 +17,8 @@ use crate::events::{
 };
 use crate::pause::check_not_paused;
 use crate::storage::{
-    check_registered_asset, check_source, check_source_asset, compute_confidence_bps,
-    compute_mean, compute_median, compute_trimmed_mean, compute_vwap, get_admin, is_subscribed,
+    check_registered_asset, check_source, check_source_asset, compute_confidence_bps, compute_mean,
+    compute_median, compute_trimmed_mean, compute_vwap, get_admin, is_subscribed,
     read_oracle_sources, sort_prices, LEDGER_BUMP, LEDGER_THRESHOLD,
 };
 use crate::types::{
@@ -358,7 +358,6 @@ pub fn submit_prices(env: &Env, source: Address, asset_prices: Vec<(Address, i12
 
         record_successful_submission(env, source.clone());
 
-
         // #70: track last submission ledger for compliance
         env.storage().persistent().set(
             &DataKey::LastSubmissionLedger(source.clone(), asset.clone()),
@@ -393,7 +392,9 @@ fn count_contributing_sources(env: &Env, asset: &Address, current_ledger: u32) -
     let min_interval = {
         let key = DataKey::AssetMinSubmissionInterval(asset.clone());
         if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
             env.storage().persistent().get(&key).unwrap_or(0)
         } else {
             get_min_submission_interval(env)
@@ -532,7 +533,9 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     let min_interval = {
         let key = DataKey::AssetMinSubmissionInterval(asset.clone());
         if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
             env.storage().persistent().get(&key).unwrap_or(0)
         } else {
             get_min_submission_interval(env)
@@ -632,7 +635,12 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
         let after_mem = env.budget().memory_bytes_count();
         let cpu_delta = after_cpu.saturating_sub(before_cpu);
         let mem_delta = after_mem.saturating_sub(before_mem);
-        crate::gas_metering::write_last_gas(&env, soroban_sdk::String::from_str(&env, "aggregate"), cpu_delta, mem_delta);
+        crate::gas_metering::write_last_gas(
+            &env,
+            soroban_sdk::String::from_str(&env, "aggregate"),
+            cpu_delta,
+            mem_delta,
+        );
 
         let history_entry = PriceHistoryEntry {
             price: median_price,
@@ -2153,25 +2161,37 @@ pub struct MerkleProof {
 /// Pre-image: `price` (16 bytes LE) || `timestamp` (8 bytes LE).
 fn hash_leaf(env: &Env, leaf: &MerkleLeaf) -> soroban_sdk::BytesN<32> {
     let mut data = soroban_sdk::Bytes::new(env);
-    data.append(&soroban_sdk::Bytes::from_slice(env, &leaf.price.to_le_bytes()));
-    data.append(&soroban_sdk::Bytes::from_slice(env, &leaf.timestamp.to_le_bytes()));
+    data.append(&soroban_sdk::Bytes::from_slice(
+        env,
+        &leaf.price.to_le_bytes(),
+    ));
+    data.append(&soroban_sdk::Bytes::from_slice(
+        env,
+        &leaf.timestamp.to_le_bytes(),
+    ));
     env.crypto().sha256(&data)
 }
 
 /// Hashes two 32-byte nodes together to produce the parent node hash.
-fn hash_pair(env: &Env, left: &soroban_sdk::BytesN<32>, right: &soroban_sdk::BytesN<32>) -> soroban_sdk::BytesN<32> {
+fn hash_pair(
+    env: &Env,
+    left: &soroban_sdk::BytesN<32>,
+    right: &soroban_sdk::BytesN<32>,
+) -> soroban_sdk::BytesN<32> {
     let mut data = soroban_sdk::Bytes::new(env);
-    data.append(&soroban_sdk::Bytes::from_slice(env, left.to_array().as_ref()));
-    data.append(&soroban_sdk::Bytes::from_slice(env, right.to_array().as_ref()));
+    data.append(&soroban_sdk::Bytes::from_slice(
+        env,
+        left.to_array().as_ref(),
+    ));
+    data.append(&soroban_sdk::Bytes::from_slice(
+        env,
+        right.to_array().as_ref(),
+    ));
     env.crypto().sha256(&data)
 }
 
 /// Verifies a merkle proof and returns `true` if the proof is valid for `root`.
-fn verify_proof(
-    env: &Env,
-    root: &soroban_sdk::BytesN<32>,
-    proof: &MerkleProof,
-) -> bool {
+fn verify_proof(env: &Env, root: &soroban_sdk::BytesN<32>, proof: &MerkleProof) -> bool {
     let mut current = hash_leaf(env, &proof.leaf);
     for i in 0..proof.siblings.len() {
         let sibling = proof.siblings.get_unchecked(i);
