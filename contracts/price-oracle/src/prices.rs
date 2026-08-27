@@ -25,6 +25,10 @@ use crate::types::{
     AggregatePrice, Asset, BftAggregationMethod, DataKey, ErrorCode, OracleSources, PriceData,
     PriceEntry, PriceHistoryEntry, PriceOverrideEntry, TwapMethod,
 };
+// Issue #290 — record submission against schedule (liveness check)
+use crate::scheduling;
+// Issue #288 — combined timestamp + ledger-count pruning
+use crate::pruning;
 
 fn build_candidate_aggregate(
     env: &Env,
@@ -476,6 +480,9 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
     let max_events = get_max_events_per_call(env);
     let mut event_count: u32 = 0;
 
+    // Issue #290: record submission for liveness / schedule enforcement
+    scheduling::record_submission(env, &source, &asset);
+
     let min_required = get_min_sources_required(env);
     let oracle_sources: OracleSources = read_oracle_sources(env);
     let total_sources = oracle_sources.sources.len();
@@ -736,6 +743,38 @@ fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u3
             }
             .publish(env);
         }
+
+        // ── #298: Update contribution quality scores for all contributing sources ──
+        let oracle_sources_for_quality = read_oracle_sources(env);
+        let nsrc = oracle_sources_for_quality.sources.len();
+        for qi in 0..nsrc {
+            let src = oracle_sources_for_quality.sources.get_unchecked(qi);
+            let sub_key = DataKey::Submission(asset.clone(), src.clone());
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, crate::types::PriceEntry>(&sub_key)
+            {
+                crate::contribution_quality::update_contribution_quality(
+                    env,
+                    &src,
+                    asset,
+                    entry.price,
+                    median_price,
+                    entry.last_updated,
+                    current_ledger,
+                );
+            }
+        }
+
+        // ── #297: Invoke registered price callbacks (fault-isolated) ─────────────
+        crate::price_callback::invoke_price_callbacks(
+            env,
+            asset,
+            median_price,
+            latest_timestamp,
+            contributing_sources,
+        );
     } else if event_count < max_events {
         SourcesInsufficientEvent {
             asset: asset.clone(),
@@ -796,19 +835,33 @@ pub(crate) fn check_deviation_circuit_breaker(
     is_circuit_breaker_tripped(env, asset)
 }
 
-pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, timestamp: u64, nonce: u64) {
     check_not_paused(env);
     source.require_auth();
     check_source(env, &source);
     check_registered_asset(env, &asset);
     crate::freeze::check_not_frozen(env, &asset);
     check_source_asset(env, &source, &asset);
-    check_source_asset(env, &source, &asset);
     enforce_commit_reveal_for_bft(env);
 
     if crate::sources::is_source_suspended(env, source.clone()) {
         panic_with_error!(env, ErrorCode::SourceSuspended);
     }
+
+    // Nonce-based replay prevention: nonce must be strictly greater than last accepted.
+    let nonce_key = DataKey::SourceNonce(source.clone());
+    let last_nonce: u64 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&nonce_key)
+        .unwrap_or(0);
+    if nonce <= last_nonce {
+        panic_with_error!(env, ErrorCode::InvalidNonce);
+    }
+    env.storage().persistent().set(&nonce_key, &nonce);
+    env.storage()
+        .persistent()
+        .extend_ttl(&nonce_key, crate::storage::LEDGER_THRESHOLD, crate::storage::LEDGER_BUMP);
 
     if price <= 0 {
         crate::sources::record_invalid_submission(env, source.clone());
@@ -845,7 +898,6 @@ pub fn submit_price(env: &Env, source: Address, asset: Address, price: i128, tim
         .set(&DataKey::Submission(asset.clone(), source.clone()), &entry);
 
     record_successful_submission(env, source.clone());
-    crate::asset_inactivity::record_asset_activity(env, &asset);
 
     PriceSubmittedEvent {
         asset: asset.clone(),
