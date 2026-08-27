@@ -64,6 +64,10 @@ mod emergency_pause;
 mod freeze;
 mod notifications;
 mod config_history;
+mod batch_storage;
+mod price_proof;
+mod price_callback;
+mod contribution_quality;
 
 // =============================================================================
 // #283 — Stellar DID Integration
@@ -1494,12 +1498,12 @@ impl PriceOracleContract {
     /// * [`ErrorCode::InvalidPrice`] — if `price` is ≤ 0.
     /// * [`ErrorCode::PriceBelowMinimum`] — if `price` is below the asset's minimum price.
     /// * [`ErrorCode::InvalidTimestamp`] — if `timestamp` is too far in the future.
-    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64, nonce: u64) {
         reentrancy::enter(&env);
         // Measure budget before and after to record last submit_price cost.
         let before_cpu = env.budget().cpu_instruction_count();
         let before_mem = env.budget().memory_bytes_count();
-        prices::submit_price(&env, source, asset, price, timestamp);
+        prices::submit_price(&env, source, asset, price, timestamp, nonce);
         let after_cpu = env.budget().cpu_instruction_count();
         let after_mem = env.budget().memory_bytes_count();
         let cpu_delta = after_cpu.saturating_sub(before_cpu);

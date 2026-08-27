@@ -521,7 +521,7 @@ pub enum DataKey {
     NotificationEventTypes,
 
     // -------------------------------------------------------------------------
-    // History export
+    // History export / timelock priority
     // -------------------------------------------------------------------------
     /// Delay (ledgers) for Urgent priority operations.
     TlUrgentDelay,
