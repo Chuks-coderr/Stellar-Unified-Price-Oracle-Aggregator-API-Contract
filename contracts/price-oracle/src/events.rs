@@ -1682,3 +1682,88 @@ pub struct TemplateRemovedEvent {
     #[topic]
     pub name: Symbol,
 }
+
+// =============================================================================
+// #283 — Stellar DID Integration Events
+// =============================================================================
+
+/// Emitted when a DID document is registered.
+#[contractevent]
+#[derive(Clone)]
+pub struct DidRegisteredEvent {
+    #[topic]
+    pub did: Address,
+    #[topic]
+    pub admin: Address,
+}
+
+/// Emitted when a DID document is verified.
+#[contractevent]
+#[derive(Clone)]
+pub struct DidVerifiedEvent {
+    #[topic]
+    pub did: Address,
+    pub verified: bool,
+    pub verifier: Address,
+}
+
+/// Emitted when an oracle source is linked to a DID.
+#[contractevent]
+#[derive(Clone)]
+pub struct SourceDidLinkedEvent {
+    #[topic]
+    pub source: Address,
+    #[topic]
+    pub did: Address,
+    pub verified: bool,
+}
+
+// =============================================================================
+// #282 — Bridge Oracle Events
+// =============================================================================
+
+/// Emitted when a bridge oracle is registered.
+#[contractevent]
+#[derive(Clone)]
+pub struct BridgeOracleRegisteredEvent {
+    #[topic]
+    pub source_asset: Address,
+    #[topic]
+    pub target_asset: Address,
+    pub oracle_contract: Address,
+}
+
+/// Emitted when a bridged price is submitted.
+#[contractevent]
+#[derive(Clone)]
+pub struct BridgePriceSubmittedEvent {
+    #[topic]
+    pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub decimals: u32,
+}
+
+// =============================================================================
+// #285 — Ecosystem Metadata Events
+// =============================================================================
+
+/// Emitted when feed metadata is registered.
+#[contractevent]
+#[derive(Clone)]
+pub struct FeedMetadataRegisteredEvent {
+    #[topic]
+    pub asset: Address,
+    pub symbol: String,
+    pub description: String,
+}
+
+/// Emitted when feed metadata is updated.
+#[contractevent]
+#[derive(Clone)]
+pub struct FeedMetadataUpdatedEvent {
+    #[topic]
+    pub asset: Address,
+    pub symbol: String,
+    pub updated_at: u64,
+}

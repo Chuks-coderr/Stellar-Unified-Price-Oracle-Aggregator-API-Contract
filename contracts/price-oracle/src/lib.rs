@@ -18,6 +18,7 @@ mod assets;
 pub(crate) mod core;
 mod cross_reference;
 mod deadline_rebate;
+mod dex;
 mod errors;
 mod event_indexing;
 mod events;
@@ -44,6 +45,7 @@ mod rotation;
 mod signed_submission;
 mod sources;
 mod state_channel;
+mod state_introspection;
 mod storage;
 mod gas_metering;
 mod simulate_batch;
@@ -66,6 +68,26 @@ mod batch_storage;
 mod price_proof;
 mod price_callback;
 mod contribution_quality;
+
+// =============================================================================
+// #283 — Stellar DID Integration
+// =============================================================================
+mod did;
+
+// =============================================================================
+// #282 — Bridge Oracle for Non-Stellar Assets
+// =============================================================================
+mod bridge_oracle;
+
+// =============================================================================
+// #285 — Ecosystem Metadata Registration
+// =============================================================================
+mod ecosystem_metadata;
+
+// =============================================================================
+// #284 — Event Streaming to External Databases
+// =============================================================================
+mod event_streaming;
 
 #[cfg(test)]
 mod circuit_breaker_tests;
@@ -103,6 +125,15 @@ mod emergency_pause_tests;
 #[cfg(test)]
 mod config_history_tests;
 
+#[cfg(test)]
+mod state_introspection_tests;
+
+#[cfg(test)]
+mod dex_tests;
+
+#[cfg(test)]
+mod amm_integration_tests;
+
 pub use types::{
     AggregatePrice, AggregationMethod, Asset, BatchOperation, ConfigSnapshot, CrossReferenceResult,
     DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
@@ -119,6 +150,10 @@ pub use types::{
     OperationPriority,
     // Batch dry-run simulation
     SimulationWarning, OperationSimulationResult, BatchSimulationResult,
+    // State introspection
+    StateDump, StateAnalysis, StateDiff, StateDiffEntry,
+    // DEX / AMM integration
+    DexPrice, AmmWeightConfig, SoroswapPool,
 };
 
 
@@ -3885,6 +3920,83 @@ impl PriceOracleContract {
         amm::get_amm_max_deviation_bps(&env)
     }
 
+    /// Sets the AMM weight for an asset used during aggregation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `weight_bps > 10_000`.
+    pub fn amm_set_weight(env: Env, asset: Address, weight_bps: u32, enabled: bool) {
+        amm::set_amm_weight(&env, asset, weight_bps, enabled);
+    }
+
+    /// Returns the AMM weight configuration for an asset, or `None` if not set.
+    pub fn amm_get_weight(env: Env, asset: Address) -> Option<AmmWeightConfig> {
+        amm::get_amm_weight(&env, asset)
+    }
+
+    /// Registers a Soroswap pool for price derivation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn soroswap_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+        fee_bps: u32,
+    ) {
+        amm::register_soroswap_pool(&env, asset_a, asset_b, reserve_a, reserve_b, fee_bps);
+    }
+
+    /// Returns the Soroswap pool configuration, or `None` if not found.
+    pub fn soroswap_get_pool(env: Env, asset_a: Address, asset_b: Address) -> Option<SoroswapPool> {
+        amm::get_soroswap_pool(&env, asset_a, asset_b)
+    }
+
+    /// Enables or disables a Soroswap pool. Admin-only.
+    pub fn soroswap_set_pool_status(env: Env, asset_a: Address, asset_b: Address, enabled: bool) {
+        amm::set_soroswap_pool_status(&env, asset_a, asset_b, enabled);
+    }
+
+    /// Reads the Soroswap spot price for an asset pair.
+    ///
+    /// Returns `None` if the pool is disabled or unregistered.
+    pub fn get_soroswap_price(env: Env, asset_a: Address, asset_b: Address) -> Option<i128> {
+        amm::read_soroswap_price(&env, asset_a, asset_b)
+    }
+
+    /// Registers a Stellar DEX pool pair. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn dex_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+    ) {
+        dex::register_dex_pool(&env, asset_a, asset_b, reserve_a, reserve_b);
+    }
+
+    /// Returns the DEX price for `asset` against its paired asset, or `None`.
+    pub fn get_dex_price(env: Env, asset: Address) -> Option<DexPrice> {
+        dex::get_dex_price(&env, asset)
+    }
+
+    /// Returns a serialized state dump for off-chain inspection.
+    pub fn oracle_state_dump(env: Env) -> StateDump {
+        state_introspection::build_state_dump(&env)
+    }
+
+    /// Returns aggregated state analysis statistics.
+    pub fn oracle_state_analyze(env: Env) -> StateAnalysis {
+        state_introspection::build_state_analysis(&env)
+    }
+
     // =========================================================================
     // #181 — VDF Randomness for Source Sampling
     // =========================================================================
@@ -4088,166 +4200,112 @@ impl PriceOracleContract {
     }
 
     // =========================================================================
-    // #295 — Gas-efficient batch storage read
+    // #283 — Stellar DID Integration
     // =========================================================================
 
-    /// Reads multiple storage keys in a single call.
-    ///
-    /// Accepts a `Vec<StorageBatchRequest>` where each entry specifies a
-    /// [`DataKey`] and a [`StorageTier`] (persistent / temporary / instance).
-    /// Returns one [`StorageBatchResult`] per request with an `exists` flag and,
-    /// when available, a human-readable serialisation of the stored value.
-    ///
-    /// Reading N keys in one call is significantly more gas-efficient than N
-    /// individual contract invocations.
-    pub fn get_storage_batch(
-        env: Env,
-        requests: Vec<crate::types::StorageBatchRequest>,
-    ) -> Vec<crate::types::StorageBatchResult> {
-        batch_storage::get_storage_batch(&env, requests)
-    }
-
-    // =========================================================================
-    // #296 — Source submission validation by external proof
-    // =========================================================================
-
-    /// Submit a price with an attached external proof (CEX / DEX / multi-sig).
-    ///
-    /// The proof format is validated before the submission is forwarded to the
-    /// standard aggregation pipeline. Per-asset proof requirements can be
-    /// configured with [`set_asset_proof_requirement`].
+    /// Registers a DID document under `did_address`. Admin-only.
     ///
     /// # Errors
-    ///
-    /// * [`ErrorCode::InvalidProof`] — proof format validation failed.
-    /// * [`ErrorCode::ProofTypeMismatch`] — proof type doesn't satisfy the asset requirement.
-    /// * All errors from the underlying `submit_price` pipeline.
-    pub fn submit_price_with_external_proof(
-        env: Env,
-        source: Address,
-        asset: Address,
-        price: i128,
-        timestamp: u64,
-        proof: crate::types::PriceProof,
-    ) {
-        reentrancy::enter(&env);
-        price_proof::submit_price_with_external_proof(&env, source, asset, price, timestamp, proof);
-        reentrancy::exit(&env);
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — document exceeds length limit.
+    pub fn did_register(env: Env, did_address: Address, document: String) {
+        did::register_did(&env, did_address, document);
     }
 
-    /// Configure the required proof type for an asset. Admin only.
-    ///
-    /// Set to `AssetProofRequirement::AnyOrNone` to remove any requirement.
-    pub fn set_asset_proof_requirement(
-        env: Env,
-        asset: Address,
-        requirement: crate::types::AssetProofRequirement,
-    ) {
-        reentrancy::enter(&env);
-        price_proof::set_asset_proof_requirement(&env, asset, requirement);
-        reentrancy::exit(&env);
+    /// Links an oracle source to a DID address. Admin-only.
+    pub fn did_link_source(env: Env, source: Address, did: Address, verified: bool) {
+        did::link_source_did(&env, source, did, verified);
     }
 
-    /// Return the configured proof requirement for an asset.
-    ///
-    /// Defaults to `AssetProofRequirement::AnyOrNone`.
-    pub fn get_asset_proof_requirement(
-        env: Env,
-        asset: Address,
-    ) -> crate::types::AssetProofRequirement {
-        price_proof::get_asset_proof_requirement(&env, asset)
+    /// Verifies a DID document exists on-chain.
+    pub fn did_verify(env: Env, did_address: Address) -> bool {
+        did::verify_did(&env, did_address)
     }
 
-    /// Return the most recently stored proof for a (asset, source) pair.
-    pub fn get_submission_proof(
-        env: Env,
-        asset: Address,
-        source: Address,
-    ) -> Option<crate::types::PriceProof> {
-        price_proof::get_submission_proof(&env, asset, source)
+    /// Returns the DID document for a given DID address, or `None`.
+    pub fn did_get_document(env: Env, did_address: Address) -> Option<String> {
+        did::get_did_document(&env, did_address)
+    }
+
+    /// Returns the DID link for a source, or `None`.
+    pub fn did_get_source_link(env: Env, source: Address) -> Option<SourceDidLink> {
+        did::get_source_did(&env, source)
+    }
+
+    /// Returns all source-DID links.
+    pub fn did_get_all_source_links(env: Env) -> Vec<SourceDidLink> {
+        did::get_all_source_dids(&env)
     }
 
     // =========================================================================
-    // #297 — Cross-contract price callback
+    // #282 — Bridge Oracle for Non-Stellar Assets
     // =========================================================================
 
-    /// Register a cross-contract callback for price updates on `asset`.
-    ///
-    /// When the oracle publishes a new aggregate for `asset`, it will invoke
-    /// `method` on `callback_contract` with `(asset, price, timestamp, num_sources)`.
-    ///
-    /// The consumer must authorize this call. Up to [`MAX_CALLBACKS_PER_ASSET`]
-    /// callbacks may be registered per asset.
+    /// Registers a bridge oracle contract for a non-Stellar asset pair. Admin-only.
     ///
     /// # Errors
-    ///
-    /// * [`ErrorCode::AssetNotRegistered`] — asset not registered.
-    /// * [`ErrorCode::TooManyCallbacks`] — per-asset callback limit reached.
-    pub fn register_price_callback(
-        env: Env,
-        consumer: Address,
-        asset: Address,
-        callback_contract: Address,
-        method: Symbol,
-    ) {
-        reentrancy::enter(&env);
-        price_callback::register_price_callback(&env, consumer, asset, callback_contract, method);
-        reentrancy::exit(&env);
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — validation fails.
+    pub fn bridge_register_oracle(env: Env, config: BridgeOracleConfig) {
+        bridge_oracle::register_bridge_oracle(&env, config);
     }
 
-    /// Unregister a previously registered callback.
-    ///
-    /// The consumer must authorize this call.
+    /// Returns the bridge oracle configuration for an asset pair, or `None`.
+    pub fn bridge_get_oracle(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgeOracleConfig> {
+        bridge_oracle::get_bridge_oracle(&env, source_asset, target_asset)
+    }
+
+    /// Submits a bridged price observation. Must be called by the bridge oracle contract.
     ///
     /// # Errors
-    ///
-    /// * [`ErrorCode::CallbackNotFound`] — no registration exists for this consumer + asset.
-    pub fn unregister_price_callback(env: Env, consumer: Address, asset: Address) {
-        reentrancy::enter(&env);
-        price_callback::unregister_price_callback(&env, consumer, asset);
-        reentrancy::exit(&env);
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the bridge oracle.
+    /// * [`ErrorCode::InvalidConfiguration`] — price is non-positive.
+    pub fn bridge_submit_price(env: Env, source_asset: Address, target_asset: Address, price: i128, timestamp: u64) {
+        bridge_oracle::submit_bridged_price(&env, source_asset, target_asset, price, timestamp);
     }
 
-    /// List all active callback registrations for an asset.
-    pub fn get_price_callbacks(
-        env: Env,
-        asset: Address,
-    ) -> Vec<crate::types::CallbackRegistration> {
-        price_callback::get_price_callbacks(&env, asset)
+    /// Returns the latest bridged price for an asset pair, or `None`.
+    pub fn bridge_get_price(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgedPrice> {
+        bridge_oracle::get_bridged_price(&env, source_asset, target_asset)
+    }
+
+    /// Normalizes a raw bridge price into the oracle decimal scale.
+    pub fn bridge_normalize_price(env: Env, raw_price: i128, target_decimals: u32, config: BridgeOracleConfig) -> i128 {
+        bridge_oracle::normalize_bridged_price(&env, raw_price, target_decimals, &config)
     }
 
     // =========================================================================
-    // #298 — Price contribution quality scoring
+    // #285 — Ecosystem Metadata Registration
     // =========================================================================
 
-    /// Return the composite quality score record for a (source, asset) pair.
-    ///
-    /// Returns `None` if no rounds have been scored yet for this pair.
-    pub fn get_contribution_quality(
-        env: Env,
-        source: Address,
-        asset: Address,
-    ) -> Option<crate::types::ContribQualityRecord> {
-        contribution_quality::get_contribution_quality(&env, source, asset)
+    /// Registers the oracle contract in the Stellar ecosystem metadata registry. Admin-only.
+    pub fn metadata_register(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::register_ecosystem_metadata(&env, metadata);
     }
 
-    /// Configure the scoring window (number of rounds in the moving average).
-    ///
-    /// Admin only. Range: `[2, 200]`. Defaults to `10`.
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
-    /// * [`ErrorCode::InvalidConfiguration`] — window out of `[2, 200]` range.
-    pub fn set_scoring_window(env: Env, window: u32) {
-        reentrancy::enter(&env);
-        contribution_quality::set_scoring_window(&env, window);
-        reentrancy::exit(&env);
+    /// Updates the ecosystem metadata. Admin-only.
+    pub fn metadata_update(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::update_ecosystem_metadata(&env, metadata);
     }
 
-    /// Return the currently configured scoring window. Defaults to `10`.
-    pub fn get_scoring_window(env: Env) -> u32 {
-        contribution_quality::get_scoring_window(&env)
+    /// Returns the ecosystem metadata, or `None`.
+    pub fn metadata_get(env: Env) -> Option<EcosystemMetadata> {
+        ecosystem_metadata::get_ecosystem_metadata(&env)
+    }
+
+    /// Registers a price feed in the ecosystem metadata directory. Admin-only.
+    pub fn metadata_register_feed(env: Env, feed: FeedMetadata) {
+        ecosystem_metadata::register_feed_metadata(&env, feed);
+    }
+
+    /// Returns all registered feed metadata.
+    pub fn metadata_list_feeds(env: Env) -> Vec<FeedMetadata> {
+        ecosystem_metadata::list_feed_metadata(&env)
+    }
+
+    /// Returns feed metadata for a specific asset, or `None`.
+    pub fn metadata_get_feed(env: Env, asset: Address) -> Option<FeedMetadata> {
+        ecosystem_metadata::get_feed_metadata(&env, asset)
     }
 }
 
@@ -4277,3 +4335,6 @@ mod finality_tests;
 
 #[cfg(test)]
 mod correlation_feature_tests;
+
+#[cfg(test)]
+mod did_bridge_metadata_tests;

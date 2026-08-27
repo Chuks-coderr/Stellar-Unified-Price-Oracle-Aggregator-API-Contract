@@ -362,6 +362,12 @@ pub enum DataKey {
     AmmPool(Address),
     /// AMM maximum deviation basis points for an asset.
     AmmMaxDeviationBps(Address),
+    /// AMM weight configuration for aggregation inclusion.
+    AmmWeight(Address),
+    /// Stellar DEX pool reserves for an asset pair.
+    DexPool(Address, Address),
+    /// Soroswap pool configuration for an asset pair.
+    SoroswapPool(Address, Address),
 
     /// Challenge entries keyed by ID (#235).
     Challenge(u32),
@@ -525,40 +531,26 @@ pub enum DataKey {
     TlLongTermDelay,
 
     // -------------------------------------------------------------------------
-    // #295: Batch storage read
+    // #283: Stellar DID Integration
     // -------------------------------------------------------------------------
-    // (no dedicated storage keys — the batch endpoint reads existing keys)
+    /// Stored DID document for a decentralized identity address.
+    DidDocument(Address),
+    /// Source address mapped to a DID address for identity verification.
+    SourceDid(Address),
 
     // -------------------------------------------------------------------------
-    // #296: External proof submission
+    // #282: Bridge Oracle for Non-Stellar Assets
     // -------------------------------------------------------------------------
-    /// The most-recent external proof attached to a (asset, source) price submission.
-    SubmissionProof(Address, Address),
-    /// Configured proof requirement for an asset (AssetProofRequirement).
-    AssetProofRequirement(Address),
-    /// Auto-incrementing nonce for proof-path submissions to avoid conflicts with
-    /// regular submit_price nonces.
-    SubmissionProofNonce(Address, Address),
+    /// Bridge oracle configuration for a (source_asset, target_asset) pair.
+    BridgeOracle(Address, Address),
+    /// Latest bridged price observation for an asset pair.
+    BridgedPrice(Address, Address),
 
     // -------------------------------------------------------------------------
-    // #297: Cross-contract price callback
+    // #285: Ecosystem Metadata Registration
     // -------------------------------------------------------------------------
-    /// Ordered list of CallbackRegistration entries for an asset.
-    PriceCallbackList(Address),
-
-    // -------------------------------------------------------------------------
-    // #298: Contribution quality scoring
-    // -------------------------------------------------------------------------
-    /// Quality score record for a (source, asset) pair (ContribQualityRecord).
-    ContribScore(Address, Address),
-    /// Scoring window size (number of rounds) used for the moving average.
-    ContribScoringWindow,
-
-    // -------------------------------------------------------------------------
-    // Nonce for replay-prevention on regular submit_price calls
-    // -------------------------------------------------------------------------
-    /// Last accepted nonce for a source's submit_price calls (u64).
-    SourceNonce(Address),
+    /// Stellar ecosystem metadata registry entry.
+    EcosystemMetadata,
 }
 
 
@@ -2080,137 +2072,93 @@ pub struct OperationTemplate {
 }
 
 // =============================================================================
-// #295: Batch storage read types
+// #278 — Contract State Introspection
 // =============================================================================
 
-/// Which storage tier to query in a batch storage read.
+/// Serializable contract configuration snapshot for `oracle-state-dump`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum StorageTier {
-    /// Soroban persistent storage (long-lived entries).
-    Persistent = 0,
-    /// Soroban temporary storage (auto-expiring entries).
-    Temporary = 1,
-    /// Soroban instance storage (contract-wide singleton).
-    Instance = 2,
+pub struct StateDump {
+    pub admin: Address,
+    pub description: String,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
+    pub decimals: u32,
+    pub resolution: u32,
+    pub timestamp_threshold: u64,
+    pub max_deviation_bps: u32,
+    pub heartbeat_interval: u64,
 }
 
-/// A single read request in a `get_storage_batch` call.
+/// Statistics computed from live contract state for `oracle-state-analyze`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct StorageBatchRequest {
-    /// The storage key to look up.
-    pub key: DataKey,
-    /// Which storage tier to query.
-    pub tier: StorageTier,
+pub struct StateAnalysis {
+    pub admin: Address,
+    pub decimals: u32,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
+    pub registered_assets: u32,
+    pub registered_sources: u32,
+    pub aggregate_count: u32,
+    pub history_depth_avg: u32,
 }
 
-/// The result of a single read within a `get_storage_batch` call.
+/// Field-level diff between two contract snapshots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct StorageBatchResult {
-    /// The key that was queried (echoed from the request).
-    pub key: DataKey,
-    /// The tier that was queried (echoed from the request).
-    pub tier: StorageTier,
-    /// Whether the key exists in that storage tier.
-    pub exists: bool,
-    /// Human-readable serialisation of the stored value, or `None` if absent.
-    pub value_json: Option<String>,
+pub struct StateDiffEntry {
+    pub field: String,
+    pub left: String,
+    pub right: String,
 }
 
-// =============================================================================
-// #296: External proof types
-// =============================================================================
-
-/// Discriminant for external price proof types attached to `submit_price_with_external_proof`.
+/// Top-level diff container returned by `oracle-state-diff`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum ProofType {
-    /// A signed API response from a centralised exchange.
-    CexSignedResponse = 0,
-    /// On-chain DEX trade evidence (pool address + trade hash).
-    DexTrade = 1,
-    /// M-of-N multi-signature attestation.
-    MultiSigAttestation = 2,
-}
-
-/// An external proof attached to a price submission.
-///
-/// Stored under [`DataKey::SubmissionProof`] for post-hoc auditability.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct PriceProof {
-    /// Which proof type this is.
-    pub proof_type: ProofType,
-    /// Hash of the signed payload (CEX/DEX trade hash). Must be ≥ 32 bytes.
-    pub payload_hash: Bytes,
-    /// Signature bytes (CEX) or pool-address bytes (DEX). Must be non-empty for DEX.
-    pub signature: Bytes,
-    /// Number of signers (multi-sig only). Must be in `[2, 20]`.
-    pub signer_count: u32,
-}
-
-/// Per-asset requirement for the proof type that must accompany submissions.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub enum AssetProofRequirement {
-    /// Any proof type is accepted (or no proof at all).
-    AnyOrNone = 0,
-    /// Only `ProofType::CexSignedResponse` is accepted.
-    RequireCex = 1,
-    /// Only `ProofType::DexTrade` is accepted.
-    RequireDex = 2,
-    /// Only `ProofType::MultiSigAttestation` is accepted.
-    RequireMultiSig = 3,
+pub struct StateDiff {
+    pub contract_a: String,
+    pub contract_b: String,
+    pub entries: Vec<StateDiffEntry>,
 }
 
 // =============================================================================
-// #297: Cross-contract price callback types
+// #280 — Stellar DEX Integration
 // =============================================================================
 
-/// A registered cross-contract callback for price updates.
-///
-/// Stored inside the `Vec<CallbackRegistration>` at [`DataKey::PriceCallbackList`].
+/// A price observation read from a Stellar DEX liquidity pool.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct CallbackRegistration {
-    /// The consumer address that registered the callback (must authorize un-registration).
-    pub consumer: Address,
-    /// The contract to call when a new aggregate is published.
-    pub callback_contract: Address,
-    /// The method name to invoke on `callback_contract`.
-    pub method: Symbol,
-    /// Whether this callback is currently active.
-    pub active: bool,
-}
-
-// =============================================================================
-// #298: Contribution quality scoring types
-// =============================================================================
-
-/// Quality score record for a single (source, asset) pair.
-///
-/// Stored under [`DataKey::ContribScore`] keyed by `(source, asset)`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct ContribQualityRecord {
-    /// The oracle source address.
-    pub source: Address,
-    /// The asset address.
+pub struct DexPrice {
     pub asset: Address,
-    /// Exponentially-smoothed composite score `[0, 100]` over `rounds_counted` rounds.
-    pub composite_score_avg: u32,
-    /// Raw composite score for the most-recent round.
-    pub last_round_score: u32,
-    /// Most-recent per-round accuracy component `[0, 100]`.
-    pub avg_accuracy_score: u32,
-    /// Most-recent per-round timeliness component `[0, 100]`.
-    pub avg_timeliness_score: u32,
-    /// Most-recent per-round consistency component `[0, 100]`.
-    pub avg_consistency_score: u32,
-    /// Number of rounds counted (capped at the scoring window).
-    pub rounds_counted: u32,
-    /// Ledger sequence of the last quality update.
-    pub last_updated_ledger: u32,
+    pub price: i128,
+    pub reserve_x: i128,
+    pub reserve_y: i128,
+    pub timestamp: u64,
 }
+
+// =============================================================================
+// #281 — Soroswap / AMM Integration
+// =============================================================================
+
+/// AMM pool weight configuration for aggregation inclusion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AmmWeightConfig {
+    pub asset: Address,
+    pub weight_bps: u32,
+    pub enabled: bool,
+}
+
+/// Soroswap pool metadata used to derive a price feed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SoroswapPool {
+    pub asset_a: Address,
+    pub asset_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub fee_bps: u32,
+    pub enabled: bool,
+}
+

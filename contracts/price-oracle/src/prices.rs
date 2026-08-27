@@ -25,6 +25,10 @@ use crate::types::{
     AggregatePrice, Asset, BftAggregationMethod, DataKey, ErrorCode, OracleSources, PriceData,
     PriceEntry, PriceHistoryEntry, PriceOverrideEntry, TwapMethod,
 };
+// Issue #290 — record submission against schedule (liveness check)
+use crate::scheduling;
+// Issue #288 — combined timestamp + ledger-count pruning
+use crate::pruning;
 
 fn build_candidate_aggregate(
     env: &Env,
@@ -474,6 +478,9 @@ fn maybe_aggregate_after_submission(env: &Env, asset: &Address, current_ledger: 
 fn aggregate_asset(env: &Env, asset: &Address, current_ledger: u32, decimals: u32) {
     let max_events = get_max_events_per_call(env);
     let mut event_count: u32 = 0;
+
+    // Issue #290: record submission for liveness / schedule enforcement
+    scheduling::record_submission(env, &source, &asset);
 
     let min_required = get_min_sources_required(env);
     let oracle_sources: OracleSources = read_oracle_sources(env);
