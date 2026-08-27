@@ -5,8 +5,12 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 doctest = false
+
+[features]
+# Expose pure core module for fuzzing (disables WASM-only restrictions).
+fuzz = []
 
 [dependencies]
 soroban-sdk = { version = "26" }
@@ -14,3 +18,4 @@ soroban-sdk = { version = "26" }
 [dev-dependencies]
 soroban-sdk = { version = "26", features = ["testutils"] }
 proptest = { version = "1.5.0", default-features = false, features = ["std"] }
+
