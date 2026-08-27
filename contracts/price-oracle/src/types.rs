@@ -529,6 +529,28 @@ pub enum DataKey {
     TlNormalDelay,
     /// Delay (ledgers) for LongTerm priority operations.
     TlLongTermDelay,
+
+    // -------------------------------------------------------------------------
+    // #283: Stellar DID Integration
+    // -------------------------------------------------------------------------
+    /// Stored DID document for a decentralized identity address.
+    DidDocument(Address),
+    /// Source address mapped to a DID address for identity verification.
+    SourceDid(Address),
+
+    // -------------------------------------------------------------------------
+    // #282: Bridge Oracle for Non-Stellar Assets
+    // -------------------------------------------------------------------------
+    /// Bridge oracle configuration for a (source_asset, target_asset) pair.
+    BridgeOracle(Address, Address),
+    /// Latest bridged price observation for an asset pair.
+    BridgedPrice(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #285: Ecosystem Metadata Registration
+    // -------------------------------------------------------------------------
+    /// Stellar ecosystem metadata registry entry.
+    EcosystemMetadata,
 }
 
 
