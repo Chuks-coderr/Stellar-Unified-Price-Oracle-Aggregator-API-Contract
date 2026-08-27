@@ -1150,10 +1150,6 @@ pub struct SourceBondReturnedEvent {
     pub amount: i128,
 }
 
-
-
-
-
 // =============================================================================
 // Missing events for feature modules
 // =============================================================================
@@ -1555,6 +1551,8 @@ pub struct AutoTriggerFiredEvent {
     #[topic]
     pub asset: Address,
     pub trigger_type: u32,
+}
+
 /// Emitted when an admin freezes an asset's price during a market emergency (#223).
 #[contractevent]
 #[derive(Clone)]
@@ -1684,108 +1682,86 @@ pub struct TemplateRemovedEvent {
 }
 
 // =============================================================================
-// #304 — Consumer Contract Authorization Events
+// #283 — Stellar DID Integration Events
 // =============================================================================
 
-/// Emitted when a consumer is explicitly authorized by the admin.
-///
-/// Topics: `consumer`, `admin`
+/// Emitted when a DID document is registered.
 #[contractevent]
 #[derive(Clone)]
-pub struct ConsumerAuthorizedEvent {
-    /// Consumer address that was authorized.
+pub struct DidRegisteredEvent {
     #[topic]
-    pub consumer: Address,
-    /// Admin who performed the action.
+    pub did: Address,
     #[topic]
     pub admin: Address,
 }
 
-/// Emitted when a consumer's authorization is revoked (or the consumer is blocked).
-///
-/// Topics: `consumer`, `admin`
+/// Emitted when a DID document is verified.
 #[contractevent]
 #[derive(Clone)]
-pub struct ConsumerDeauthorizedEvent {
-    /// Consumer address whose authorization was revoked.
+pub struct DidVerifiedEvent {
     #[topic]
-    pub consumer: Address,
-    /// Admin who performed the action.
-    #[topic]
-    pub admin: Address,
+    pub did: Address,
+    pub verified: bool,
+    pub verifier: Address,
 }
 
-/// Emitted when the global consumer access mode is changed.
-///
-/// Topics: `admin`
+/// Emitted when an oracle source is linked to a DID.
 #[contractevent]
 #[derive(Clone)]
-pub struct ConsumerAccessModeChangedEvent {
-    /// Admin who changed the mode.
+pub struct SourceDidLinkedEvent {
     #[topic]
-    pub admin: Address,
-    /// New mode discriminant (0=Public, 1=AllowedOnly, 2=BlockedOnly).
-    pub new_mode: u32,
+    pub source: Address,
+    #[topic]
+    pub did: Address,
+    pub verified: bool,
 }
 
 // =============================================================================
-// #305 — Price Update Subscription Events
+// #282 — Bridge Oracle Events
 // =============================================================================
 
-/// Emitted when a consumer subscribes to price updates for an asset.
-///
-/// Topics: `consumer`, `asset`
+/// Emitted when a bridge oracle is registered.
 #[contractevent]
 #[derive(Clone)]
-pub struct PriceUpdateSubscribedEvent {
-    /// Consumer that registered interest.
+pub struct BridgeOracleRegisteredEvent {
     #[topic]
-    pub consumer: Address,
-    /// Asset for which the consumer registered interest.
+    pub source_asset: Address,
+    #[topic]
+    pub target_asset: Address,
+    pub oracle_contract: Address,
+}
+
+/// Emitted when a bridged price is submitted.
+#[contractevent]
+#[derive(Clone)]
+pub struct BridgePriceSubmittedEvent {
     #[topic]
     pub asset: Address,
+    pub price: i128,
+    pub timestamp: u64,
+    pub decimals: u32,
 }
 
-/// Emitted when a consumer unsubscribes from price updates for an asset.
-///
-/// Topics: `consumer`, `asset`
+// =============================================================================
+// #285 — Ecosystem Metadata Events
+// =============================================================================
+
+/// Emitted when feed metadata is registered.
 #[contractevent]
 #[derive(Clone)]
-pub struct PriceUpdateUnsubscribedEvent {
-    /// Consumer that removed their interest registration.
-    #[topic]
-    pub consumer: Address,
-    /// Asset from which the consumer unsubscribed.
+pub struct FeedMetadataRegisteredEvent {
     #[topic]
     pub asset: Address,
+    pub symbol: String,
+    pub description: String,
 }
 
-// =============================================================================
-// #306 — SAC Token Integration for Subscriptions Events
-// =============================================================================
-
-/// Emitted when the admin configures the SAC token for subscription payments.
-///
-/// Topics: `admin`
+/// Emitted when feed metadata is updated.
 #[contractevent]
 #[derive(Clone)]
-pub struct SubscriptionTokenSetEvent {
-    /// Admin who set the token.
+pub struct FeedMetadataUpdatedEvent {
     #[topic]
-    pub admin: Address,
-    /// Address of the SAC token contract (or zero-equivalent when cleared).
-    pub token: Address,
-}
-
-/// Emitted when a consumer cancels their subscription and receives a pro-rated refund.
-///
-/// Topics: `consumer`
-#[contractevent]
-#[derive(Clone)]
-pub struct SubscriptionCancelledEvent {
-    /// Consumer whose subscription was cancelled.
-    #[topic]
-    pub consumer: Address,
-    /// Pro-rated token refund amount (0 when no token is configured).
-    pub refund_amount: i128,
+    pub asset: Address,
+    pub symbol: String,
+    pub updated_at: u64,
 }

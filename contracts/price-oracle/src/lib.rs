@@ -10,43 +10,52 @@ mod admin;
 mod admin_op_limits;
 mod alerts;
 mod amm;
+mod asset_inactivity;
 mod assets;
 // The core module is always compiled (it has no Env deps).
 // When the `fuzz` feature is enabled it is also re-exported so that the
 // fuzz crate can call `price_oracle::core::*` directly.
+mod audit_log;
+mod config_history;
 #[cfg_attr(feature = "fuzz", allow(dead_code))]
 pub(crate) mod core;
 mod cross_reference;
 mod deadline_rebate;
+mod dex;
 mod errors;
 mod event_indexing;
 mod events;
-mod export_history;
 mod exotic_pricing;
+mod export_history;
 mod fee_market;
 mod finality;
+mod freeze;
+mod gas_metering;
 mod health;
 mod history;
 mod migration;
 mod multisig;
+mod notifications;
 mod optimistic;
 mod pause;
 mod per_asset_decimals;
 mod prices;
 mod rate_limiting;
-mod reentrancy;
+mod rbac;
 mod recovery;
+mod reentrancy;
 mod relayer;
 mod relayer_bonds;
 mod relayer_dashboard;
 mod reputation;
 mod rotation;
 mod signed_submission;
+mod simulate_batch;
+mod source_deviation;
 mod sources;
 mod state_channel;
+mod state_introspection;
 mod storage;
-mod gas_metering;
-mod simulate_batch;
 mod submission_deadline;
 mod subscription;
 mod timelock;
@@ -62,9 +71,30 @@ mod emergency_pause;
 mod freeze;
 mod notifications;
 mod config_history;
-mod consumer_auth;
-mod source_deviation;
-mod price_update_subscription;
+mod batch_storage;
+mod price_proof;
+mod price_callback;
+mod contribution_quality;
+
+// =============================================================================
+// #283 — Stellar DID Integration
+// =============================================================================
+mod did;
+
+// =============================================================================
+// #282 — Bridge Oracle for Non-Stellar Assets
+// =============================================================================
+mod bridge_oracle;
+
+// =============================================================================
+// #285 — Ecosystem Metadata Registration
+// =============================================================================
+mod ecosystem_metadata;
+
+// =============================================================================
+// #284 — Event Streaming to External Databases
+// =============================================================================
+mod event_streaming;
 
 #[cfg(test)]
 mod circuit_breaker_tests;
@@ -102,35 +132,60 @@ mod emergency_pause_tests;
 #[cfg(test)]
 mod config_history_tests;
 
+#[cfg(test)]
+mod state_introspection_tests;
+
+#[cfg(test)]
+mod dex_tests;
+
+#[cfg(test)]
+mod amm_integration_tests;
+
 pub use types::{
-    AggregatePrice, AggregationMethod, Asset, BatchOperation, ConfigSnapshot, CrossReferenceResult,
-    DataKey, ErrorCode, FinalityStatus, FinalizedPrice, HealthReport, MigrationState, OracleSources,
-    PendingBatch, PendingFinalityEntry, PriceCommit, PriceData, PriceEntry, PriceHistoryEntry,
-    PriceOverrideEntry, RelayerInfo, SourceHealthStatus, SourceVerification, SubscriptionPlans,
-    DisqualificationStatus, SourceDemeritState, DemeritConfig,
-    SourceGovernance, SourceProposal,
-    SourceGeoMetadata, DecentralizationReport,
-    GasRecord, StorageTtlEntry,
-    FrozenPrice, NotificationPreference,
+    AggregatePrice,
+    AggregationMethod,
+    Asset,
+    BatchOperation,
+    BatchSimulationResult,
+    ConfigSnapshot,
+    CrossReferenceResult,
+    DataKey,
+    DecentralizationReport,
+    DemeritConfig,
+    DisqualificationStatus,
+    ErrorCode,
     // History export
-    ExportedEntry, ExportedHistorySnapshot,
+    ExportedEntry,
+    ExportedHistorySnapshot,
+    FinalityStatus,
+    FinalizedPrice,
+    FrozenPrice,
+    GasRecord,
+    HealthReport,
+    MigrationState,
+    NotificationPreference,
     // Timelock priority
     OperationPriority,
+    OperationSimulationResult,
+    OracleSources,
+    PendingBatch,
+    PendingFinalityEntry,
+    PriceCommit,
+    PriceData,
+    PriceEntry,
+    PriceHistoryEntry,
+    PriceOverrideEntry,
+    RelayerInfo,
     // Batch dry-run simulation
     SimulationWarning, OperationSimulationResult, BatchSimulationResult,
-    // #303 — Deviation report
-    DeviationRecord, DeviationReport,
-    // #304 — Consumer authorization
-    ConsumerAccessMode,
-    // #306 — SAC token subscription
-    TokenSubscriptionRecord,
+    // State introspection
+    StateDump, StateAnalysis, StateDiff, StateDiffEntry,
+    // DEX / AMM integration
+    DexPrice, AmmWeightConfig, SoroswapPool,
 };
 
-
-
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol,
-    Vec,
+    contract, contractimpl, panic_with_error, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 use crate::storage::{enter_reentrancy_guard, exit_reentrancy_guard, read_registered_assets};
@@ -286,7 +341,14 @@ impl PriceOracleContract {
         max_ratio: u128,
         enabled: bool,
     ) {
-        correlation::set_correlation_pair(&env, base_asset, quote_asset, min_ratio, max_ratio, enabled);
+        correlation::set_correlation_pair(
+            &env,
+            base_asset,
+            quote_asset,
+            min_ratio,
+            max_ratio,
+            enabled,
+        );
     }
 
     pub fn is_correlation_flagged(env: Env, source: Address, asset: Address) -> bool {
@@ -305,7 +367,11 @@ impl PriceOracleContract {
         challenger::resolve_challenge(&env, challenge_id, is_valid);
     }
 
-    pub fn get_challenge_history(env: Env, asset: Address, limit: u32) -> Vec<crate::types::Challenge> {
+    pub fn get_challenge_history(
+        env: Env,
+        asset: Address,
+        limit: u32,
+    ) -> Vec<crate::types::Challenge> {
         challenger::get_challenge_history(&env, asset, limit)
     }
 
@@ -317,7 +383,11 @@ impl PriceOracleContract {
         audit_log::get_audit_log_count(&env)
     }
 
-    pub fn get_admin_audit_log(env: Env, from_id: u32, limit: u32) -> Vec<crate::types::AuditEntry> {
+    pub fn get_admin_audit_log(
+        env: Env,
+        from_id: u32,
+        limit: u32,
+    ) -> Vec<crate::types::AuditEntry> {
         audit_log::get_admin_audit_log(&env, from_id, limit)
     }
 
@@ -1169,13 +1239,7 @@ impl PriceOracleContract {
         verifier: Address,
     ) {
         reentrancy::enter(&env);
-        sources::set_source_verification(
-            &env,
-            source,
-            verified,
-            verification_method,
-            verifier,
-        );
+        sources::set_source_verification(&env, source, verified, verification_method, verifier);
         reentrancy::exit(&env);
     }
 
@@ -1401,9 +1465,16 @@ impl PriceOracleContract {
         crate::reputation::get_stake_token_contract(&env)
     }
 
+    /// Sets per-source deviation tolerance in basis points (admin only).
+    /// Set to 0 to clear and fall back to global tolerance.
+    pub fn set_source_deviation_tolerance(env: Env, source: Address, tolerance_bps: u32) {
+        source_deviation::set_source_deviation_tolerance(&env, source, tolerance_bps);
+    }
 
-
-
+    /// Returns per-source deviation tolerance in bps, or None if global is used.
+    pub fn get_source_deviation_tolerance(env: Env, source: Address) -> Option<u32> {
+        source_deviation::get_source_deviation_tolerance(&env, &source)
+    }
 
     // --- Assets ---
 
@@ -1481,6 +1552,36 @@ impl PriceOracleContract {
         let result = assets::is_asset_registered(&env, asset);
         exit_reentrancy_guard(&env);
         result
+    }
+
+    // --- Asset Inactivity (#301) ---
+
+    /// Sets the global default inactivity timeout in ledgers (admin only, 0 = disabled).
+    pub fn set_inactivity_timeout(env: Env, timeout_ledgers: u32) {
+        asset_inactivity::set_inactivity_timeout(&env, timeout_ledgers);
+    }
+
+    pub fn get_inactivity_timeout(env: Env) -> u32 {
+        asset_inactivity::get_inactivity_timeout(&env)
+    }
+
+    /// Sets per-asset inactivity timeout override (admin only, 0 = use global).
+    pub fn set_asset_inactivity_timeout(env: Env, asset: Address, timeout_ledgers: u32) {
+        asset_inactivity::set_asset_inactivity_timeout(&env, asset, timeout_ledgers);
+    }
+
+    pub fn get_asset_inactivity_timeout(env: Env, asset: Address) -> u32 {
+        asset_inactivity::get_asset_inactivity_timeout(&env, &asset)
+    }
+
+    /// Returns true if the asset is considered inactive (past its timeout).
+    pub fn is_asset_inactive(env: Env, asset: Address) -> bool {
+        asset_inactivity::is_asset_inactive(&env, &asset)
+    }
+
+    /// Admin: check an asset and deregister it if it exceeds inactivity threshold.
+    pub fn check_and_deregister_if_inactive(env: Env, asset: Address) {
+        asset_inactivity::check_and_deregister_if_inactive(&env, asset);
     }
 
     pub fn set_price_bounds(
@@ -1607,17 +1708,22 @@ impl PriceOracleContract {
     /// * [`ErrorCode::InvalidPrice`] — if `price` is ≤ 0.
     /// * [`ErrorCode::PriceBelowMinimum`] — if `price` is below the asset's minimum price.
     /// * [`ErrorCode::InvalidTimestamp`] — if `timestamp` is too far in the future.
-    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64, nonce: u64) {
         reentrancy::enter(&env);
         // Measure budget before and after to record last submit_price cost.
         let before_cpu = env.budget().cpu_instruction_count();
         let before_mem = env.budget().memory_bytes_count();
-        prices::submit_price(&env, source, asset, price, timestamp);
+        prices::submit_price(&env, source, asset, price, timestamp, nonce);
         let after_cpu = env.budget().cpu_instruction_count();
         let after_mem = env.budget().memory_bytes_count();
         let cpu_delta = after_cpu.saturating_sub(before_cpu);
         let mem_delta = after_mem.saturating_sub(before_mem);
-        crate::gas_metering::write_last_gas(&env, String::from_str(&env, "submit_price"), cpu_delta, mem_delta);
+        crate::gas_metering::write_last_gas(
+            &env,
+            String::from_str(&env, "submit_price"),
+            cpu_delta,
+            mem_delta,
+        );
         reentrancy::exit(&env);
     }
 
@@ -2120,20 +2226,12 @@ impl PriceOracleContract {
     ///
     /// * [`ErrorCode::NotAuthorized`] — if the caller is not the admin.
     /// * [`ErrorCode::NotificationConfigInvalid`] — if `channel` or `target` exceeds 256 chars.
-    pub fn set_notification_preference(
-        env: Env,
-        event_type: u32,
-        channel: String,
-        target: String,
-    ) {
+    pub fn set_notification_preference(env: Env, event_type: u32, channel: String, target: String) {
         notifications::set_notification_preference(&env, event_type, channel, target);
     }
 
     /// Returns all notification preferences registered for a given event type.
-    pub fn list_notification_preferences(
-        env: Env,
-        event_type: u32,
-    ) -> Vec<NotificationPreference> {
+    pub fn list_notification_preferences(env: Env, event_type: u32) -> Vec<NotificationPreference> {
         notifications::list_notification_preferences(&env, event_type)
     }
 
@@ -2655,8 +2753,7 @@ impl PriceOracleContract {
             2 => types::OperationPriority::LongTerm,
             _ => panic_with_error!(&env, ErrorCode::InvalidPriority),
         };
-        let result =
-            timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
+        let result = timelock::propose_operation_with_priority(&env, op_enum, &data, priority_enum);
         reentrancy::exit(&env);
         result
     }
@@ -3252,7 +3349,13 @@ impl PriceOracleContract {
         timestamp: u64,
     ) {
         cross_chain_verify::submit_cross_chain_price(
-            &env, asset, oracle_chain, price, decimals, chain_id, timestamp,
+            &env,
+            asset,
+            oracle_chain,
+            price,
+            decimals,
+            chain_id,
+            timestamp,
         );
     }
 
@@ -4082,7 +4185,9 @@ impl PriceOracleContract {
         min_return: i128,
     ) -> i128 {
         reentrancy::enter(&env);
-        let result = amm::swap(&env, caller, asset, from_asset, to_asset, amount_in, min_return);
+        let result = amm::swap(
+            &env, caller, asset, from_asset, to_asset, amount_in, min_return,
+        );
         reentrancy::exit(&env);
         result
     }
@@ -4115,6 +4220,83 @@ impl PriceOracleContract {
     /// Returns the current AMM max-deviation setting (basis points). Default: 500.
     pub fn amm_get_max_deviation_bps(env: Env) -> u32 {
         amm::get_amm_max_deviation_bps(&env)
+    }
+
+    /// Sets the AMM weight for an asset used during aggregation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — `weight_bps > 10_000`.
+    pub fn amm_set_weight(env: Env, asset: Address, weight_bps: u32, enabled: bool) {
+        amm::set_amm_weight(&env, asset, weight_bps, enabled);
+    }
+
+    /// Returns the AMM weight configuration for an asset, or `None` if not set.
+    pub fn amm_get_weight(env: Env, asset: Address) -> Option<AmmWeightConfig> {
+        amm::get_amm_weight(&env, asset)
+    }
+
+    /// Registers a Soroswap pool for price derivation. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn soroswap_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+        fee_bps: u32,
+    ) {
+        amm::register_soroswap_pool(&env, asset_a, asset_b, reserve_a, reserve_b, fee_bps);
+    }
+
+    /// Returns the Soroswap pool configuration, or `None` if not found.
+    pub fn soroswap_get_pool(env: Env, asset_a: Address, asset_b: Address) -> Option<SoroswapPool> {
+        amm::get_soroswap_pool(&env, asset_a, asset_b)
+    }
+
+    /// Enables or disables a Soroswap pool. Admin-only.
+    pub fn soroswap_set_pool_status(env: Env, asset_a: Address, asset_b: Address, enabled: bool) {
+        amm::set_soroswap_pool_status(&env, asset_a, asset_b, enabled);
+    }
+
+    /// Reads the Soroswap spot price for an asset pair.
+    ///
+    /// Returns `None` if the pool is disabled or unregistered.
+    pub fn get_soroswap_price(env: Env, asset_a: Address, asset_b: Address) -> Option<i128> {
+        amm::read_soroswap_price(&env, asset_a, asset_b)
+    }
+
+    /// Registers a Stellar DEX pool pair. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`]        — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — either reserve is ≤ 0.
+    pub fn dex_register_pool(
+        env: Env,
+        asset_a: Address,
+        asset_b: Address,
+        reserve_a: i128,
+        reserve_b: i128,
+    ) {
+        dex::register_dex_pool(&env, asset_a, asset_b, reserve_a, reserve_b);
+    }
+
+    /// Returns the DEX price for `asset` against its paired asset, or `None`.
+    pub fn get_dex_price(env: Env, asset: Address) -> Option<DexPrice> {
+        dex::get_dex_price(&env, asset)
+    }
+
+    /// Returns a serialized state dump for off-chain inspection.
+    pub fn oracle_state_dump(env: Env) -> StateDump {
+        state_introspection::build_state_dump(&env)
+    }
+
+    /// Returns aggregated state analysis statistics.
+    pub fn oracle_state_analyze(env: Env) -> StateAnalysis {
+        state_introspection::build_state_analysis(&env)
     }
 
     // =========================================================================
@@ -4318,6 +4500,115 @@ impl PriceOracleContract {
     pub fn recovery_get_pending(env: Env) -> Option<GuardianRecovery> {
         recovery::get_pending_recovery(&env)
     }
+
+    // =========================================================================
+    // #283 — Stellar DID Integration
+    // =========================================================================
+
+    /// Registers a DID document under `did_address`. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — document exceeds length limit.
+    pub fn did_register(env: Env, did_address: Address, document: String) {
+        did::register_did(&env, did_address, document);
+    }
+
+    /// Links an oracle source to a DID address. Admin-only.
+    pub fn did_link_source(env: Env, source: Address, did: Address, verified: bool) {
+        did::link_source_did(&env, source, did, verified);
+    }
+
+    /// Verifies a DID document exists on-chain.
+    pub fn did_verify(env: Env, did_address: Address) -> bool {
+        did::verify_did(&env, did_address)
+    }
+
+    /// Returns the DID document for a given DID address, or `None`.
+    pub fn did_get_document(env: Env, did_address: Address) -> Option<String> {
+        did::get_did_document(&env, did_address)
+    }
+
+    /// Returns the DID link for a source, or `None`.
+    pub fn did_get_source_link(env: Env, source: Address) -> Option<SourceDidLink> {
+        did::get_source_did(&env, source)
+    }
+
+    /// Returns all source-DID links.
+    pub fn did_get_all_source_links(env: Env) -> Vec<SourceDidLink> {
+        did::get_all_source_dids(&env)
+    }
+
+    // =========================================================================
+    // #282 — Bridge Oracle for Non-Stellar Assets
+    // =========================================================================
+
+    /// Registers a bridge oracle contract for a non-Stellar asset pair. Admin-only.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — validation fails.
+    pub fn bridge_register_oracle(env: Env, config: BridgeOracleConfig) {
+        bridge_oracle::register_bridge_oracle(&env, config);
+    }
+
+    /// Returns the bridge oracle configuration for an asset pair, or `None`.
+    pub fn bridge_get_oracle(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgeOracleConfig> {
+        bridge_oracle::get_bridge_oracle(&env, source_asset, target_asset)
+    }
+
+    /// Submits a bridged price observation. Must be called by the bridge oracle contract.
+    ///
+    /// # Errors
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the bridge oracle.
+    /// * [`ErrorCode::InvalidConfiguration`] — price is non-positive.
+    pub fn bridge_submit_price(env: Env, source_asset: Address, target_asset: Address, price: i128, timestamp: u64) {
+        bridge_oracle::submit_bridged_price(&env, source_asset, target_asset, price, timestamp);
+    }
+
+    /// Returns the latest bridged price for an asset pair, or `None`.
+    pub fn bridge_get_price(env: Env, source_asset: Address, target_asset: Address) -> Option<BridgedPrice> {
+        bridge_oracle::get_bridged_price(&env, source_asset, target_asset)
+    }
+
+    /// Normalizes a raw bridge price into the oracle decimal scale.
+    pub fn bridge_normalize_price(env: Env, raw_price: i128, target_decimals: u32, config: BridgeOracleConfig) -> i128 {
+        bridge_oracle::normalize_bridged_price(&env, raw_price, target_decimals, &config)
+    }
+
+    // =========================================================================
+    // #285 — Ecosystem Metadata Registration
+    // =========================================================================
+
+    /// Registers the oracle contract in the Stellar ecosystem metadata registry. Admin-only.
+    pub fn metadata_register(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::register_ecosystem_metadata(&env, metadata);
+    }
+
+    /// Updates the ecosystem metadata. Admin-only.
+    pub fn metadata_update(env: Env, metadata: EcosystemMetadata) {
+        ecosystem_metadata::update_ecosystem_metadata(&env, metadata);
+    }
+
+    /// Returns the ecosystem metadata, or `None`.
+    pub fn metadata_get(env: Env) -> Option<EcosystemMetadata> {
+        ecosystem_metadata::get_ecosystem_metadata(&env)
+    }
+
+    /// Registers a price feed in the ecosystem metadata directory. Admin-only.
+    pub fn metadata_register_feed(env: Env, feed: FeedMetadata) {
+        ecosystem_metadata::register_feed_metadata(&env, feed);
+    }
+
+    /// Returns all registered feed metadata.
+    pub fn metadata_list_feeds(env: Env) -> Vec<FeedMetadata> {
+        ecosystem_metadata::list_feed_metadata(&env)
+    }
+
+    /// Returns feed metadata for a specific asset, or `None`.
+    pub fn metadata_get_feed(env: Env, asset: Address) -> Option<FeedMetadata> {
+        ecosystem_metadata::get_feed_metadata(&env, asset)
+    }
 }
 
 #[cfg(test)]
@@ -4346,3 +4637,6 @@ mod finality_tests;
 
 #[cfg(test)]
 mod correlation_feature_tests;
+
+#[cfg(test)]
+mod did_bridge_metadata_tests;

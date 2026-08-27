@@ -233,11 +233,13 @@ pub enum ErrorCode {
     /// The priority-specific timelock delay has not elapsed for this operation.
     PriorityTimelockNotReady = 111,
 
-    // ── 112–115: Consumer auth & subscriptions ────────────────────────────────
-    /// The consumer is not authorized to query prices in the current access mode (#304).
-    ConsumerNotAuthorized = 112,
-    /// The subscription token contract has not been configured (#306).
-    SubscriptionTokenNotConfigured = 113,
-    /// The consumer has no active token-backed subscription to cancel (#306).
-    NoActiveSubscription = 114,
+    // ── 112–115: Issues #295–#298 ─────────────────────────────────────────────
+    /// The submitted external proof failed format validation (#296).
+    InvalidProof = 112,
+    /// The proof type does not satisfy the asset's configured proof requirement (#296).
+    ProofTypeMismatch = 113,
+    /// The per-asset callback limit has been reached (#297).
+    TooManyCallbacks = 114,
+    /// No callback registration found for the given (consumer, asset) pair (#297).
+    CallbackNotFound = 115,
 }

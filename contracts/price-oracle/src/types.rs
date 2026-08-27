@@ -78,6 +78,8 @@ pub enum DataKey {
     SrcHeartbeat(Address),
     /// Inactive flag for a source.
     SrcInactive(Address),
+    /// Per-source deviation tolerance in basis points. Overrides global when set.
+    SrcDeviationTolerance(Address),
 
     // --- Asset registry (prefix: Asset) ---
     /// Existence flag for a registered asset (`true` when present).
@@ -108,6 +110,16 @@ pub enum DataKey {
     AssetCircuitBreakerLog(Address, u32),
     /// Configurable maximum number of assets that can be registered.
     MaxAssets,
+
+    // -------------------------------------------------------------------------
+    // #301: Automatic asset deregistration on inactivity
+    // -------------------------------------------------------------------------
+    /// Last ledger sequence number when a price was submitted for this asset.
+    AssetLastActivity(Address),
+    /// Inactivity timeout in ledgers for a specific asset (0 = use global default).
+    AssetInactivityTimeout(Address),
+    /// Global default inactivity timeout in ledgers (0 = disabled).
+    CfgInactivityTimeout,
 
     /// Boolean flag indicating whether the contract is paused.
     PauseFlag,
@@ -337,7 +349,6 @@ pub enum DataKey {
     // -------------------------------------------------------------------------
     // Additional keys for feature modules
     // -------------------------------------------------------------------------
-
     /// Per-asset minimum submission interval override.
     AssetMinSubmissionInterval(Address),
 
@@ -362,6 +373,12 @@ pub enum DataKey {
     AmmPool(Address),
     /// AMM maximum deviation basis points for an asset.
     AmmMaxDeviationBps(Address),
+    /// AMM weight configuration for aggregation inclusion.
+    AmmWeight(Address),
+    /// Stellar DEX pool reserves for an asset pair.
+    DexPool(Address, Address),
+    /// Soroswap pool configuration for an asset pair.
+    SoroswapPool(Address, Address),
 
     /// Challenge entries keyed by ID (#235).
     Challenge(u32),
@@ -515,7 +532,7 @@ pub enum DataKey {
     NotificationEventTypes,
 
     // -------------------------------------------------------------------------
-    // History export
+    // History export / timelock priority
     // -------------------------------------------------------------------------
     /// Delay (ledgers) for Urgent priority operations.
     TlUrgentDelay,
@@ -525,45 +542,27 @@ pub enum DataKey {
     TlLongTermDelay,
 
     // -------------------------------------------------------------------------
-    // #304 — Consumer Contract Authorization
+    // #283: Stellar DID Integration
     // -------------------------------------------------------------------------
-    /// Authorization record for a consumer address: `true` = explicitly authorized.
-    ConsumerAuthorized(Address),
-    /// Block record for a consumer address: `true` = explicitly blocked.
-    ConsumerBlocked(Address),
-    /// Global consumer access mode discriminant (0=Public, 1=AllowedOnly, 2=BlockedOnly).
-    ConsumerAccessMode,
+    /// Stored DID document for a decentralized identity address.
+    DidDocument(Address),
+    /// Source address mapped to a DID address for identity verification.
+    SourceDid(Address),
 
     // -------------------------------------------------------------------------
-    // #303 — Per-Source Deviation History
+    // #282: Bridge Oracle for Non-Stellar Assets
     // -------------------------------------------------------------------------
-    /// Ring-buffer of recent deviation records for a (source, asset) pair.
-    /// Key: (source, asset) → Vec<DeviationRecord>.
-    SourceDeviationHistory(Address, Address),
-    /// Number of deviation records stored for a (source, asset) pair.
-    SourceDeviationHistoryLen(Address, Address),
+    /// Bridge oracle configuration for a (source_asset, target_asset) pair.
+    BridgeOracle(Address, Address),
+    /// Latest bridged price observation for an asset pair.
+    BridgedPrice(Address, Address),
 
     // -------------------------------------------------------------------------
-    // #305 — Price Update Subscription Registry
+    // #285: Ecosystem Metadata Registration
     // -------------------------------------------------------------------------
-    /// Presence flag for a (consumer, asset) subscription: `true` = subscribed.
-    PriceUpdateSubscription(Address, Address),
-    /// Ordered list of consumer addresses subscribed to price updates for an asset.
-    AssetSubscriberList(Address),
-
-    // -------------------------------------------------------------------------
-    // #306 — SAC Token Integration for Subscriptions
-    // -------------------------------------------------------------------------
-    /// Address of the SAC token contract used for subscription payments.
-    SubscriptionToken,
-    /// Token amount paid per subscription plan duration (mirrors SubscriptionPlans).
-    SubscriptionPlanAmount(u32),
-    /// Token amount deposited by a consumer for an active subscription (for refunds).
-    SubscriptionTokenDeposit(Address),
-    /// Timestamp when the subscription was last started/renewed (for pro-rata refunds).
-    SubscriptionStartTime(Address),
+    /// Stellar ecosystem metadata registry entry.
+    EcosystemMetadata,
 }
-
 
 /// A price submission from a single oracle source for a specific asset.
 ///
@@ -957,7 +956,6 @@ pub struct AssetMetadataUpdate {
     pub decimals: Option<u32>,
     pub logo_uri: String,
 }
-
 
 /// A single admin operation within a batch, identified by type and its encoded payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1435,9 +1433,6 @@ pub struct DecentralizationReport {
     pub jurisdiction_hhi: u32,
     pub overall_score: u32,
 }
-
-
-
 
 // =============================================================================
 // Missing types required by feature modules
@@ -2083,72 +2078,93 @@ pub struct OperationTemplate {
 }
 
 // =============================================================================
-// #304 — Consumer Contract Authorization
+// #278 — Contract State Introspection
 // =============================================================================
 
-/// Global access mode controlling which consumer contracts may query prices.
-///
-/// Stored under [`DataKey::ConsumerAccessMode`].
+/// Serializable contract configuration snapshot for `oracle-state-dump`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum ConsumerAccessMode {
-    /// No restriction — all callers may query prices (default).
-    Public = 0,
-    /// Only consumers explicitly added via `add_authorized_consumer` are allowed.
-    AllowedOnly = 1,
-    /// All consumers are allowed except those explicitly added via `block_consumer`.
-    BlockedOnly = 2,
+pub struct StateDump {
+    pub admin: Address,
+    pub description: String,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
+    pub decimals: u32,
+    pub resolution: u32,
+    pub timestamp_threshold: u64,
+    pub max_deviation_bps: u32,
+    pub heartbeat_interval: u64,
+}
+
+/// Statistics computed from live contract state for `oracle-state-analyze`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateAnalysis {
+    pub admin: Address,
+    pub decimals: u32,
+    pub min_sources_required: u32,
+    pub max_history_length: u32,
+    pub registered_assets: u32,
+    pub registered_sources: u32,
+    pub aggregate_count: u32,
+    pub history_depth_avg: u32,
+}
+
+/// Field-level diff between two contract snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateDiffEntry {
+    pub field: String,
+    pub left: String,
+    pub right: String,
+}
+
+/// Top-level diff container returned by `oracle-state-diff`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StateDiff {
+    pub contract_a: String,
+    pub contract_b: String,
+    pub entries: Vec<StateDiffEntry>,
 }
 
 // =============================================================================
-// #303 — Per-Source Deviation History
+// #280 — Stellar DEX Integration
 // =============================================================================
 
-/// A single deviation record captured at submission time.
-///
-/// Stored as part of the ring-buffer under [`DataKey::SourceDeviationHistory`].
+/// A price observation read from a Stellar DEX liquidity pool.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct DeviationRecord {
-    /// Deviation from the aggregate at submission time, expressed in basis points
-    /// (1 bps = 0.01 %).
-    pub deviation_bps: i128,
-    /// Ledger sequence number when the submission was made.
-    pub ledger: u32,
-}
-
-/// Statistical summary of a source's recent price deviations.
-///
-/// Returned by `get_source_deviation_report`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct DeviationReport {
-    /// Arithmetic mean deviation over the requested rounds, in basis points.
-    pub avg_deviation_bps: i128,
-    /// Maximum single-round deviation over the requested rounds, in basis points.
-    pub max_deviation_bps: i128,
-    /// Number of rounds where the deviation exceeded the outlier threshold (200 bps).
-    pub outlier_count: u32,
-    /// Linear regression slope (bps/round). Positive = deviations trending up.
-    pub trend: i32,
-    /// Number of rounds actually used (may be less than requested if history is short).
-    pub num_rounds: u32,
+pub struct DexPrice {
+    pub asset: Address,
+    pub price: i128,
+    pub reserve_x: i128,
+    pub reserve_y: i128,
+    pub timestamp: u64,
 }
 
 // =============================================================================
-// #306 — SAC Token Integration for Subscriptions
+// #281 — Soroswap / AMM Integration
 // =============================================================================
 
-/// Record tracking a consumer's token-backed subscription details.
-///
-/// Stored under [`DataKey::SubscriptionTokenDeposit`] keyed by consumer address.
+/// AMM pool weight configuration for aggregation inclusion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct TokenSubscriptionRecord {
-    /// Amount of tokens deposited when the subscription was created.
-    pub deposited_amount: i128,
-    /// Unix timestamp when the subscription was created (for pro-rata refund).
-    pub start_timestamp: u64,
-    /// Unix timestamp when the subscription expires.
-    pub expiry_timestamp: u64,
+pub struct AmmWeightConfig {
+    pub asset: Address,
+    pub weight_bps: u32,
+    pub enabled: bool,
 }
+
+/// Soroswap pool metadata used to derive a price feed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SoroswapPool {
+    pub asset_a: Address,
+    pub asset_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub fee_bps: u32,
+    pub enabled: bool,
+}
+
