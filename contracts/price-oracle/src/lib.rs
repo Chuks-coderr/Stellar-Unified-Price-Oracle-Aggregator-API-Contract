@@ -62,6 +62,10 @@ mod emergency_pause;
 mod freeze;
 mod notifications;
 mod config_history;
+mod batch_storage;
+mod price_proof;
+mod price_callback;
+mod contribution_quality;
 
 #[cfg(test)]
 mod circuit_breaker_tests;
@@ -1459,12 +1463,12 @@ impl PriceOracleContract {
     /// * [`ErrorCode::InvalidPrice`] — if `price` is ≤ 0.
     /// * [`ErrorCode::PriceBelowMinimum`] — if `price` is below the asset's minimum price.
     /// * [`ErrorCode::InvalidTimestamp`] — if `timestamp` is too far in the future.
-    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64) {
+    pub fn submit_price(env: Env, source: Address, asset: Address, price: i128, timestamp: u64, nonce: u64) {
         reentrancy::enter(&env);
         // Measure budget before and after to record last submit_price cost.
         let before_cpu = env.budget().cpu_instruction_count();
         let before_mem = env.budget().memory_bytes_count();
-        prices::submit_price(&env, source, asset, price, timestamp);
+        prices::submit_price(&env, source, asset, price, timestamp, nonce);
         let after_cpu = env.budget().cpu_instruction_count();
         let after_mem = env.budget().memory_bytes_count();
         let cpu_delta = after_cpu.saturating_sub(before_cpu);
@@ -4081,6 +4085,169 @@ impl PriceOracleContract {
     /// Returns the currently pending recovery, if any.
     pub fn recovery_get_pending(env: Env) -> Option<GuardianRecovery> {
         recovery::get_pending_recovery(&env)
+    }
+
+    // =========================================================================
+    // #295 — Gas-efficient batch storage read
+    // =========================================================================
+
+    /// Reads multiple storage keys in a single call.
+    ///
+    /// Accepts a `Vec<StorageBatchRequest>` where each entry specifies a
+    /// [`DataKey`] and a [`StorageTier`] (persistent / temporary / instance).
+    /// Returns one [`StorageBatchResult`] per request with an `exists` flag and,
+    /// when available, a human-readable serialisation of the stored value.
+    ///
+    /// Reading N keys in one call is significantly more gas-efficient than N
+    /// individual contract invocations.
+    pub fn get_storage_batch(
+        env: Env,
+        requests: Vec<crate::types::StorageBatchRequest>,
+    ) -> Vec<crate::types::StorageBatchResult> {
+        batch_storage::get_storage_batch(&env, requests)
+    }
+
+    // =========================================================================
+    // #296 — Source submission validation by external proof
+    // =========================================================================
+
+    /// Submit a price with an attached external proof (CEX / DEX / multi-sig).
+    ///
+    /// The proof format is validated before the submission is forwarded to the
+    /// standard aggregation pipeline. Per-asset proof requirements can be
+    /// configured with [`set_asset_proof_requirement`].
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::InvalidProof`] — proof format validation failed.
+    /// * [`ErrorCode::ProofTypeMismatch`] — proof type doesn't satisfy the asset requirement.
+    /// * All errors from the underlying `submit_price` pipeline.
+    pub fn submit_price_with_external_proof(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        timestamp: u64,
+        proof: crate::types::PriceProof,
+    ) {
+        reentrancy::enter(&env);
+        price_proof::submit_price_with_external_proof(&env, source, asset, price, timestamp, proof);
+        reentrancy::exit(&env);
+    }
+
+    /// Configure the required proof type for an asset. Admin only.
+    ///
+    /// Set to `AssetProofRequirement::AnyOrNone` to remove any requirement.
+    pub fn set_asset_proof_requirement(
+        env: Env,
+        asset: Address,
+        requirement: crate::types::AssetProofRequirement,
+    ) {
+        reentrancy::enter(&env);
+        price_proof::set_asset_proof_requirement(&env, asset, requirement);
+        reentrancy::exit(&env);
+    }
+
+    /// Return the configured proof requirement for an asset.
+    ///
+    /// Defaults to `AssetProofRequirement::AnyOrNone`.
+    pub fn get_asset_proof_requirement(
+        env: Env,
+        asset: Address,
+    ) -> crate::types::AssetProofRequirement {
+        price_proof::get_asset_proof_requirement(&env, asset)
+    }
+
+    /// Return the most recently stored proof for a (asset, source) pair.
+    pub fn get_submission_proof(
+        env: Env,
+        asset: Address,
+        source: Address,
+    ) -> Option<crate::types::PriceProof> {
+        price_proof::get_submission_proof(&env, asset, source)
+    }
+
+    // =========================================================================
+    // #297 — Cross-contract price callback
+    // =========================================================================
+
+    /// Register a cross-contract callback for price updates on `asset`.
+    ///
+    /// When the oracle publishes a new aggregate for `asset`, it will invoke
+    /// `method` on `callback_contract` with `(asset, price, timestamp, num_sources)`.
+    ///
+    /// The consumer must authorize this call. Up to [`MAX_CALLBACKS_PER_ASSET`]
+    /// callbacks may be registered per asset.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::AssetNotRegistered`] — asset not registered.
+    /// * [`ErrorCode::TooManyCallbacks`] — per-asset callback limit reached.
+    pub fn register_price_callback(
+        env: Env,
+        consumer: Address,
+        asset: Address,
+        callback_contract: Address,
+        method: Symbol,
+    ) {
+        reentrancy::enter(&env);
+        price_callback::register_price_callback(&env, consumer, asset, callback_contract, method);
+        reentrancy::exit(&env);
+    }
+
+    /// Unregister a previously registered callback.
+    ///
+    /// The consumer must authorize this call.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::CallbackNotFound`] — no registration exists for this consumer + asset.
+    pub fn unregister_price_callback(env: Env, consumer: Address, asset: Address) {
+        reentrancy::enter(&env);
+        price_callback::unregister_price_callback(&env, consumer, asset);
+        reentrancy::exit(&env);
+    }
+
+    /// List all active callback registrations for an asset.
+    pub fn get_price_callbacks(
+        env: Env,
+        asset: Address,
+    ) -> Vec<crate::types::CallbackRegistration> {
+        price_callback::get_price_callbacks(&env, asset)
+    }
+
+    // =========================================================================
+    // #298 — Price contribution quality scoring
+    // =========================================================================
+
+    /// Return the composite quality score record for a (source, asset) pair.
+    ///
+    /// Returns `None` if no rounds have been scored yet for this pair.
+    pub fn get_contribution_quality(
+        env: Env,
+        source: Address,
+        asset: Address,
+    ) -> Option<crate::types::ContribQualityRecord> {
+        contribution_quality::get_contribution_quality(&env, source, asset)
+    }
+
+    /// Configure the scoring window (number of rounds in the moving average).
+    ///
+    /// Admin only. Range: `[2, 200]`. Defaults to `10`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ErrorCode::NotAuthorized`] — caller is not the admin.
+    /// * [`ErrorCode::InvalidConfiguration`] — window out of `[2, 200]` range.
+    pub fn set_scoring_window(env: Env, window: u32) {
+        reentrancy::enter(&env);
+        contribution_quality::set_scoring_window(&env, window);
+        reentrancy::exit(&env);
+    }
+
+    /// Return the currently configured scoring window. Defaults to `10`.
+    pub fn get_scoring_window(env: Env) -> u32 {
+        contribution_quality::get_scoring_window(&env)
     }
 }
 

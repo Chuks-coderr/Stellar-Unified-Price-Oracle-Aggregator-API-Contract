@@ -515,7 +515,7 @@ pub enum DataKey {
     NotificationEventTypes,
 
     // -------------------------------------------------------------------------
-    // History export
+    // History export / timelock priority
     // -------------------------------------------------------------------------
     /// Delay (ledgers) for Urgent priority operations.
     TlUrgentDelay,
@@ -523,6 +523,42 @@ pub enum DataKey {
     TlNormalDelay,
     /// Delay (ledgers) for LongTerm priority operations.
     TlLongTermDelay,
+
+    // -------------------------------------------------------------------------
+    // #295: Batch storage read
+    // -------------------------------------------------------------------------
+    // (no dedicated storage keys — the batch endpoint reads existing keys)
+
+    // -------------------------------------------------------------------------
+    // #296: External proof submission
+    // -------------------------------------------------------------------------
+    /// The most-recent external proof attached to a (asset, source) price submission.
+    SubmissionProof(Address, Address),
+    /// Configured proof requirement for an asset (AssetProofRequirement).
+    AssetProofRequirement(Address),
+    /// Auto-incrementing nonce for proof-path submissions to avoid conflicts with
+    /// regular submit_price nonces.
+    SubmissionProofNonce(Address, Address),
+
+    // -------------------------------------------------------------------------
+    // #297: Cross-contract price callback
+    // -------------------------------------------------------------------------
+    /// Ordered list of CallbackRegistration entries for an asset.
+    PriceCallbackList(Address),
+
+    // -------------------------------------------------------------------------
+    // #298: Contribution quality scoring
+    // -------------------------------------------------------------------------
+    /// Quality score record for a (source, asset) pair (ContribQualityRecord).
+    ContribScore(Address, Address),
+    /// Scoring window size (number of rounds) used for the moving average.
+    ContribScoringWindow,
+
+    // -------------------------------------------------------------------------
+    // Nonce for replay-prevention on regular submit_price calls
+    // -------------------------------------------------------------------------
+    /// Last accepted nonce for a source's submit_price calls (u64).
+    SourceNonce(Address),
 }
 
 
@@ -2041,4 +2077,140 @@ pub struct OperationTemplate {
     pub description: String,
     pub steps: Vec<TemplateStep>,
     pub created_at_ledger: u32,
+}
+
+// =============================================================================
+// #295: Batch storage read types
+// =============================================================================
+
+/// Which storage tier to query in a batch storage read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum StorageTier {
+    /// Soroban persistent storage (long-lived entries).
+    Persistent = 0,
+    /// Soroban temporary storage (auto-expiring entries).
+    Temporary = 1,
+    /// Soroban instance storage (contract-wide singleton).
+    Instance = 2,
+}
+
+/// A single read request in a `get_storage_batch` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageBatchRequest {
+    /// The storage key to look up.
+    pub key: DataKey,
+    /// Which storage tier to query.
+    pub tier: StorageTier,
+}
+
+/// The result of a single read within a `get_storage_batch` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageBatchResult {
+    /// The key that was queried (echoed from the request).
+    pub key: DataKey,
+    /// The tier that was queried (echoed from the request).
+    pub tier: StorageTier,
+    /// Whether the key exists in that storage tier.
+    pub exists: bool,
+    /// Human-readable serialisation of the stored value, or `None` if absent.
+    pub value_json: Option<String>,
+}
+
+// =============================================================================
+// #296: External proof types
+// =============================================================================
+
+/// Discriminant for external price proof types attached to `submit_price_with_external_proof`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum ProofType {
+    /// A signed API response from a centralised exchange.
+    CexSignedResponse = 0,
+    /// On-chain DEX trade evidence (pool address + trade hash).
+    DexTrade = 1,
+    /// M-of-N multi-signature attestation.
+    MultiSigAttestation = 2,
+}
+
+/// An external proof attached to a price submission.
+///
+/// Stored under [`DataKey::SubmissionProof`] for post-hoc auditability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriceProof {
+    /// Which proof type this is.
+    pub proof_type: ProofType,
+    /// Hash of the signed payload (CEX/DEX trade hash). Must be ≥ 32 bytes.
+    pub payload_hash: Bytes,
+    /// Signature bytes (CEX) or pool-address bytes (DEX). Must be non-empty for DEX.
+    pub signature: Bytes,
+    /// Number of signers (multi-sig only). Must be in `[2, 20]`.
+    pub signer_count: u32,
+}
+
+/// Per-asset requirement for the proof type that must accompany submissions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum AssetProofRequirement {
+    /// Any proof type is accepted (or no proof at all).
+    AnyOrNone = 0,
+    /// Only `ProofType::CexSignedResponse` is accepted.
+    RequireCex = 1,
+    /// Only `ProofType::DexTrade` is accepted.
+    RequireDex = 2,
+    /// Only `ProofType::MultiSigAttestation` is accepted.
+    RequireMultiSig = 3,
+}
+
+// =============================================================================
+// #297: Cross-contract price callback types
+// =============================================================================
+
+/// A registered cross-contract callback for price updates.
+///
+/// Stored inside the `Vec<CallbackRegistration>` at [`DataKey::PriceCallbackList`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CallbackRegistration {
+    /// The consumer address that registered the callback (must authorize un-registration).
+    pub consumer: Address,
+    /// The contract to call when a new aggregate is published.
+    pub callback_contract: Address,
+    /// The method name to invoke on `callback_contract`.
+    pub method: Symbol,
+    /// Whether this callback is currently active.
+    pub active: bool,
+}
+
+// =============================================================================
+// #298: Contribution quality scoring types
+// =============================================================================
+
+/// Quality score record for a single (source, asset) pair.
+///
+/// Stored under [`DataKey::ContribScore`] keyed by `(source, asset)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ContribQualityRecord {
+    /// The oracle source address.
+    pub source: Address,
+    /// The asset address.
+    pub asset: Address,
+    /// Exponentially-smoothed composite score `[0, 100]` over `rounds_counted` rounds.
+    pub composite_score_avg: u32,
+    /// Raw composite score for the most-recent round.
+    pub last_round_score: u32,
+    /// Most-recent per-round accuracy component `[0, 100]`.
+    pub avg_accuracy_score: u32,
+    /// Most-recent per-round timeliness component `[0, 100]`.
+    pub avg_timeliness_score: u32,
+    /// Most-recent per-round consistency component `[0, 100]`.
+    pub avg_consistency_score: u32,
+    /// Number of rounds counted (capped at the scoring window).
+    pub rounds_counted: u32,
+    /// Ledger sequence of the last quality update.
+    pub last_updated_ledger: u32,
 }

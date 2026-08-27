@@ -41,3 +41,23 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Cargo / Rust
+Cargo.lock.bak
+.cargo/registry/
+.cargo/git/
+
+# Coverage / profiling
+lcov.info
+*.profraw
+*.profdata
+coverage/
+
+# Fuzz artifacts (generated, not source)
+fuzz/artifacts/
+fuzz/coverage/
+
+# Temporary files
+*.tmp
+*.swp
+*~
